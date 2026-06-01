@@ -20,7 +20,7 @@ jobs:
             set -e
             cd /var/www/vernal
             git pull origin main
-            npm ci --omit=dev
+            npm ci
             npm run build
             pm2 reload vernal --update-env
             echo "Deploy complete: $(date)"
