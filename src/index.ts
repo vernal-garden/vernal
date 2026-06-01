@@ -1,8 +1,11 @@
 import express, { Application } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import { healthRouter } from './routes/health';
+import { authRouter } from './routes/auth';
+import { sessionMiddleware } from './middleware/session';
 
 dotenv.config();
 
@@ -24,9 +27,12 @@ app.use(
 // ── Body parsing ─────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use(cookieParser());
+app.use(sessionMiddleware);
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/health', healthRouter);
+app.use('/api/auth', authRouter);
 
 // ── Start ────────────────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {

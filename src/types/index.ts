@@ -1,25 +1,31 @@
 // Shared TypeScript types for the Vernal API.
-// Application-specific types are defined in their respective route/service files.
-// This file holds types that are reused across multiple modules.
 
 export interface ApiResponse<T = void> {
   data?: T;
   error?: string;
 }
 
-// Extend Express Request to carry the authenticated session account.
-// Populated by auth middleware in Phase 05. Declared here so TypeScript
-// knows the shape before the middleware exists.
+// Session attached to every request by src/middleware/session.ts
+export interface SessionData {
+  id: string;           // guest_sessions.id (UUID)
+  token: string;        // the raw session token (stored in cookie)
+  isGuest: boolean;     // true when account_id IS NULL
+  expiresAt: Date;
+  account: SessionAccount | null;
+}
+
+export interface SessionAccount {
+  id: number;
+  email: string;
+  role: 'user' | 'admin';
+  subscriptionTier: 'free' | 'supporter';
+}
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
-      account?: {
-        id: number;
-        email: string;
-        role: 'user' | 'admin';
-        subscriptionTier: 'free' | 'supporter';
-      };
+      session: SessionData | null;  // null = no valid session cookie
     }
   }
 }
