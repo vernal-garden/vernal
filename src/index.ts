@@ -6,6 +6,8 @@ import { healthRouter } from './routes/health';
 
 dotenv.config();
 
+// ── App setup ─────────────────────────────────────────────────────────────────
+
 const app: Application = express();
 const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
