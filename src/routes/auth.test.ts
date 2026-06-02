@@ -166,3 +166,13 @@ describe('POST /api/auth/forgot-password', () => {
     expect(res.body.data.message).toMatch(/if an account/i);
   });
 });
+
+// ── Phase 07: Google OAuth ─────────────────────────────────────────────────
+
+describe('GET /api/auth/oauth/:provider — unknown provider', () => {
+  it('returns 400 for an unsupported provider', async () => {
+    const res = await request(app).get('/api/auth/oauth/twitter');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/unknown/i);
+  });
+});

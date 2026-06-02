@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import { sessionMiddleware } from './middleware/session';
+import { initPassport, passport } from './lib/oauth/index';
 
 dotenv.config();
 
@@ -29,6 +30,8 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(sessionMiddleware);
+initPassport();
+app.use(passport.initialize());
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/health', healthRouter);

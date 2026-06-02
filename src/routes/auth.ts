@@ -9,6 +9,9 @@ import {
 } from '../lib/sessions';
 import { db } from '../lib/db';
 import { sendMail } from '../lib/mailer';
+import { encryptToBuffer } from '../lib/crypto';
+import { passport } from '../lib/oauth/index';
+import type { OAuthUser } from '../lib/oauth/providers/google';
 
 export const authRouter = Router();
 
@@ -76,6 +79,8 @@ authRouter.delete('/session', (req: Request, res: Response): void => {
 });
 
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS ?? '12', 10);
+const OAUTH_NONCE_COOKIE = '_vernal_oauth_nonce';
+const SUPPORTED_PROVIDERS = new Set(['google']);
 
 // POST /api/auth/register
 authRouter.post('/register', async (req: Request, res: Response): Promise<void> => {
@@ -275,3 +280,157 @@ authRouter.post('/reset-password', async (req: Request, res: Response): Promise<
 
   res.json({ data: { success: true, message: 'Password updated. You can now log in.' } });
 });
+
+async function resolveOAuthAccount(oauthUser: OAuthUser): Promise<{ accountId: number; isNew: boolean }> {
+  const { provider, profile, accessToken, refreshToken } = oauthUser;
+  const email = profile.emails?.[0]?.value ?? null;
+  const displayName = profile.displayName || email?.split('@')[0] || 'Grower';
+  const avatarUrl = profile.photos?.[0]?.value ?? null;
+
+  const encAccess = encryptToBuffer(accessToken);
+  const encRefresh = refreshToken ? encryptToBuffer(refreshToken) : null;
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Check for existing identity
+    const identityRow = await client.query<{ account_id: string }>(
+      'SELECT account_id FROM oauth_identities WHERE provider = $1 AND provider_user_id = $2',
+      [provider, profile.id]
+    );
+
+    if (identityRow.rows.length > 0) {
+      const accountId = Number(identityRow.rows[0].account_id);
+      await client.query(
+        `UPDATE oauth_identities
+         SET access_token_encrypted = $1, refresh_token_encrypted = $2,
+             token_expires_at = NOW() + INTERVAL '1 hour', updated_at = NOW()
+         WHERE provider = $3 AND provider_user_id = $4`,
+        [encAccess, encRefresh, provider, profile.id]
+      );
+      await client.query('COMMIT');
+      return { accountId, isNew: false };
+    }
+
+    // 2. Find or create account
+    let accountId: number;
+    let isNew = false;
+
+    if (email) {
+      const emailRow = await client.query<{ id: string }>(
+        'SELECT id FROM accounts WHERE email = $1',
+        [email]
+      );
+      if (emailRow.rows.length > 0) {
+        accountId = Number(emailRow.rows[0].id);
+      } else {
+        const newAccount = await client.query<{ id: string }>(
+          `INSERT INTO accounts (email, display_name, email_verified, zone, zone_location_label)
+           VALUES ($1, $2, true, 'unknown', 'Not set') RETURNING id`,
+          [email, displayName]
+        );
+        accountId = Number(newAccount.rows[0].id);
+        isNew = true;
+      }
+    } else {
+      const newAccount = await client.query<{ id: string }>(
+        `INSERT INTO accounts (display_name, email_verified, zone, zone_location_label)
+         VALUES ($1, false, 'unknown', 'Not set') RETURNING id`,
+        [displayName]
+      );
+      accountId = Number(newAccount.rows[0].id);
+      isNew = true;
+    }
+
+    // 3. Create identity record
+    await client.query(
+      `INSERT INTO oauth_identities
+         (account_id, provider, provider_user_id, email, display_name, avatar_url,
+          access_token_encrypted, refresh_token_encrypted, token_expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + INTERVAL '1 hour')`,
+      [accountId, provider, profile.id, email, displayName, avatarUrl, encAccess, encRefresh]
+    );
+
+    await client.query('COMMIT');
+    return { accountId, isNew };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// GET /api/auth/oauth/:provider — initiate OAuth flow
+authRouter.get('/oauth/:provider', (req: Request, res: Response, next) => {
+  const provider = req.params.provider as string;
+  if (!SUPPORTED_PROVIDERS.has(provider)) {
+    return res.status(400).json({ error: 'Unknown OAuth provider' });
+  }
+
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : '/';
+  const state = Buffer.from(JSON.stringify({ nonce, returnTo })).toString('base64url');
+
+  res.cookie(OAUTH_NONCE_COOKIE, nonce, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 10 * 60 * 1000,
+  });
+
+  passport.authenticate('google', {
+    scope: ['openid', 'email', 'profile'],
+    state,
+    session: false,
+  })(req, res, next);
+});
+
+// GET /api/auth/oauth/google/callback — handles return from Google
+authRouter.get(
+  '/oauth/google/callback',
+  passport.authenticate('google', {
+    session: false,
+    failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
+  }),
+  async (req: Request, res: Response) => {
+    try {
+      // 1. Verify nonce
+      let returnTo = '/';
+      const rawState = req.query.state as string | undefined;
+      if (rawState) {
+        try {
+          const decoded = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8')) as {
+            nonce: string;
+            returnTo: string;
+          };
+          const cookieNonce = req.cookies[OAUTH_NONCE_COOKIE] as string | undefined;
+          if (!cookieNonce || cookieNonce !== decoded.nonce) {
+            return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_csrf`);
+          }
+          returnTo = decoded.returnTo || '/';
+        } catch {
+          return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_state_invalid`);
+        }
+      }
+
+      res.clearCookie(OAUTH_NONCE_COOKIE);
+
+      // 2. Resolve or create account
+      const oauthUser = req.user as OAuthUser;
+      const { accountId } = await resolveOAuthAccount(oauthUser);
+
+      // 3. Claim or create session
+      const existingToken = req.session?.token ?? null;
+      const { signedToken, expiresAt } = await claimSession(accountId, existingToken);
+      makeSessionCookie(signedToken, expiresAt, res);
+
+      // 4. Redirect
+      res.redirect(`${process.env.FRONTEND_URL}${returnTo}`);
+    } catch (err) {
+      console.error('OAuth callback error:', err);
+      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
+    }
+  }
+);
