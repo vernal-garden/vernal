@@ -31,3 +31,6 @@ Thumbs.db
 
 # Superpowers
 docs/superpowers/
+
+# Worktrees
+.worktrees/

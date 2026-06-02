@@ -63,6 +63,39 @@ export async function createGuestSession(): Promise<{ signedToken: string; expir
   return { signedToken, expiresAt };
 }
 
+// Migrate an existing guest session to an authenticated account,
+// or create a new authenticated session if no prior session exists.
+// Returns the signed token to set in the cookie.
+export async function claimSession(
+  accountId: number,
+  existingToken: string | null,
+): Promise<{ signedToken: string; expiresAt: Date }> {
+  const sessionDays = parseInt(process.env.SESSION_DAYS ?? '7', 10);
+  const expiresAt = new Date(Date.now() + sessionDays * 24 * 60 * 60 * 1000);
+
+  if (existingToken) {
+    // Migrate the existing guest session
+    await db.query(
+      `UPDATE guest_sessions
+       SET account_id = $1, migrated_at = now(), expires_at = $2
+       WHERE token = $3`,
+      [accountId, expiresAt, existingToken],
+    );
+    const signedToken = signToken(existingToken);
+    return { signedToken, expiresAt };
+  }
+
+  // No prior session — create a new one already claimed by this account
+  const token = generateToken();
+  const signedToken = signToken(token);
+  await db.query(
+    `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+     VALUES ($1, $2, $3, now())`,
+    [token, expiresAt, accountId],
+  );
+  return { signedToken, expiresAt };
+}
+
 // Look up a session from a signed cookie value - returns null if invalid/expired
 export async function findSession(signedToken: string): Promise<SessionData | null> {
   const token = verifyToken(signedToken);
