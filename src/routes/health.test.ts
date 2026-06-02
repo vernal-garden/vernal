@@ -19,7 +19,8 @@ describe('GET /health', () => {
   });
 
   it('returns 200 with db:ok when database is reachable', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as import('pg').QueryResult);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
 
     const res = await request(app).get('/health');
 
