@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { searchPlants, getPlantBySlug, listTags } from '../services/cambium';
+import { searchPlants, getPlantBySlug, listTags, getCompanionsBySlug } from '../services/cambium';
 
 const router = Router();
 
@@ -23,6 +23,38 @@ router.get('/plants/tags', async (_req, res) => {
     res.json({ data: tags });
   } catch (err) {
     console.error('listTags error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/plants/:slug/companions
+// (registered before GET /api/plants/:slug to prevent route collision)
+router.get('/plants/:slug/companions', async (req, res) => {
+  const { slug } = req.params;
+
+  if (!/^[a-z0-9-]+$/.test(slug)) {
+    return res.status(400).json({ error: 'Invalid slug' });
+  }
+
+  const rawRelationship = req.query.relationship as string | undefined;
+  const VALID_RELATIONSHIPS = new Set(['beneficial', 'antagonistic', 'neutral']);
+
+  if (rawRelationship && !VALID_RELATIONSHIPS.has(rawRelationship)) {
+    return res.status(400).json({ error: 'Invalid relationship value' });
+  }
+
+  try {
+    const companions = await getCompanionsBySlug(slug, {
+      relationship: rawRelationship as 'beneficial' | 'antagonistic' | 'neutral' | undefined,
+    });
+
+    if (companions === null) {
+      return res.status(404).json({ error: 'Plant not found' });
+    }
+
+    res.json({ data: companions });
+  } catch (err) {
+    console.error('getCompanionsBySlug error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
+import { Pool } from 'pg';
 import app from '../index';
 
 describe('GET /api/plants', () => {
@@ -58,6 +59,65 @@ describe('GET /api/plants/:slug', () => {
   it('returns 400 for an invalid slug format', async () => {
     const res = await request(app).get('/api/plants/INVALID%20SLUG');
     expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/plants/:slug/companions', () => {
+  it('returns companions for a valid slug', async () => {
+    const res = await request(app).get('/api/plants/solanum-lycopersicum/companions');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    res.body.data.forEach((c: { confidence: number }) => {
+      expect(c.confidence).toBeGreaterThanOrEqual(40);
+    });
+  });
+
+  it('filters by relationship=beneficial', async () => {
+    const res = await request(app).get(
+      '/api/plants/solanum-lycopersicum/companions?relationship=beneficial',
+    );
+    expect(res.status).toBe(200);
+    res.body.data.forEach((c: { relationship: string }) => {
+      expect(c.relationship).toBe('beneficial');
+    });
+  });
+
+  it('filters by relationship=antagonistic', async () => {
+    const res = await request(app).get(
+      '/api/plants/solanum-lycopersicum/companions?relationship=antagonistic',
+    );
+    expect(res.status).toBe(200);
+    res.body.data.forEach((c: { relationship: string }) => {
+      expect(c.relationship).toBe('antagonistic');
+    });
+  });
+
+  it('returns 400 for an invalid relationship value', async () => {
+    const res = await request(app).get(
+      '/api/plants/solanum-lycopersicum/companions?relationship=invalid',
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 for an unknown plant slug', async () => {
+    const res = await request(app).get('/api/plants/does-not-exist/companions');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 200 with an empty array for a plant with no companions', async () => {
+    const pool = new Pool({
+      connectionString: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL,
+    });
+    await pool.query(
+      `INSERT INTO cambium.plants (slug, botanical_name, common_names, genus, species, is_published)
+       VALUES ('no-companions-plant', 'Solus solarius', ARRAY['Lonely Plant'], 'Solus', 'solarius', true)
+       ON CONFLICT DO NOTHING`,
+    );
+    await pool.end();
+
+    const res = await request(app).get('/api/plants/no-companions-plant/companions');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
   });
 });
 
