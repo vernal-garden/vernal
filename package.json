@@ -15,6 +15,7 @@
     "lint:fix": "eslint src --fix",
     "type-check": "tsc --noEmit",
     "migrate": "tsx scripts/migrate.ts",
+    "seed:cambium": "tsx scripts/seed-cambium.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
