@@ -255,3 +255,47 @@ export async function listTags(): Promise<
     count: r.count as number,
   }));
 }
+
+export async function getCompanionsBySlug(
+  slug: string,
+  options?: { relationship?: 'beneficial' | 'antagonistic' | 'neutral' },
+): Promise<CompanionEntry[] | null> {
+  // Resolve plant ID from slug
+  const plantRow = await db.query<{ id: string }>(
+    'SELECT id::text AS id FROM cambium.plants WHERE slug = $1 AND is_published = true',
+    [slug],
+  );
+
+  if (plantRow.rows.length === 0) return null;
+
+  const plantId = BigInt(plantRow.rows[0].id);
+  const relationshipFilter = options?.relationship;
+
+  const result = await db.query(
+    `SELECT cd.relationship, cd.confidence, cd.notes, cd.source,
+            p.id::text AS id, p.slug, p.botanical_name, p.common_names
+     FROM cambium.companion_data cd
+     JOIN cambium.plants p ON p.id = cd.companion_plant_id
+     WHERE cd.plant_id = $1
+       AND cd.confidence >= $2
+       AND p.is_published = true
+       ${relationshipFilter ? 'AND cd.relationship = $3' : ''}
+     ORDER BY cd.confidence DESC`,
+    relationshipFilter
+      ? [plantId, COMPANION_CONFIDENCE_THRESHOLD, relationshipFilter]
+      : [plantId, COMPANION_CONFIDENCE_THRESHOLD],
+  );
+
+  if (result.rows.length === 0) return [];
+
+  const companionIds = result.rows.map((r) => BigInt(r.id as string));
+  const tagsMap = await fetchTagsForPlants(companionIds);
+
+  return result.rows.map((row) => ({
+    plant: rowToSummary(row, tagsMap.get(row.id as string) ?? []),
+    relationship: row.relationship as 'beneficial' | 'antagonistic' | 'neutral',
+    confidence: row.confidence as number,
+    notes: (row.notes as string | null) ?? null,
+    source: (row.source as string | null) ?? null,
+  }));
+}
