@@ -1,12 +1,9 @@
 import { db } from '../lib/db';
 import type {
-  PlantSummary,
-  PlantDetail,
-  GrowingAttributes,
-  SoilPreferences,
+  SeedSummary,
+  SeedDetail,
   CompanionEntry,
-  PlantTag,
-  PlantSearchOptions,
+  SeedSearchOptions,
 } from '../types/cambium';
 
 const COMPANION_CONFIDENCE_THRESHOLD = 40;
@@ -15,287 +12,195 @@ const COMPANION_CONFIDENCE_THRESHOLD = 40;
 // Row mappers
 // ---------------------------------------------------------------------------
 
-function rowToTag(row: Record<string, unknown>): PlantTag {
-  return {
-    slug: row.tag_slug as string,
-    label: row.tag_label as string,
-    category: (row.tag_category as string | null) ?? null,
-  };
-}
-
-function rowToSummary(row: Record<string, unknown>, tags: PlantTag[]): PlantSummary {
+function rowToSeedSummary(row: Record<string, unknown>): SeedSummary {
   return {
     id: String(row.id),
-    slug: row.slug as string,
-    botanicalName: row.botanical_name as string,
-    commonNames: (row.common_names as string[]) ?? [],
-    tags,
+    commonName: row.common_name as string,
+    scientificName: (row.scientific_name as string | null) ?? null,
+    plantFamily: (row.plant_family as string | null) ?? null,
+    illustrationKey: (row.illustration_key as string | null) ?? null,
+    aggregateRating: row.aggregate_rating != null ? Number(row.aggregate_rating) : null,
+    ratingCount: row.rating_count as number,
   };
-}
-
-function rowToGrowingAttributes(row: Record<string, unknown>): GrowingAttributes {
-  return {
-    daysToGerminationMin: (row.days_to_germination_min as number | null) ?? null,
-    daysToGerminationMax: (row.days_to_germination_max as number | null) ?? null,
-    daysToMaturityMin: (row.days_to_maturity_min as number | null) ?? null,
-    daysToMaturityMax: (row.days_to_maturity_max as number | null) ?? null,
-    spacingCmMin: (row.spacing_cm_min as number | null) ?? null,
-    spacingCmMax: (row.spacing_cm_max as number | null) ?? null,
-    rowSpacingCm: (row.row_spacing_cm as number | null) ?? null,
-    plantHeightCmMin: (row.plant_height_cm_min as number | null) ?? null,
-    plantHeightCmMax: (row.plant_height_cm_max as number | null) ?? null,
-    sunRequirements: (row.sun_requirements as string | null) ?? null,
-    waterRequirements: (row.water_requirements as string | null) ?? null,
-    frostHardy: (row.frost_hardy as boolean | null) ?? null,
-    directSow: (row.direct_sow as boolean | null) ?? null,
-    transplant: (row.transplant as boolean | null) ?? null,
-  };
-}
-
-function rowToSoilPreferences(row: Record<string, unknown>): SoilPreferences {
-  return {
-    phMin: row.ph_min != null ? Number(row.ph_min) : null,
-    phMax: row.ph_max != null ? Number(row.ph_max) : null,
-    nitrogenDemand: (row.nitrogen_demand as string | null) ?? null,
-    phosphorusDemand: (row.phosphorus_demand as string | null) ?? null,
-    potassiumDemand: (row.potassium_demand as string | null) ?? null,
-    moisturePreference: (row.moisture_preference as string | null) ?? null,
-    drainage: (row.drainage as string | null) ?? null,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tag helper (used by multiple queries)
-// ---------------------------------------------------------------------------
-
-async function fetchTagsForPlants(plantIds: bigint[]): Promise<Map<string, PlantTag[]>> {
-  if (plantIds.length === 0) return new Map();
-
-  const result = await db.query<{
-    plant_id: string;
-    tag_slug: string;
-    tag_label: string;
-    tag_category: string | null;
-  }>(
-    `SELECT pt.plant_id::text, t.slug AS tag_slug, t.label AS tag_label, t.category AS tag_category
-     FROM cambium.plant_tags pt
-     JOIN cambium.tags t ON t.id = pt.tag_id
-     WHERE pt.plant_id = ANY($1::bigint[])
-     ORDER BY t.category, t.label`,
-    [plantIds.map(String)],
-  );
-
-  const map = new Map<string, PlantTag[]>();
-  for (const row of result.rows) {
-    const list = map.get(row.plant_id) ?? [];
-    list.push(rowToTag(row));
-    map.set(row.plant_id, list);
-  }
-  return map;
 }
 
 // ---------------------------------------------------------------------------
 // Public service functions
 // ---------------------------------------------------------------------------
 
-export async function searchPlants(options: PlantSearchOptions): Promise<{
-  data: PlantSummary[];
-  total: number;
-}> {
-  const { query, limit = 20, offset = 0, tagSlug } = options;
-  const pattern = `%${query}%`;
+export async function searchSeeds(
+  options: SeedSearchOptions,
+): Promise<{ data: SeedSummary[]; total: number }> {
+  const { query, family, limit = 20, offset = 0 } = options;
+
+  const countParams: unknown[] = [];
+  let countWhere = `WHERE moderation_status = 'active'`;
+
+  if (query) {
+    countParams.push(`%${query}%`);
+    countWhere += ` AND (common_name ILIKE $${countParams.length} OR scientific_name ILIKE $${countParams.length})`;
+  }
+
+  if (family) {
+    countParams.push(family);
+    countWhere += ` AND plant_family = $${countParams.length}`;
+  }
 
   const countResult = await db.query<{ count: string }>(
-    `SELECT COUNT(DISTINCT p.id)::text AS count
-     FROM cambium.plants p
-     ${tagSlug ? 'JOIN cambium.plant_tags pt ON pt.plant_id = p.id JOIN cambium.tags t ON t.id = pt.tag_id' : ''}
-     WHERE p.is_published = true
-       AND (
-         p.botanical_name ILIKE $1
-         OR EXISTS (
-           SELECT 1 FROM unnest(p.common_names) AS cn WHERE cn ILIKE $1
-         )
-       )
-     ${tagSlug ? 'AND t.slug = $2' : ''}`,
-    tagSlug ? [pattern, tagSlug] : [pattern],
+    `SELECT COUNT(*)::text AS count FROM cambium.seeds ${countWhere}`,
+    countParams,
   );
 
   const total = parseInt(countResult.rows[0].count, 10);
   if (total === 0) return { data: [], total };
 
+  const dataParams: unknown[] = [];
+  let dataWhere = `WHERE moderation_status = 'active'`;
+  let orderBy: string;
+
+  if (query) {
+    dataParams.push(`%${query}%`);
+    dataWhere += ` AND (common_name ILIKE $${dataParams.length} OR scientific_name ILIKE $${dataParams.length})`;
+    dataParams.push(`${query}%`);
+    orderBy = `ORDER BY (common_name ILIKE $${dataParams.length}) DESC, common_name ASC`;
+  } else {
+    orderBy = `ORDER BY common_name ASC`;
+  }
+
+  if (family) {
+    dataParams.push(family);
+    dataWhere += ` AND plant_family = $${dataParams.length}`;
+  }
+
+  dataParams.push(limit);
+  const limitClause = `LIMIT $${dataParams.length}`;
+  dataParams.push(offset);
+  const offsetClause = `OFFSET $${dataParams.length}`;
+
   const dataResult = await db.query<{
-    id: string;
-    slug: string;
-    botanical_name: string;
-    common_names: string[];
+    id: number;
+    common_name: string;
+    scientific_name: string | null;
+    plant_family: string | null;
+    illustration_key: string | null;
+    aggregate_rating: string | null;
+    rating_count: number;
   }>(
-    `SELECT id, slug, botanical_name, common_names
-     FROM (
-       SELECT DISTINCT p.id::text AS id, p.slug, p.botanical_name, p.common_names,
-              CASE WHEN p.botanical_name ILIKE $1 THEN 0 ELSE 1 END AS sort_key
-       FROM cambium.plants p
-       ${tagSlug ? 'JOIN cambium.plant_tags pt ON pt.plant_id = p.id JOIN cambium.tags t ON t.id = pt.tag_id' : ''}
-       WHERE p.is_published = true
-         AND (
-           p.botanical_name ILIKE $1
-           OR EXISTS (
-             SELECT 1 FROM unnest(p.common_names) AS cn WHERE cn ILIKE $1
-           )
-         )
-       ${tagSlug ? 'AND t.slug = $2' : ''}
-     ) sub
-     ORDER BY sort_key, botanical_name
-     LIMIT ${tagSlug ? '$3' : '$2'} OFFSET ${tagSlug ? '$4' : '$3'}`,
-    tagSlug ? [pattern, tagSlug, limit, offset] : [pattern, limit, offset],
+    `SELECT id, common_name, scientific_name, plant_family, illustration_key, aggregate_rating, rating_count
+     FROM cambium.seeds
+     ${dataWhere}
+     ${orderBy}
+     ${limitClause} ${offsetClause}`,
+    dataParams,
   );
 
-  const ids = dataResult.rows.map((r) => BigInt(r.id));
-  const tagsMap = await fetchTagsForPlants(ids);
-
-  const data: PlantSummary[] = dataResult.rows.map((row) =>
-    rowToSummary(row, tagsMap.get(row.id) ?? []),
-  );
+  const data: SeedSummary[] = dataResult.rows.map(rowToSeedSummary);
 
   return { data, total };
 }
 
-export async function getPlantBySlug(slug: string): Promise<PlantDetail | null> {
-  const plantResult = await db.query(
-    `SELECT p.id::text AS id, p.slug, p.botanical_name, p.common_names,
-            p.description, p.family, p.genus, p.species, p.cultivar,
-            ga.days_to_germination_min, ga.days_to_germination_max,
-            ga.days_to_maturity_min, ga.days_to_maturity_max,
-            ga.spacing_cm_min, ga.spacing_cm_max, ga.row_spacing_cm,
-            ga.plant_height_cm_min, ga.plant_height_cm_max,
-            ga.sun_requirements, ga.water_requirements,
-            ga.frost_hardy, ga.direct_sow, ga.transplant,
-            sp.ph_min, sp.ph_max, sp.nitrogen_demand, sp.phosphorus_demand,
-            sp.potassium_demand, sp.moisture_preference, sp.drainage
-     FROM cambium.plants p
-     LEFT JOIN cambium.growing_attributes ga ON ga.plant_id = p.id
-     LEFT JOIN cambium.soil_preferences sp ON sp.plant_id = p.id
-     WHERE p.slug = $1 AND p.is_published = true`,
-    [slug],
+export async function listFamilies(): Promise<{ family: string; count: number }[]> {
+  const result = await db.query<{ plant_family: string; count: number }>(
+    `SELECT plant_family, COUNT(*)::int AS count
+     FROM cambium.seeds
+     WHERE moderation_status = 'active' AND plant_family IS NOT NULL
+     GROUP BY plant_family
+     ORDER BY plant_family`,
   );
 
-  if (plantResult.rows.length === 0) return null;
+  return result.rows.map((r) => ({
+    family: r.plant_family,
+    count: r.count,
+  }));
+}
 
-  const row = plantResult.rows[0];
-  const plantId = BigInt(row.id);
+export async function getSeedById(id: number): Promise<SeedDetail | null> {
+  const result = await db.query(
+    `SELECT id, common_name, scientific_name, plant_family, illustration_key,
+            aggregate_rating, rating_count,
+            spacing_inches, maturity_days_min, maturity_days_max,
+            sunlight, watering_needs,
+            hardiness_zone_min, hardiness_zone_max,
+            frost_tolerance, weeks_to_transplant, succession_interval_weeks,
+            source
+     FROM cambium.seeds
+     WHERE id = $1 AND moderation_status = 'active'`,
+    [id],
+  );
 
-  const tagsMap = await fetchTagsForPlants([plantId]);
-  const tags = tagsMap.get(row.id as string) ?? [];
-  const companions = await getCompanions(plantId);
+  if (result.rows.length === 0) return null;
 
-  const ga = rowToGrowingAttributes(row);
-  const hasGa = Object.values(ga).some((v) => v !== null);
+  const row = result.rows[0] as Record<string, unknown>;
+  const companions = await getCompanionsForSeed(id);
 
-  const sp = rowToSoilPreferences(row);
-  const hasSp = Object.values(sp).some((v) => v !== null);
-
+  // getCompanionsForSeed returns null when seed doesn't exist, but we already
+  // confirmed it exists above, so treat null as empty array.
   return {
-    id: row.id as string,
-    slug: row.slug as string,
-    botanicalName: row.botanical_name as string,
-    commonNames: (row.common_names as string[]) ?? [],
-    description: (row.description as string | null) ?? null,
-    family: (row.family as string | null) ?? null,
-    genus: row.genus as string,
-    species: row.species as string,
-    cultivar: (row.cultivar as string | null) ?? null,
-    tags,
-    growingAttributes: hasGa ? ga : null,
-    soilPreferences: hasSp ? sp : null,
-    companions,
+    id: String(row.id),
+    commonName: row.common_name as string,
+    scientificName: (row.scientific_name as string | null) ?? null,
+    plantFamily: (row.plant_family as string | null) ?? null,
+    illustrationKey: (row.illustration_key as string | null) ?? null,
+    aggregateRating: row.aggregate_rating != null ? Number(row.aggregate_rating) : null,
+    ratingCount: row.rating_count as number,
+    spacingInches: row.spacing_inches != null ? Number(row.spacing_inches) : null,
+    maturityDaysMin: (row.maturity_days_min as number | null) ?? null,
+    maturityDaysMax: (row.maturity_days_max as number | null) ?? null,
+    sunlight: (row.sunlight as string | null) ?? null,
+    wateringNeeds: (row.watering_needs as string | null) ?? null,
+    hardinessZoneMin: (row.hardiness_zone_min as string | null) ?? null,
+    hardinessZoneMax: (row.hardiness_zone_max as string | null) ?? null,
+    frostTolerance: (row.frost_tolerance as string | null) ?? null,
+    weeksToTransplant: (row.weeks_to_transplant as number | null) ?? null,
+    successionIntervalWeeks: (row.succession_interval_weeks as number | null) ?? null,
+    source: row.source as 'openfarm' | 'community' | 'editorial',
+    companions: companions ?? [],
   };
 }
 
-export async function getCompanions(plantId: bigint): Promise<CompanionEntry[]> {
-  const result = await db.query(
-    `SELECT cd.relationship, cd.confidence, cd.notes, cd.source,
-            p.id::text AS id, p.slug, p.botanical_name, p.common_names
-     FROM cambium.companion_data cd
-     JOIN cambium.plants p ON p.id = cd.companion_plant_id
-     WHERE cd.plant_id = $1
-       AND cd.confidence >= $2
-       AND p.is_published = true
-     ORDER BY cd.relationship, cd.confidence DESC`,
-    [plantId, COMPANION_CONFIDENCE_THRESHOLD],
-  );
-
-  if (result.rows.length === 0) return [];
-
-  const companionIds = result.rows.map((r) => BigInt(r.id));
-  const tagsMap = await fetchTagsForPlants(companionIds);
-
-  return result.rows.map((row) => ({
-    plant: rowToSummary(row, tagsMap.get(row.id as string) ?? []),
-    relationship: row.relationship as 'beneficial' | 'antagonistic' | 'neutral',
-    confidence: row.confidence as number,
-    notes: (row.notes as string | null) ?? null,
-    source: (row.source as string | null) ?? null,
-  }));
-}
-
-export async function listTags(): Promise<
-  { slug: string; label: string; category: string | null; count: number }[]
-> {
-  const result = await db.query(
-    `SELECT t.slug, t.label, t.category, COUNT(pt.plant_id)::int AS count
-     FROM cambium.tags t
-     JOIN cambium.plant_tags pt ON pt.tag_id = t.id
-     JOIN cambium.plants p ON p.id = pt.plant_id AND p.is_published = true
-     GROUP BY t.id, t.slug, t.label, t.category
-     ORDER BY t.category NULLS LAST, t.label`,
-  );
-  return result.rows.map((r) => ({
-    slug: r.slug as string,
-    label: r.label as string,
-    category: (r.category as string | null) ?? null,
-    count: r.count as number,
-  }));
-}
-
-export async function getCompanionsBySlug(
-  slug: string,
+export async function getCompanionsForSeed(
+  id: number,
   options?: { relationship?: 'beneficial' | 'antagonistic' | 'neutral' },
 ): Promise<CompanionEntry[] | null> {
-  // Resolve plant ID from slug
-  const plantRow = await db.query<{ id: string }>(
-    'SELECT id::text AS id FROM cambium.plants WHERE slug = $1 AND is_published = true',
-    [slug],
+  // Confirm seed exists and is active.
+  const seedCheck = await db.query<{ id: number }>(
+    `SELECT id FROM cambium.seeds WHERE id = $1 AND moderation_status = 'active'`,
+    [id],
   );
 
-  if (plantRow.rows.length === 0) return null;
+  if (seedCheck.rows.length === 0) return null;
 
-  const plantId = BigInt(plantRow.rows[0].id);
   const relationshipFilter = options?.relationship;
+  const params: unknown[] = [id, COMPANION_CONFIDENCE_THRESHOLD];
+
+  let relationshipClause = '';
+  if (relationshipFilter) {
+    params.push(relationshipFilter);
+    relationshipClause = `AND c.relationship = $${params.length}`;
+  }
 
   const result = await db.query(
-    `SELECT cd.relationship, cd.confidence, cd.notes, cd.source,
-            p.id::text AS id, p.slug, p.botanical_name, p.common_names
-     FROM cambium.companion_data cd
-     JOIN cambium.plants p ON p.id = cd.companion_plant_id
-     WHERE cd.plant_id = $1
-       AND cd.confidence >= $2
-       AND p.is_published = true
-       ${relationshipFilter ? 'AND cd.relationship = $3' : ''}
-     ORDER BY cd.confidence DESC`,
-    relationshipFilter
-      ? [plantId, COMPANION_CONFIDENCE_THRESHOLD, relationshipFilter]
-      : [plantId, COMPANION_CONFIDENCE_THRESHOLD],
+    `SELECT c.relationship, c.confidence, c.notes, c.source,
+            s.id, s.common_name, s.scientific_name, s.plant_family,
+            s.illustration_key, s.aggregate_rating, s.rating_count
+     FROM cambium.companions c
+     JOIN cambium.seeds s ON s.id = c.companion_seed_id
+     WHERE c.seed_id = $1
+       AND c.confidence >= $2
+       AND s.moderation_status = 'active'
+       ${relationshipClause}
+     ORDER BY c.relationship, c.confidence DESC`,
+    params,
   );
 
-  if (result.rows.length === 0) return [];
-
-  const companionIds = result.rows.map((r) => BigInt(r.id as string));
-  const tagsMap = await fetchTagsForPlants(companionIds);
-
-  return result.rows.map((row) => ({
-    plant: rowToSummary(row, tagsMap.get(row.id as string) ?? []),
-    relationship: row.relationship as 'beneficial' | 'antagonistic' | 'neutral',
-    confidence: row.confidence as number,
-    notes: (row.notes as string | null) ?? null,
-    source: (row.source as string | null) ?? null,
-  }));
+  return result.rows.map((row) => {
+    const r = row as Record<string, unknown>;
+    return {
+      seed: rowToSeedSummary(r),
+      relationship: r.relationship as 'beneficial' | 'antagonistic' | 'neutral',
+      confidence: r.confidence as number,
+      notes: (r.notes as string | null) ?? null,
+      source: (r.source as string | null) ?? null,
+    };
+  });
 }
