@@ -23,4 +23,15 @@ jobs:
             npm ci
             npm run build
             pm2 reload vernal --update-env
+            sleep 5
+            pm2 jlist | node -e '
+            const list = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const p = list.find(x => x.name === "vernal");
+            if (!p) { console.error("FAIL: vernal not in pm2 list"); process.exit(1); }
+            if (p.pm2_env.status !== "online") { console.error("FAIL: status " + p.pm2_env.status); process.exit(1); }
+            const upSec = (Date.now() - p.pm2_env.pm_uptime) / 1000;
+            if (upSec > 60) { console.error("FAIL: uptime " + upSec + "s — reload did not restart the process"); process.exit(1); }
+            console.log("OK: vernal online, uptime " + Math.round(upSec) + "s");
+            '
+            curl -fsS --max-time 10 http://localhost:3000/health
             echo "Deploy complete: $(date)"
