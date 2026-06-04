@@ -5,7 +5,7 @@ import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
-import plantsRouter from './routes/plants';
+import catalogueRouter from './routes/catalogue';
 import gardensRouter from './routes/gardens';
 import { sessionMiddleware } from './middleware/session';
 import { initPassport, passport } from './lib/oauth/index';
@@ -38,7 +38,7 @@ app.use(passport.initialize());
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/health', healthRouter);
 app.use('/api/auth', authRouter);
-app.use('/api', plantsRouter);
+app.use('/api', catalogueRouter);
 app.use('/api', gardensRouter);
 
 // ── Start ────────────────────────────────────────────────────────────────────

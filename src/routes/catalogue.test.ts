@@ -1,0 +1,145 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import request from 'supertest';
+import { Pool } from 'pg';
+import app from '../index';
+
+const url = process.env.TEST_DATABASE_URL;
+if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
+
+const pool = new Pool({
+  connectionString: url,
+  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+});
+
+let tomatoId: number;
+
+beforeAll(async () => {
+  const res = await pool.query<{ id: number }>(
+    "SELECT id FROM cambium.seeds WHERE common_name = 'Tomato' AND moderation_status = 'active'",
+  );
+  tomatoId = res.rows[0].id;
+});
+
+afterAll(() => pool.end());
+
+describe('GET /api/catalogue/seeds', () => {
+  it('returns matching seeds for text query', async () => {
+    const res = await request(app).get('/api/catalogue/seeds?q=tomato');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBeGreaterThan(0);
+    expect(res.body.data[0].commonName).toContain('Tomato');
+  });
+
+  it('browse with no query returns all seeds ordered by commonName', async () => {
+    const res = await request(app).get('/api/catalogue/seeds');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBeGreaterThanOrEqual(12);
+  });
+
+  it('filters by family', async () => {
+    const res = await request(app).get('/api/catalogue/seeds?family=Solanaceae');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBeGreaterThan(0);
+  });
+
+  it('respects limit parameter', async () => {
+    const res = await request(app).get('/api/catalogue/seeds?limit=3');
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('GET /api/catalogue/seeds/:id', () => {
+  it('returns seed detail for valid id', async () => {
+    const res = await request(app).get(`/api/catalogue/seeds/${tomatoId}`);
+    expect(res.status).toBe(200);
+    expect(res.body.commonName).toBe('Tomato');
+    expect(typeof res.body.maturityDaysMin === 'number' || res.body.maturityDaysMin === null).toBe(
+      true,
+    );
+  });
+
+  it('returns 404 for unknown id', async () => {
+    const res = await request(app).get('/api/catalogue/seeds/999999');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBeDefined();
+  });
+
+  it('returns 400 for non-numeric id', async () => {
+    const res = await request(app).get('/api/catalogue/seeds/abc');
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/catalogue/seeds/:id/companions', () => {
+  it('returns companions for valid id', async () => {
+    const res = await request(app).get(`/api/catalogue/seeds/${tomatoId}/companions`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    res.body.data.forEach((c: { confidence: number }) => {
+      expect(c.confidence).toBeGreaterThanOrEqual(40);
+    });
+  });
+
+  it('filters by relationship=beneficial', async () => {
+    const res = await request(app).get(
+      `/api/catalogue/seeds/${tomatoId}/companions?relationship=beneficial`,
+    );
+    expect(res.status).toBe(200);
+    res.body.data.forEach((c: { relationship: string }) => {
+      expect(c.relationship).toBe('beneficial');
+    });
+  });
+
+  it('returns 400 for invalid relationship value', async () => {
+    const res = await request(app).get(
+      `/api/catalogue/seeds/${tomatoId}/companions?relationship=bogus`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 for unknown seed id', async () => {
+    const res = await request(app).get('/api/catalogue/seeds/999999/companions');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for non-numeric companion seed id', async () => {
+    const res = await request(app).get('/api/catalogue/seeds/abc/companions');
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 200 with empty data array for seed with no companions', async () => {
+    const insertRes = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+       VALUES ('cataloguetestnocompanionsxyz', 'active', 'editorial')
+       RETURNING id`,
+    );
+    const newId = insertRes.rows[0].id;
+
+    const res = await request(app).get(`/api/catalogue/seeds/${newId}/companions`);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([]);
+  });
+});
+
+describe('GET /api/catalogue/families', () => {
+  it('returns families with positive counts', async () => {
+    const res = await request(app).get('/api/catalogue/families');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    res.body.data.forEach((f: { count: number }) => {
+      expect(f.count).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('rate limiting', () => {
+  it('returns 429 after exceeding rate limit', async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 61 }, () => request(app).get('/api/catalogue/seeds?q=x')),
+    );
+    const statuses = responses.map((r) => r.status);
+    expect(statuses.some((s) => s === 429)).toBe(true);
+  });
+});
