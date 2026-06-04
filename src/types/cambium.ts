@@ -1,66 +1,39 @@
-export interface PlantTag {
-  slug: string;
-  label: string;
-  category: string | null;
+export interface SeedSummary {
+  id: string;                       // int serialized as string
+  commonName: string;
+  scientificName: string | null;
+  plantFamily: string | null;
+  illustrationKey: string | null;
+  aggregateRating: number | null;
+  ratingCount: number;
 }
 
-export interface PlantSummary {
-  id: string; // bigint serialized as string for JSON safety
-  slug: string;
-  botanicalName: string;
-  commonNames: string[];
-  tags: PlantTag[];
-}
-
-export interface GrowingAttributes {
-  daysToGerminationMin: number | null;
-  daysToGerminationMax: number | null;
-  daysToMaturityMin: number | null;
-  daysToMaturityMax: number | null;
-  spacingCmMin: number | null;
-  spacingCmMax: number | null;
-  rowSpacingCm: number | null;
-  plantHeightCmMin: number | null;
-  plantHeightCmMax: number | null;
-  sunRequirements: string | null;
-  waterRequirements: string | null;
-  frostHardy: boolean | null;
-  directSow: boolean | null;
-  transplant: boolean | null;
-}
-
-export interface SoilPreferences {
-  phMin: number | null;
-  phMax: number | null;
-  nitrogenDemand: string | null;
-  phosphorusDemand: string | null;
-  potassiumDemand: string | null;
-  moisturePreference: string | null;
-  drainage: string | null;
+export interface SeedDetail extends SeedSummary {
+  spacingInches: number | null;
+  maturityDaysMin: number | null;
+  maturityDaysMax: number | null;
+  sunlight: string | null;
+  wateringNeeds: string | null;
+  hardinessZoneMin: string | null;
+  hardinessZoneMax: string | null;
+  frostTolerance: string | null;
+  weeksToTransplant: number | null;
+  successionIntervalWeeks: number | null;
+  source: 'openfarm' | 'community' | 'editorial';
+  companions: CompanionEntry[];
 }
 
 export interface CompanionEntry {
-  plant: PlantSummary;
+  seed: SeedSummary;
   relationship: 'beneficial' | 'antagonistic' | 'neutral';
   confidence: number;
   notes: string | null;
   source: string | null;
 }
 
-export interface PlantDetail extends PlantSummary {
-  description: string | null;
-  family: string | null;
-  genus: string;
-  species: string;
-  cultivar: string | null;
-  growingAttributes: GrowingAttributes | null;
-  soilPreferences: SoilPreferences | null;
-  companions: CompanionEntry[];
-}
-
-export interface PlantSearchOptions {
-  query: string;
+export interface SeedSearchOptions {
+  query?: string;
+  family?: string;
   limit?: number;
   offset?: number;
-  tagSlug?: string;
 }

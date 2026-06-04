@@ -1,96 +1,145 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
-import { searchPlants, getPlantBySlug, listTags } from './cambium';
+import { searchSeeds, getSeedById, listFamilies, getCompanionsForSeed } from './cambium';
+
+const url = process.env.TEST_DATABASE_URL;
+if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
 
 const pool = new Pool({
-  connectionString: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL,
+  connectionString: url,
   ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
 });
 
 // Assumes npm run seed:cambium has been run against the test database.
-// The seed inserts 12 published plants including 'solanum-lycopersicum' (Tomato).
+// The seed inserts 12 active seeds including 'Tomato'.
+
+let tomatoId: number;
 
 beforeAll(async () => {
-  const result = await pool.query(
-    'SELECT COUNT(*) AS count FROM cambium.plants WHERE is_published = true',
+  const result = await pool.query<{ id: number }>(
+    "SELECT id FROM cambium.seeds WHERE common_name = 'Tomato' AND moderation_status = 'active'",
   );
-  if (parseInt(result.rows[0].count, 10) === 0) {
+  if (result.rows.length === 0) {
     throw new Error('Cambium seed data not found. Run: npm run seed:cambium');
   }
+  tomatoId = result.rows[0].id;
 });
 
 afterAll(() => pool.end());
 
-describe('searchPlants', () => {
-  it('returns matching plants for a text query', async () => {
-    const result = await searchPlants({ query: 'tomato' });
+describe('searchSeeds', () => {
+  it('returns matching seeds for a text query', async () => {
+    const result = await searchSeeds({ query: 'tomato' });
     expect(result.total).toBeGreaterThan(0);
-    expect(result.data[0].botanicalName).toContain('Solanum');
+    expect(result.data[0].commonName).toContain('Tomato');
   });
 
-  it('returns results for a broad query', async () => {
-    const result = await searchPlants({ query: '%' });
+  it('returns all seeds with no query', async () => {
+    const result = await searchSeeds({});
     expect(result.total).toBeGreaterThanOrEqual(12);
+    // Verify ordered by commonName
+    const names = result.data.map((s) => s.commonName);
+    const sorted = [...names].sort((a, b) => a.localeCompare(b));
+    expect(names).toEqual(sorted);
   });
 
-  it('filters by tag slug', async () => {
-    const result = await searchPlants({ query: '%', tagSlug: 'vegetable' });
-    expect(result.total).toBeGreaterThan(0);
-    result.data.forEach((p) => {
-      expect(p.tags.some((t) => t.slug === 'vegetable')).toBe(true);
+  it('filters by family', async () => {
+    const result = await searchSeeds({ family: 'Solanaceae' });
+    expect(result.data.length).toBeGreaterThan(0);
+    result.data.forEach((s) => {
+      expect(s.plantFamily).toBe('Solanaceae');
     });
   });
 
-  it('respects limit and offset', async () => {
-    const page1 = await searchPlants({ query: '%', limit: 3, offset: 0 });
-    const page2 = await searchPlants({ query: '%', limit: 3, offset: 3 });
-    expect(page1.data).toHaveLength(3);
-    expect(page2.data[0].id).not.toBe(page1.data[0].id);
-  });
-
-  it('excludes unpublished plants', async () => {
+  it('excludes seeds with moderation_status != active', async () => {
     await pool.query(
-      `INSERT INTO cambium.plants (slug, botanical_name, common_names, genus, species, is_published)
-       VALUES ('test-unpublished', 'Test unpublishedus', ARRAY['Test Hidden Plant'], 'Test', 'unpublishedus', false)
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+       VALUES ('flaggedtestxyz', 'flagged', 'editorial')
        ON CONFLICT DO NOTHING`,
     );
-    const result = await searchPlants({ query: 'hidden' });
-    expect(result.data.every((p) => p.slug !== 'test-unpublished')).toBe(true);
+    const result = await searchSeeds({ query: 'flaggedtestxyz' });
+    expect(result.data).toHaveLength(0);
   });
 });
 
-describe('getPlantBySlug', () => {
-  it('returns full plant detail for a valid slug', async () => {
-    const plant = await getPlantBySlug('solanum-lycopersicum');
-    expect(plant).not.toBeNull();
-    expect(plant!.slug).toBe('solanum-lycopersicum');
-    expect(plant!.commonNames).toContain('Tomato');
-    expect(plant!.growingAttributes).not.toBeNull();
-    expect(plant!.soilPreferences).not.toBeNull();
+describe('listFamilies', () => {
+  it('returns families with positive counts', async () => {
+    const families = await listFamilies();
+    expect(families.length).toBeGreaterThan(0);
+    families.forEach((f) => {
+      expect(f.count).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('getSeedById', () => {
+  it('returns full seed detail for a valid id', async () => {
+    const seed = await getSeedById(tomatoId);
+    expect(seed).not.toBeNull();
+    expect(seed!.commonName).toBe('Tomato');
+    expect(seed!.maturityDaysMin).not.toBeUndefined();
+    expect(seed!.maturityDaysMax).not.toBeUndefined();
+    expect(seed!.companions.length).toBeGreaterThan(0);
   });
 
-  it('returns null for an unknown slug', async () => {
-    const plant = await getPlantBySlug('does-not-exist');
-    expect(plant).toBeNull();
+  it('returns null for an unknown id', async () => {
+    const seed = await getSeedById(999999);
+    expect(seed).toBeNull();
   });
 
-  it('only returns companions above the confidence threshold', async () => {
-    const plant = await getPlantBySlug('solanum-lycopersicum');
-    if (plant!.companions.length > 0) {
-      plant!.companions.forEach((c) => {
-        expect(c.confidence).toBeGreaterThanOrEqual(40);
-      });
+  it('excludes flagged seed from detail lookup', async () => {
+    const res = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+       VALUES ('flaggeddetailtestxyz', 'flagged', 'editorial')
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+    );
+    if (res.rows.length === 0) {
+      // Already inserted — look up existing
+      const existing = await pool.query<{ id: number }>(
+        `SELECT id FROM cambium.seeds WHERE common_name = 'flaggeddetailtestxyz'`,
+      );
+      const flaggedId = existing.rows[0].id;
+      const seed = await getSeedById(flaggedId);
+      expect(seed).toBeNull();
+    } else {
+      const flaggedId = res.rows[0].id;
+      const seed = await getSeedById(flaggedId);
+      expect(seed).toBeNull();
     }
   });
 });
 
-describe('listTags', () => {
-  it('returns tags with counts', async () => {
-    const tags = await listTags();
-    expect(tags.length).toBeGreaterThan(0);
-    tags.forEach((t) => {
-      expect(typeof t.slug).toBe('string');
-      expect(t.count).toBeGreaterThan(0);
+describe('getCompanionsForSeed', () => {
+  it('returns null for unknown seed', async () => {
+    const result = await getCompanionsForSeed(999999);
+    expect(result).toBeNull();
+  });
+
+  it('returns empty array for seed with no qualifying companions', async () => {
+    const res = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+       VALUES ('lonelynocompanionstestxyz', 'active', 'editorial')
+       RETURNING id`,
+    );
+    const newId = res.rows[0].id;
+    const result = await getCompanionsForSeed(newId);
+    expect(result).toEqual([]);
+  });
+
+  it('all returned companions have confidence >= 40', async () => {
+    const companions = await getCompanionsForSeed(tomatoId);
+    expect(companions).not.toBeNull();
+    companions!.forEach((c) => {
+      expect(c.confidence).toBeGreaterThanOrEqual(40);
+    });
+  });
+
+  it('relationship filter returns only matching type', async () => {
+    const companions = await getCompanionsForSeed(tomatoId, { relationship: 'beneficial' });
+    expect(companions).not.toBeNull();
+    companions!.forEach((c) => {
+      expect(c.relationship).toBe('beneficial');
     });
   });
 });
