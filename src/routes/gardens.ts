@@ -22,13 +22,15 @@ interface GardenRow {
 interface BedRow {
   id: string;
   garden_id: string;
-  name: string;
-  bed_type: string;
-  width_cm: string | null;
-  length_cm: string | null;
-  depth_cm: string | null;
-  notes: string | null;
-  sort_order: number;
+  season: number;
+  type: 'grid' | 'freeform';
+  label: string;
+  grid_x: number | null;
+  grid_y: number | null;
+  grid_cols: number | null;
+  grid_rows: number | null;
+  freeform_points: number[] | null;
+  freeform_closed: boolean | null;
   created_at: string;
   updated_at: string;
 }
@@ -40,8 +42,10 @@ const GARDEN_SELECT = `
 `;
 
 const BED_SELECT = `
-  id::text, garden_id::text, name, bed_type, width_cm, length_cm, depth_cm,
-  notes, sort_order, created_at, updated_at
+  id::text, garden_id::text, season, type, label,
+  grid_x, grid_y, grid_cols, grid_rows,
+  freeform_points, freeform_closed,
+  created_at, updated_at
 `;
 
 function formatGarden(row: GardenRow) {
@@ -61,20 +65,74 @@ function formatBed(row: BedRow) {
   return {
     id: row.id,
     gardenId: row.garden_id,
-    name: row.name,
-    bedType: row.bed_type,
-    widthCm: row.width_cm != null ? Number(row.width_cm) : null,
-    lengthCm: row.length_cm != null ? Number(row.length_cm) : null,
-    depthCm: row.depth_cm != null ? Number(row.depth_cm) : null,
-    notes: row.notes,
-    sortOrder: row.sort_order,
+    season: row.season,
+    type: row.type,
+    label: row.label,
+    grid:
+      row.type === 'grid'
+        ? { x: row.grid_x, y: row.grid_y, cols: row.grid_cols, rows: row.grid_rows }
+        : null,
+    freeform:
+      row.type === 'freeform'
+        ? { points: row.freeform_points, closed: row.freeform_closed }
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-const VALID_BED_TYPES = new Set(['raised_bed', 'row', 'container', 'in_ground', 'vertical']);
 const VALID_STYLES = new Set(['grid', 'freeform', 'mixed']);
+
+// ── Validation helpers ────────────────────────────────────────────────────────
+
+function validateSeason(v: unknown): { value: number } | { error: string } {
+  const n = typeof v === 'string' ? parseInt(v, 10) : v;
+  if (!Number.isInteger(n) || (n as number) < 2000 || (n as number) > 2100) {
+    return { error: 'season must be an integer between 2000 and 2100' };
+  }
+  return { value: n as number };
+}
+
+function validateGrid(obj: unknown): string | null {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return 'grid must be an object with x, y, cols, rows';
+  }
+  const g = obj as Record<string, unknown>;
+  if (
+    !Number.isInteger(g.x) ||
+    !Number.isInteger(g.y) ||
+    !Number.isInteger(g.cols) ||
+    !Number.isInteger(g.rows)
+  ) {
+    return 'grid.x, grid.y, grid.cols, and grid.rows must all be integers';
+  }
+  if ((g.cols as number) < 1 || (g.cols as number) > 1000) {
+    return 'grid.cols must be between 1 and 1000';
+  }
+  if ((g.rows as number) < 1 || (g.rows as number) > 1000) {
+    return 'grid.rows must be between 1 and 1000';
+  }
+  return null;
+}
+
+function validateFreeform(obj: unknown): string | null {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return 'freeform must be an object with points and closed';
+  }
+  const f = obj as Record<string, unknown>;
+  if (!Array.isArray(f.points)) return 'freeform.points must be an array';
+  if (f.points.length < 4 || f.points.length > 2000) {
+    return 'freeform.points length must be between 4 and 2000';
+  }
+  if (f.points.length % 2 !== 0) {
+    return 'freeform.points must have an even number of elements';
+  }
+  if (!f.points.every((p: unknown) => typeof p === 'number' && isFinite(p))) {
+    return 'freeform.points must contain only finite numbers';
+  }
+  if (typeof f.closed !== 'boolean') return 'freeform.closed must be a boolean';
+  return null;
+}
 
 // ── Gardens ───────────────────────────────────────────────────────────────────
 
@@ -137,7 +195,7 @@ router.post('/gardens', async (req, res) => {
   }
 });
 
-// GET /api/gardens/:id  (includes beds)
+// GET /api/gardens/:id  (includes beds filtered by season)
 router.get('/gardens/:id', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.id as string;
@@ -153,12 +211,21 @@ router.get('/gardens/:id', async (req, res) => {
       return res.status(404).json({ error: 'Garden not found' });
     }
 
+    let season: number;
+    if (req.query.season !== undefined) {
+      const parsed = validateSeason(req.query.season);
+      if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+      season = parsed.value;
+    } else {
+      season = new Date().getFullYear();
+    }
+
     const bedsResult = await db.query<BedRow>(
       `SELECT ${BED_SELECT}
-       FROM garden_beds
-       WHERE garden_id = $1
-       ORDER BY sort_order ASC, created_at ASC`,
-      [gardenId],
+       FROM beds
+       WHERE garden_id = $1 AND season = $2
+       ORDER BY created_at ASC`,
+      [gardenId, season],
     );
 
     res.json({
@@ -280,12 +347,21 @@ router.get('/gardens/:gardenId/beds', async (req, res) => {
       return res.status(404).json({ error: 'Garden not found' });
     }
 
+    let season: number;
+    if (req.query.season !== undefined) {
+      const parsed = validateSeason(req.query.season);
+      if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+      season = parsed.value;
+    } else {
+      season = new Date().getFullYear();
+    }
+
     const result = await db.query<BedRow>(
       `SELECT ${BED_SELECT}
-       FROM garden_beds
-       WHERE garden_id = $1
-       ORDER BY sort_order ASC, created_at ASC`,
-      [gardenId],
+       FROM beds
+       WHERE garden_id = $1 AND season = $2
+       ORDER BY created_at ASC`,
+      [gardenId, season],
     );
     res.json({ data: result.rows.map(formatBed) });
   } catch (err) {
@@ -308,41 +384,63 @@ router.post('/gardens/:gardenId/beds', async (req, res) => {
       return res.status(404).json({ error: 'Garden not found' });
     }
 
-    const { name, bedType = 'raised_bed', widthCm, lengthCm, depthCm, notes } =
-      req.body as Record<string, unknown>;
+    const { type, label, season: rawSeason, grid, freeform } = req.body as Record<string, unknown>;
 
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      return res.status(400).json({ error: 'name is required' });
-    }
-    if (typeof bedType === 'string' && !VALID_BED_TYPES.has(bedType)) {
-      return res.status(400).json({
-        error: `bedType must be one of: ${[...VALID_BED_TYPES].join(', ')}`,
-      });
+    if (type !== 'grid' && type !== 'freeform') {
+      return res.status(400).json({ error: "type must be 'grid' or 'freeform'" });
     }
 
-    const countResult = await db.query<{ count: string }>(
-      'SELECT COUNT(*)::text AS count FROM garden_beds WHERE garden_id = $1',
-      [gardenId],
-    );
-    const sortOrder = parseInt(countResult.rows[0].count, 10);
+    let season: number;
+    if (rawSeason !== undefined) {
+      const parsed = validateSeason(rawSeason);
+      if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+      season = parsed.value;
+    } else {
+      season = new Date().getFullYear();
+    }
 
-    const result = await db.query<BedRow>(
-      `INSERT INTO garden_beds
-         (garden_id, name, bed_type, width_cm, length_cm, depth_cm, notes, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING ${BED_SELECT}`,
-      [
-        gardenId,
-        name.trim(),
-        bedType,
-        typeof widthCm === 'number' ? widthCm : null,
-        typeof lengthCm === 'number' ? lengthCm : null,
-        typeof depthCm === 'number' ? depthCm : null,
-        typeof notes === 'string' ? notes.trim() || null : null,
-        sortOrder,
-      ],
-    );
-    res.status(201).json(formatBed(result.rows[0]));
+    const labelStr = typeof label === 'string' ? label.trim() : '';
+    if (labelStr.length > 255) {
+      return res.status(400).json({ error: 'label must be 255 characters or fewer' });
+    }
+
+    if (type === 'grid') {
+      if (freeform !== undefined) {
+        return res.status(400).json({ error: 'freeform must not be provided for a grid bed' });
+      }
+      if (grid === undefined) {
+        return res.status(400).json({ error: 'grid is required for type grid' });
+      }
+      const gridErr = validateGrid(grid);
+      if (gridErr) return res.status(400).json({ error: gridErr });
+
+      const g = grid as Record<string, number>;
+      const result = await db.query<BedRow>(
+        `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING ${BED_SELECT}`,
+        [gardenId, season, 'grid', labelStr, g.x, g.y, g.cols, g.rows],
+      );
+      return res.status(201).json(formatBed(result.rows[0]));
+    } else {
+      if (grid !== undefined) {
+        return res.status(400).json({ error: 'grid must not be provided for a freeform bed' });
+      }
+      if (freeform === undefined) {
+        return res.status(400).json({ error: 'freeform is required for type freeform' });
+      }
+      const freeformErr = validateFreeform(freeform);
+      if (freeformErr) return res.status(400).json({ error: freeformErr });
+
+      const f = freeform as Record<string, unknown>;
+      const result = await db.query<BedRow>(
+        `INSERT INTO beds (garden_id, season, type, label, freeform_points, freeform_closed)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING ${BED_SELECT}`,
+        [gardenId, season, 'freeform', labelStr, JSON.stringify(f.points), f.closed],
+      );
+      return res.status(201).json(formatBed(result.rows[0]));
+    }
   } catch (err) {
     console.error('POST /gardens/:gardenId/beds error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -364,43 +462,105 @@ router.patch('/gardens/:gardenId/beds/:bedId', async (req, res) => {
       return res.status(404).json({ error: 'Garden not found' });
     }
 
-    const existing = await db.query(
-      'SELECT id FROM garden_beds WHERE id = $1 AND garden_id = $2',
+    const bedResult = await db.query<{ id: string; type: 'grid' | 'freeform' }>(
+      'SELECT id::text, type FROM beds WHERE id = $1 AND garden_id = $2',
       [bedId, gardenId],
     );
-    if (existing.rows.length === 0) {
+    if (bedResult.rows.length === 0) {
       return res.status(404).json({ error: 'Bed not found' });
     }
+    const currentType = bedResult.rows[0].type;
 
-    const { name, bedType, widthCm, lengthCm, depthCm, notes } =
-      req.body as Record<string, unknown>;
+    const body = req.body as Record<string, unknown>;
+
+    if (body.season !== undefined) {
+      return res.status(400).json({ error: 'season cannot be changed' });
+    }
 
     const updates: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
 
-    if (name !== undefined) {
-      if (typeof name !== 'string' || name.trim().length === 0) {
-        return res.status(400).json({ error: 'name cannot be empty' });
+    if (body.label !== undefined) {
+      const labelStr = typeof body.label === 'string' ? body.label.trim() : '';
+      if (labelStr.length > 255) {
+        return res.status(400).json({ error: 'label must be 255 characters or fewer' });
       }
-      updates.push(`name = $${idx++}`);
-      values.push((name as string).trim());
+      updates.push(`label = $${idx++}`);
+      values.push(labelStr);
     }
-    if (bedType !== undefined) {
-      if (!VALID_BED_TYPES.has(bedType as string)) {
-        return res.status(400).json({
-          error: `bedType must be one of: ${[...VALID_BED_TYPES].join(', ')}`,
-        });
+
+    const newType = body.type as 'grid' | 'freeform' | undefined;
+
+    if (newType !== undefined && newType !== 'grid' && newType !== 'freeform') {
+      return res.status(400).json({ error: "type must be 'grid' or 'freeform'" });
+    }
+
+    if (newType !== undefined && newType !== currentType) {
+      // Type conversion — full geometry for the new type is required
+      if (newType === 'grid') {
+        if (body.freeform !== undefined) {
+          return res.status(400).json({ error: 'freeform must not be provided when switching to grid' });
+        }
+        if (body.grid === undefined) {
+          return res.status(400).json({ error: 'grid is required when changing type to grid' });
+        }
+        const gridErr = validateGrid(body.grid);
+        if (gridErr) return res.status(400).json({ error: gridErr });
+        const g = body.grid as Record<string, number>;
+        updates.push(`type = $${idx++}`);        values.push('grid');
+        updates.push(`grid_x = $${idx++}`);      values.push(g.x);
+        updates.push(`grid_y = $${idx++}`);      values.push(g.y);
+        updates.push(`grid_cols = $${idx++}`);   values.push(g.cols);
+        updates.push(`grid_rows = $${idx++}`);   values.push(g.rows);
+        updates.push(`freeform_points = $${idx++}`);  values.push(null);
+        updates.push(`freeform_closed = $${idx++}`);  values.push(null);
+      } else {
+        // Switching to freeform
+        if (body.grid !== undefined) {
+          return res.status(400).json({ error: 'grid must not be provided when switching to freeform' });
+        }
+        if (body.freeform === undefined) {
+          return res.status(400).json({ error: 'freeform is required when changing type to freeform' });
+        }
+        const freeformErr = validateFreeform(body.freeform);
+        if (freeformErr) return res.status(400).json({ error: freeformErr });
+        const f = body.freeform as Record<string, unknown>;
+        updates.push(`type = $${idx++}`);              values.push('freeform');
+        updates.push(`freeform_points = $${idx++}`);   values.push(JSON.stringify(f.points));
+        updates.push(`freeform_closed = $${idx++}`);   values.push(f.closed);
+        updates.push(`grid_x = $${idx++}`);            values.push(null);
+        updates.push(`grid_y = $${idx++}`);            values.push(null);
+        updates.push(`grid_cols = $${idx++}`);         values.push(null);
+        updates.push(`grid_rows = $${idx++}`);         values.push(null);
       }
-      updates.push(`bed_type = $${idx++}`);
-      values.push(bedType);
-    }
-    if (widthCm !== undefined)  { updates.push(`width_cm = $${idx++}`);  values.push(widthCm ?? null); }
-    if (lengthCm !== undefined) { updates.push(`length_cm = $${idx++}`); values.push(lengthCm ?? null); }
-    if (depthCm !== undefined)  { updates.push(`depth_cm = $${idx++}`);  values.push(depthCm ?? null); }
-    if (notes !== undefined) {
-      updates.push(`notes = $${idx++}`);
-      values.push(typeof notes === 'string' ? notes.trim() || null : null);
+    } else {
+      // No type change — geometry update if provided must match current type
+      const effectiveType = newType ?? currentType;
+
+      if (body.grid !== undefined) {
+        if (effectiveType !== 'grid') {
+          return res.status(400).json({ error: 'grid geometry does not match bed type' });
+        }
+        const gridErr = validateGrid(body.grid);
+        if (gridErr) return res.status(400).json({ error: gridErr });
+        const g = body.grid as Record<string, number>;
+        updates.push(`grid_x = $${idx++}`);    values.push(g.x);
+        updates.push(`grid_y = $${idx++}`);    values.push(g.y);
+        updates.push(`grid_cols = $${idx++}`); values.push(g.cols);
+        updates.push(`grid_rows = $${idx++}`); values.push(g.rows);
+      }
+
+      if (body.freeform !== undefined) {
+        if (effectiveType !== 'freeform') {
+          return res.status(400).json({ error: 'freeform geometry does not match bed type' });
+        }
+        const freeformErr = validateFreeform(body.freeform);
+        if (freeformErr) return res.status(400).json({ error: freeformErr });
+        const f = body.freeform as Record<string, unknown>;
+        updates.push(`freeform_points = $${idx++}`); values.push(JSON.stringify(f.points));
+        updates.push(`freeform_closed = $${idx++}`); values.push(f.closed);
+      }
     }
 
     if (updates.length === 0) {
@@ -411,7 +571,7 @@ router.patch('/gardens/:gardenId/beds/:bedId', async (req, res) => {
     values.push(bedId);
 
     const result = await db.query<BedRow>(
-      `UPDATE garden_beds SET ${updates.join(', ')}
+      `UPDATE beds SET ${updates.join(', ')}
        WHERE id = $${idx}
        RETURNING ${BED_SELECT}`,
       values,
@@ -439,7 +599,7 @@ router.delete('/gardens/:gardenId/beds/:bedId', async (req, res) => {
     }
 
     const result = await db.query(
-      'DELETE FROM garden_beds WHERE id = $1 AND garden_id = $2 RETURNING id',
+      'DELETE FROM beds WHERE id = $1 AND garden_id = $2 RETURNING id',
       [bedId, gardenId],
     );
     if (result.rows.length === 0) {

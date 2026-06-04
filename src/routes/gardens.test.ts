@@ -4,13 +4,14 @@ import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
 
-const pool = new Pool({
-  connectionString: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL,
-});
+const url = process.env.TEST_DATABASE_URL;
+if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
+
+const pool = new Pool({ connectionString: url });
 
 async function resetDb() {
   await pool.query(
-    'TRUNCATE accounts, guest_sessions, gardens, garden_beds RESTART IDENTITY CASCADE',
+    'TRUNCATE accounts, guest_sessions, gardens, beds RESTART IDENTITY CASCADE',
   );
 }
 
@@ -142,6 +143,8 @@ describe('Gardens — authenticated CRUD', () => {
 describe('Beds — nested CRUD', () => {
   let agent: ReturnType<typeof request.agent>;
   let gardenId: string;
+  let gridBedId: string;
+  let freeformBedId: string;
 
   beforeAll(async () => {
     await createUser('bed-user@example.com');
@@ -150,71 +153,149 @@ describe('Beds — nested CRUD', () => {
     gardenId = res.body.id;
   });
 
-  it('creates a bed with sort_order 0', async () => {
+  // Test 1
+  it('POST grid bed → 201, correct shape', async () => {
     const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({
-      name: 'Raised Bed 1',
-      bedType: 'raised_bed',
-      widthCm: 120,
-      lengthCm: 240,
+      type: 'grid',
+      label: 'Herb Bed',
+      grid: { x: 0, y: 0, cols: 4, rows: 8 },
     });
     expect(res.status).toBe(201);
-    expect(res.body.name).toBe('Raised Bed 1');
-    expect(res.body.bedType).toBe('raised_bed');
-    expect(res.body.widthCm).toBe(120);
-    expect(res.body.sortOrder).toBe(0);
+    expect(res.body.grid.cols).toBe(4);
+    expect(res.body.season).toBe(new Date().getFullYear());
+    expect(res.body.freeform).toBeNull();
+    gridBedId = res.body.id;
   });
 
-  it('second bed gets sort_order 1', async () => {
-    const res = await agent
-      .post(`/api/gardens/${gardenId}/beds`)
-      .send({ name: 'Raised Bed 2', bedType: 'raised_bed' });
+  // Test 2
+  it('POST freeform bed → 201, correct shape', async () => {
+    const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({
+      type: 'freeform',
+      freeform: { points: [0, 0, 100, 0, 100, 80, 0, 80], closed: true },
+    });
     expect(res.status).toBe(201);
-    expect(res.body.sortOrder).toBe(1);
+    expect(res.body.freeform.points).toHaveLength(8);
+    expect(res.body.grid).toBeNull();
+    freeformBedId = res.body.id;
   });
 
-  it('created beds appear in GET /gardens/:id beds array', async () => {
-    const res = await agent.get(`/api/gardens/${gardenId}`);
-    expect(res.status).toBe(200);
-    expect(res.body.beds.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('lists beds via GET /gardens/:gardenId/beds', async () => {
-    const res = await agent.get(`/api/gardens/${gardenId}/beds`);
-    expect(res.status).toBe(200);
-    expect(Array.isArray(res.body.data)).toBe(true);
-  });
-
-  it('returns 400 for an invalid bed type', async () => {
-    const res = await agent
-      .post(`/api/gardens/${gardenId}/beds`)
-      .send({ name: 'Invalid Bed', bedType: 'magic_carpet' });
+  // Test 3
+  it('POST with type grid but missing grid → 400', async () => {
+    const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({ type: 'grid' });
     expect(res.status).toBe(400);
   });
 
-  it('updates a bed name', async () => {
-    const create = await agent
-      .post(`/api/gardens/${gardenId}/beds`)
-      .send({ name: 'Old Bed Name' });
+  // Test 4
+  it('POST with grid cols 0 → 400', async () => {
+    const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({
+      type: 'grid',
+      grid: { x: 0, y: 0, cols: 0, rows: 4 },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  // Test 5
+  it('POST with freeform points of odd length → 400', async () => {
+    const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({
+      type: 'freeform',
+      freeform: { points: [0, 0, 100], closed: true },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  // Test 6
+  it('GET beds: default season returns both; ?season=1999 → 400; ?season=2030 → 200 empty', async () => {
+    const listRes = await agent.get(`/api/gardens/${gardenId}/beds`);
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.data.length).toBeGreaterThanOrEqual(2);
+
+    const badRes = await agent.get(`/api/gardens/${gardenId}/beds?season=1999`);
+    expect(badRes.status).toBe(400);
+
+    const emptyRes = await agent.get(`/api/gardens/${gardenId}/beds?season=2030`);
+    expect(emptyRes.status).toBe(200);
+    expect(emptyRes.body.data).toHaveLength(0);
+  });
+
+  // Test 7
+  it('PATCH label only → 200, label updated, geometry untouched', async () => {
     const res = await agent
-      .patch(`/api/gardens/${gardenId}/beds/${create.body.id}`)
-      .send({ name: 'New Bed Name' });
+      .patch(`/api/gardens/${gardenId}/beds/${gridBedId}`)
+      .send({ label: 'Updated Label' });
     expect(res.status).toBe(200);
-    expect(res.body.name).toBe('New Bed Name');
+    expect(res.body.label).toBe('Updated Label');
+    expect(res.body.grid).not.toBeNull();
+    expect(res.body.type).toBe('grid');
   });
 
-  it('deletes a bed', async () => {
-    const create = await agent
-      .post(`/api/gardens/${gardenId}/beds`)
-      .send({ name: 'Bed To Delete' });
-    const del = await agent.delete(`/api/gardens/${gardenId}/beds/${create.body.id}`);
+  // Test 8
+  it('PATCH season → 400', async () => {
+    const res = await agent
+      .patch(`/api/gardens/${gardenId}/beds/${gridBedId}`)
+      .send({ season: 2025 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/season/);
+  });
+
+  // Test 9
+  it('PATCH converting grid bed to freeform → 200, type freeform, grid null', async () => {
+    const res = await agent
+      .patch(`/api/gardens/${gardenId}/beds/${gridBedId}`)
+      .send({
+        type: 'freeform',
+        freeform: { points: [0, 0, 50, 0, 50, 50, 0, 50], closed: true },
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe('freeform');
+    expect(res.body.grid).toBeNull();
+  });
+
+  // Test 10
+  it('PATCH geometry object mismatching current type without type field → 400', async () => {
+    // freeformBedId is freeform; sending grid geometry without a type change
+    const res = await agent
+      .patch(`/api/gardens/${gardenId}/beds/${freeformBedId}`)
+      .send({ grid: { x: 0, y: 0, cols: 2, rows: 2 } });
+    expect(res.status).toBe(400);
+  });
+
+  // Test 11
+  it('DELETE → 204, then GET no longer includes it', async () => {
+    const del = await agent.delete(`/api/gardens/${gardenId}/beds/${freeformBedId}`);
     expect(del.status).toBe(204);
+
+    const list = await agent.get(`/api/gardens/${gardenId}/beds`);
+    expect(list.body.data.every((b: { id: string }) => b.id !== freeformBedId)).toBe(true);
   });
 
-  it("returns 404 for another user's garden bed route", async () => {
+  // Test 12
+  it('all five bed routes with no session cookie → 401', async () => {
+    const results = await Promise.all([
+      request(app).get(`/api/gardens/${gardenId}/beds`),
+      request(app).post(`/api/gardens/${gardenId}/beds`).send({}),
+      request(app).patch(`/api/gardens/${gardenId}/beds/${gridBedId}`).send({}),
+      request(app).delete(`/api/gardens/${gardenId}/beds/${gridBedId}`),
+      request(app).get(`/api/gardens/${gardenId}`),
+    ]);
+    for (const r of results) {
+      expect(r.status).toBe(401);
+    }
+  });
+
+  // Test 13
+  it("all five bed routes against another user's garden → 404", async () => {
     await createUser('bed-intruder@example.com');
     const intruder = await loginAgent('bed-intruder@example.com');
-    const res = await intruder.get(`/api/gardens/${gardenId}/beds`);
-    expect(res.status).toBe(404);
+    const results = await Promise.all([
+      intruder.get(`/api/gardens/${gardenId}/beds`),
+      intruder.post(`/api/gardens/${gardenId}/beds`).send({ type: 'grid', grid: { x: 0, y: 0, cols: 1, rows: 1 } }),
+      intruder.patch(`/api/gardens/${gardenId}/beds/${gridBedId}`).send({ label: 'x' }),
+      intruder.delete(`/api/gardens/${gardenId}/beds/${gridBedId}`),
+      intruder.get(`/api/gardens/${gardenId}`),
+    ]);
+    for (const r of results) {
+      expect(r.status).toBe(404);
+    }
   });
 });
 
@@ -232,7 +313,7 @@ describe('Auth enforcement', () => {
   });
 
   it('returns 401 for unauthenticated bed creation', async () => {
-    const res = await request(app).post('/api/gardens/1/beds').send({ name: 'x' });
+    const res = await request(app).post('/api/gardens/1/beds').send({ type: 'grid' });
     expect(res.status).toBe(401);
   });
 });
