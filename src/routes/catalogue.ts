@@ -15,7 +15,7 @@ const catalogueLimiter = rateLimit({
 router.use(catalogueLimiter);
 
 // GET /api/catalogue/families
-router.get('/catalogue/families', async (_req, res) => {
+router.get('/families', async (_req, res) => {
   try {
     const families = await listFamilies();
     res.json({ data: families });
@@ -27,7 +27,7 @@ router.get('/catalogue/families', async (_req, res) => {
 
 // GET /api/catalogue/seeds/:id/companions
 // (registered before GET /api/catalogue/seeds/:id to prevent route collision)
-router.get('/catalogue/seeds/:id/companions', async (req, res) => {
+router.get('/seeds/:id/companions', async (req, res) => {
   const id = req.params.id as string;
 
   if (!/^\d+$/.test(id)) {
@@ -58,7 +58,7 @@ router.get('/catalogue/seeds/:id/companions', async (req, res) => {
 });
 
 // GET /api/catalogue/seeds
-router.get('/catalogue/seeds', async (req, res) => {
+router.get('/seeds', async (req, res) => {
   try {
     const query = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : undefined;
     const family = typeof req.query.family === 'string' ? req.query.family : undefined;
@@ -83,7 +83,7 @@ router.get('/catalogue/seeds', async (req, res) => {
 });
 
 // GET /api/catalogue/seeds/:id
-router.get('/catalogue/seeds/:id', async (req, res) => {
+router.get('/seeds/:id', async (req, res) => {
   const id = req.params.id as string;
 
   if (!/^\d+$/.test(id)) {
