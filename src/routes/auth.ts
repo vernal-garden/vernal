@@ -65,6 +65,7 @@ authRouter.get('/session', (req: Request, res: Response): void => {
         email: account!.email,
         role: account!.role,
         subscriptionTier: account!.subscriptionTier,
+        deletionScheduledAt: account!.deletionScheduledAt,
       },
     },
   });
