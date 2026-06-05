@@ -33,6 +33,7 @@ interface BedRow {
   freeform_closed: boolean | null;
   created_at: string;
   updated_at: string;
+  planting_count?: number;
 }
 
 // Column lists kept as constants so any future schema change is one edit.
@@ -76,6 +77,7 @@ function formatBed(row: BedRow) {
       row.type === 'freeform'
         ? { points: row.freeform_points, closed: row.freeform_closed }
         : null,
+    plantingCount: row.planting_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -137,7 +139,7 @@ function validateFreeform(obj: unknown): string | null {
 // ── Gardens ───────────────────────────────────────────────────────────────────
 
 // GET /api/gardens
-router.get('/gardens', async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const accountId = req.session!.account!.id;
     const result = await db.query<GardenRow>(
@@ -155,7 +157,7 @@ router.get('/gardens', async (req, res) => {
 });
 
 // POST /api/gardens
-router.post('/gardens', async (req, res) => {
+router.post('/', async (req, res) => {
   const accountId = req.session!.account!.id;
   const { name, style, zone, description, zoneLocationLabel } = req.body as Record<string, unknown>;
 
@@ -196,7 +198,7 @@ router.post('/gardens', async (req, res) => {
 });
 
 // GET /api/gardens/:id  (includes beds filtered by season)
-router.get('/gardens/:id', async (req, res) => {
+router.get('/:id', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.id as string;
 
@@ -221,7 +223,8 @@ router.get('/gardens/:id', async (req, res) => {
     }
 
     const bedsResult = await db.query<BedRow>(
-      `SELECT ${BED_SELECT}
+      `SELECT ${BED_SELECT},
+       (SELECT COUNT(*)::int FROM plantings p WHERE p.bed_id = beds.id) AS planting_count
        FROM beds
        WHERE garden_id = $1 AND season = $2
        ORDER BY created_at ASC`,
@@ -239,7 +242,7 @@ router.get('/gardens/:id', async (req, res) => {
 });
 
 // PATCH /api/gardens/:id
-router.patch('/gardens/:id', async (req, res) => {
+router.patch('/:id', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.id as string;
 
@@ -312,7 +315,7 @@ router.patch('/gardens/:id', async (req, res) => {
 });
 
 // DELETE /api/gardens/:id
-router.delete('/gardens/:id', async (req, res) => {
+router.delete('/:id', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.id as string;
 
@@ -334,7 +337,7 @@ router.delete('/gardens/:id', async (req, res) => {
 // ── Beds (nested under gardens) ───────────────────────────────────────────────
 
 // GET /api/gardens/:gardenId/beds
-router.get('/gardens/:gardenId/beds', async (req, res) => {
+router.get('/:gardenId/beds', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.gardenId as string;
 
@@ -357,7 +360,8 @@ router.get('/gardens/:gardenId/beds', async (req, res) => {
     }
 
     const result = await db.query<BedRow>(
-      `SELECT ${BED_SELECT}
+      `SELECT ${BED_SELECT},
+       (SELECT COUNT(*)::int FROM plantings p WHERE p.bed_id = beds.id) AS planting_count
        FROM beds
        WHERE garden_id = $1 AND season = $2
        ORDER BY created_at ASC`,
@@ -371,7 +375,7 @@ router.get('/gardens/:gardenId/beds', async (req, res) => {
 });
 
 // POST /api/gardens/:gardenId/beds
-router.post('/gardens/:gardenId/beds', async (req, res) => {
+router.post('/:gardenId/beds', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.gardenId as string;
 
@@ -448,7 +452,7 @@ router.post('/gardens/:gardenId/beds', async (req, res) => {
 });
 
 // PATCH /api/gardens/:gardenId/beds/:bedId
-router.patch('/gardens/:gardenId/beds/:bedId', async (req, res) => {
+router.patch('/:gardenId/beds/:bedId', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;
@@ -584,7 +588,7 @@ router.patch('/gardens/:gardenId/beds/:bedId', async (req, res) => {
 });
 
 // DELETE /api/gardens/:gardenId/beds/:bedId
-router.delete('/gardens/:gardenId/beds/:bedId', async (req, res) => {
+router.delete('/:gardenId/beds/:bedId', async (req, res) => {
   const accountId = req.session!.account!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;

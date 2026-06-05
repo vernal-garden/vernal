@@ -7,6 +7,7 @@ import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import catalogueRouter from './routes/catalogue';
 import gardensRouter from './routes/gardens';
+import { plantingsNestedRouter, gardenPlantingsRouter, plantingsFlatRouter } from './routes/plantings';
 import { sessionMiddleware } from './middleware/session';
 import { initPassport, passport } from './lib/oauth/index';
 
@@ -38,8 +39,13 @@ app.use(passport.initialize());
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use('/health', healthRouter);
 app.use('/api/auth', authRouter);
-app.use('/api', catalogueRouter);
-app.use('/api', gardensRouter);
+app.use('/api/catalogue', catalogueRouter);
+app.use('/api/gardens/:gardenId/beds/:bedId/plantings', plantingsNestedRouter);
+app.use('/api/gardens/:gardenId/plantings', gardenPlantingsRouter);
+app.use('/api/gardens', gardensRouter);
+app.use('/api/plantings', plantingsFlatRouter);
+// JSON 404 backstop for any unmatched /api path:
+app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
 // ── Start ────────────────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
