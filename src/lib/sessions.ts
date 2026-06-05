@@ -109,10 +109,11 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
     email: string | null;
     role: string | null;
     subscription_tier: string | null;
+    deletion_scheduled_at: string | null;
   }>(
     `SELECT
        gs.id, gs.token, gs.expires_at, gs.account_id,
-       a.email, a.role, a.subscription_tier
+       a.email, a.role, a.subscription_tier, a.deletion_scheduled_at
      FROM guest_sessions gs
      LEFT JOIN accounts a ON a.id = gs.account_id
      WHERE gs.token = $1
@@ -130,6 +131,7 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
         email: row.email!,
         role: (row.role as 'user' | 'admin'),
         subscriptionTier: (row.subscription_tier as 'free' | 'supporter'),
+        deletionScheduledAt: row.deletion_scheduled_at,
       }
     : null;
 

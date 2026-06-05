@@ -19,6 +19,7 @@ export interface SessionAccount {
   email: string;
   role: 'user' | 'admin';
   subscriptionTier: 'free' | 'supporter';
+  deletionScheduledAt: string | null;
 }
 
 declare global {
