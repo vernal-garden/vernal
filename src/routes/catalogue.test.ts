@@ -134,6 +134,12 @@ describe('GET /api/catalogue/families', () => {
   });
 });
 
+describe('trust proxy', () => {
+  it('trusts exactly one proxy hop (rate limiting keys per client IP)', () => {
+    expect(app.get('trust proxy')).toBe(1);
+  });
+});
+
 describe('rate limiting', () => {
   it('returns 429 after exceeding rate limit', async () => {
     const responses = await Promise.all(

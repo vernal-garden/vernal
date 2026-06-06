@@ -17,6 +17,13 @@ dotenv.config();
 // ── App setup ─────────────────────────────────────────────────────────────────
 
 const app: Application = express();
+
+// Behind Nginx (Phase 04). Nginx appends the client IP via
+// $proxy_add_x_forwarded_for; trust exactly one hop so req.ip is the real
+// client and rate limiters key per-IP. Port 3000 is firewalled (ufw) —
+// the header cannot reach Express except through Nginx. (VULN-5 pattern.)
+app.set('trust proxy', 1);
+
 const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
