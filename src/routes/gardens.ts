@@ -12,6 +12,7 @@ interface GardenRow {
   owner_id: string;
   name: string;
   style: string;
+  growing_method: string;
   description: string | null;
   zone: string;
   zone_location_label: string | null;
@@ -38,7 +39,7 @@ interface BedRow {
 
 // Column lists kept as constants so any future schema change is one edit.
 const GARDEN_SELECT = `
-  id::text, owner_id::text, name, style, description, zone, zone_location_label,
+  id::text, owner_id::text, name, style, growing_method, description, zone, zone_location_label,
   created_at, updated_at
 `;
 
@@ -54,6 +55,7 @@ function formatGarden(row: GardenRow) {
     id: row.id,
     name: row.name,
     style: row.style,
+    growingMethod: row.growing_method,
     description: row.description,
     zone: row.zone,
     zoneLocationLabel: row.zone_location_label,
@@ -83,7 +85,8 @@ function formatBed(row: BedRow) {
   };
 }
 
-const VALID_STYLES = new Set(['grid', 'freeform', 'mixed']);
+const VALID_STYLES = new Set(['grid', 'freeform']);
+const VALID_GROWING_METHODS = new Set(['square_foot', 'container', 'raised_bed', 'in_ground']);
 
 // ── Validation helpers ────────────────────────────────────────────────────────
 
@@ -159,7 +162,7 @@ router.get('/', async (req, res) => {
 // POST /api/gardens
 router.post('/', async (req, res) => {
   const accountId = req.session!.account!.id;
-  const { name, style, zone, description, zoneLocationLabel } = req.body as Record<string, unknown>;
+  const { name, style, zone, description, zoneLocationLabel, growingMethod } = req.body as Record<string, unknown>;
 
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
     return res.status(400).json({ error: 'name is required' });
@@ -175,16 +178,22 @@ router.post('/', async (req, res) => {
   if (!zone || typeof zone !== 'string' || zone.trim().length === 0) {
     return res.status(400).json({ error: 'zone is required' });
   }
+  if (!growingMethod || typeof growingMethod !== 'string' || !VALID_GROWING_METHODS.has(growingMethod)) {
+    return res.status(400).json({
+      error: `growingMethod is required and must be one of: ${[...VALID_GROWING_METHODS].join(', ')}`,
+    });
+  }
 
   try {
     const result = await db.query<GardenRow>(
-      `INSERT INTO gardens (owner_id, name, style, zone, description, zone_location_label)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO gardens (owner_id, name, style, growing_method, zone, description, zone_location_label)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING ${GARDEN_SELECT}`,
       [
         accountId,
         name.trim(),
         style,
+        growingMethod,
         zone.trim(),
         typeof description === 'string' ? description.trim() || null : null,
         typeof zoneLocationLabel === 'string' ? zoneLocationLabel.trim() || null : null,
@@ -255,7 +264,7 @@ router.patch('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Garden not found' });
     }
 
-    const { name, style, zone, description, zoneLocationLabel } = req.body as Record<string, unknown>;
+    const { name, style, zone, description, zoneLocationLabel, growingMethod } = req.body as Record<string, unknown>;
 
     const updates: string[] = [];
     const values: unknown[] = [];
@@ -292,6 +301,15 @@ router.patch('/:id', async (req, res) => {
     if (zoneLocationLabel !== undefined) {
       updates.push(`zone_location_label = $${idx++}`);
       values.push(typeof zoneLocationLabel === 'string' ? zoneLocationLabel.trim() || null : null);
+    }
+    if (growingMethod !== undefined) {
+      if (typeof growingMethod !== 'string' || !VALID_GROWING_METHODS.has(growingMethod)) {
+        return res.status(400).json({
+          error: `growingMethod must be one of: ${[...VALID_GROWING_METHODS].join(', ')}`,
+        });
+      }
+      updates.push(`growing_method = $${idx++}`);
+      values.push(growingMethod);
     }
 
     if (updates.length === 0) {

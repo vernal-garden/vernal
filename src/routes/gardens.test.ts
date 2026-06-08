@@ -34,7 +34,7 @@ async function loginAgent(email: string, password = 'Password123!') {
   return agent;
 }
 
-const BASE_GARDEN = { name: 'My Backyard', style: 'grid', zone: '7b' };
+const BASE_GARDEN = { name: 'My Backyard', style: 'grid', zone: '7b', growingMethod: 'raised_bed' };
 
 beforeAll(resetDb);
 afterAll(() => pool.end());
@@ -75,6 +75,38 @@ describe('Gardens — authenticated CRUD', () => {
     const res = await agent.post('/api/gardens').send({ name: 'No Zone', style: 'grid' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/zone/);
+  });
+
+  it('returns 400 when growingMethod is missing', async () => {
+    const res = await agent
+      .post('/api/gardens')
+      .send({ name: 'No Method', style: 'grid', zone: '7b' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/growingMethod/);
+  });
+
+  it('returns 400 when growingMethod is invalid', async () => {
+    const res = await agent
+      .post('/api/gardens')
+      .send({ name: 'Bad Method', style: 'grid', zone: '7b', growingMethod: 'hydroponic' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/growingMethod/);
+  });
+
+  it('returns 201 with growingMethod echoed on valid create', async () => {
+    const res = await agent
+      .post('/api/gardens')
+      .send({ name: 'Echoed Method Garden', style: 'grid', zone: '7b', growingMethod: 'square_foot' });
+    expect(res.status).toBe(201);
+    expect(res.body.growingMethod).toBe('square_foot');
+  });
+
+  it('returns 400 when style is mixed (retired)', async () => {
+    const res = await agent
+      .post('/api/gardens')
+      .send({ name: 'Mixed Style', style: 'mixed', zone: '7b', growingMethod: 'raised_bed' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/style/);
   });
 
   it("lists only the authenticated user's gardens", async () => {
@@ -126,6 +158,23 @@ describe('Gardens — authenticated CRUD', () => {
     const res = await agent
       .patch(`/api/gardens/${create.body.id}`)
       .send({ style: 'diagonal' });
+    expect(res.status).toBe(400);
+  });
+
+  it('PATCH growingMethod to square_foot → 200 with growingMethod echoed', async () => {
+    const create = await agent.post('/api/gardens').send(BASE_GARDEN);
+    const res = await agent
+      .patch(`/api/gardens/${create.body.id}`)
+      .send({ growingMethod: 'square_foot' });
+    expect(res.status).toBe(200);
+    expect(res.body.growingMethod).toBe('square_foot');
+  });
+
+  it('PATCH with invalid growingMethod → 400', async () => {
+    const create = await agent.post('/api/gardens').send(BASE_GARDEN);
+    const res = await agent
+      .patch(`/api/gardens/${create.body.id}`)
+      .send({ growingMethod: 'bogus' });
     expect(res.status).toBe(400);
   });
 
