@@ -18,3 +18,13 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   }
   next();
 }
+
+// Passes any valid session (guest or authenticated).
+// 401 when no session exists (no cookie, HMAC invalid, or session expired).
+export function requireSession(req: Request, res: Response, next: NextFunction): void {
+  if (!req.session) {
+    res.status(401).json({ error: 'Session required' });
+    return;
+  }
+  next();
+}

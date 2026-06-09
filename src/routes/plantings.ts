@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
-import { requireAuth } from '../middleware/auth';
+import { requireSession } from '../middleware/auth';
+import type { SessionData } from '../types';
 
 // ── Three routers, all with mergeParams ──────────────────────────────────────
 
@@ -8,9 +9,9 @@ export const plantingsNestedRouter = Router({ mergeParams: true });  // /api/gar
 export const gardenPlantingsRouter = Router({ mergeParams: true });  // /api/gardens/:gardenId/plantings
 export const plantingsFlatRouter = Router({ mergeParams: true });    // /api/plantings
 
-plantingsNestedRouter.use(requireAuth);
-gardenPlantingsRouter.use(requireAuth);
-plantingsFlatRouter.use(requireAuth);
+plantingsNestedRouter.use(requireSession);
+gardenPlantingsRouter.use(requireSession);
+plantingsFlatRouter.use(requireSession);
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -86,10 +87,12 @@ function formatPlanting(row: PlantingRow) {
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-async function ownGarden(gardenId: string, accountId: number): Promise<boolean> {
+async function ownGarden(gardenId: string, session: SessionData): Promise<boolean> {
+  const accountId = session.account?.id ?? null;
+  const sessionId = session.id;
   const { rows } = await db.query(
-    'SELECT id FROM gardens WHERE id = $1 AND owner_id = $2',
-    [gardenId, accountId],
+    'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+    [gardenId, accountId, sessionId],
   );
   return rows.length > 0;
 }
@@ -157,7 +160,6 @@ function isValidId(v: string): boolean {
 // ── gardenPlantingsRouter: GET /api/gardens/:gardenId/plantings ───────────────
 
 gardenPlantingsRouter.get('/', async (req, res) => {
-  const accountId = req.session!.account!.id;
   const { gardenId } = req.params as Record<string, string>;
 
   if (!isValidId(gardenId)) {
@@ -165,7 +167,7 @@ gardenPlantingsRouter.get('/', async (req, res) => {
   }
 
   try {
-    const found = await ownGarden(gardenId, accountId);
+    const found = await ownGarden(gardenId, req.session!);
     if (!found) return res.status(404).json({ error: 'Garden not found' });
 
     let season: number;
@@ -194,14 +196,13 @@ gardenPlantingsRouter.get('/', async (req, res) => {
 // ── plantingsNestedRouter: GET /api/gardens/:gardenId/beds/:bedId/plantings ──
 
 plantingsNestedRouter.get('/', async (req, res) => {
-  const accountId = req.session!.account!.id;
   const { gardenId, bedId } = req.params as Record<string, string>;
 
   if (!isValidId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
   if (!isValidId(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
-    const gardenFound = await ownGarden(gardenId, accountId);
+    const gardenFound = await ownGarden(gardenId, req.session!);
     if (!gardenFound) return res.status(404).json({ error: 'Garden not found' });
 
     const bed = await bedInGarden(bedId, gardenId);
@@ -224,14 +225,15 @@ plantingsNestedRouter.get('/', async (req, res) => {
 // ── plantingsNestedRouter: POST /api/gardens/:gardenId/beds/:bedId/plantings ─
 
 plantingsNestedRouter.post('/', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const { gardenId, bedId } = req.params as Record<string, string>;
 
   if (!isValidId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
   if (!isValidId(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
-    const gardenFound = await ownGarden(gardenId, accountId);
+    const gardenFound = await ownGarden(gardenId, req.session!);
     if (!gardenFound) return res.status(404).json({ error: 'Garden not found' });
 
     const bed = await bedInGarden(bedId, gardenId);
@@ -273,8 +275,8 @@ plantingsNestedRouter.post('/', async (req, res) => {
       }
       seedId = parsed as number;
       const { rows } = await db.query(
-        'SELECT id FROM seeds WHERE id = $1 AND owner_id = $2',
-        [seedId, accountId],
+        'SELECT id FROM seeds WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+        [seedId, accountId, sessionId],
       );
       if (rows.length === 0) {
         return res.status(400).json({ error: 'seedId not found in your catalogue' });
@@ -361,7 +363,8 @@ plantingsNestedRouter.post('/', async (req, res) => {
 // ── plantingsFlatRouter: PATCH /api/plantings/:id ────────────────────────────
 
 plantingsFlatRouter.patch('/:id', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const plantingId = req.params.id as string;
 
   if (!isValidId(plantingId)) return res.status(400).json({ error: 'Invalid id' });
@@ -377,8 +380,8 @@ plantingsFlatRouter.patch('/:id', async (req, res) => {
        FROM plantings p
        JOIN gardens g ON g.id = p.garden_id
        JOIN beds b ON b.id = p.bed_id
-       WHERE p.id = $1 AND g.owner_id = $2`,
-      [plantingId, accountId],
+       WHERE p.id = $1 AND (g.owner_id = $2 OR g.guest_session_id = $3)`,
+      [plantingId, accountId, sessionId],
     );
     if (existing.length === 0) return res.status(404).json({ error: 'Planting not found' });
 
@@ -479,7 +482,8 @@ plantingsFlatRouter.patch('/:id', async (req, res) => {
 // ── plantingsFlatRouter: DELETE /api/plantings/:id ───────────────────────────
 
 plantingsFlatRouter.delete('/:id', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const plantingId = req.params.id as string;
 
   if (!isValidId(plantingId)) return res.status(400).json({ error: 'Invalid id' });
@@ -488,9 +492,9 @@ plantingsFlatRouter.delete('/:id', async (req, res) => {
     const { rows } = await db.query(
       `DELETE FROM plantings p
        USING gardens g
-       WHERE p.id = $1 AND g.id = p.garden_id AND g.owner_id = $2
+       WHERE p.id = $1 AND g.id = p.garden_id AND (g.owner_id = $2 OR g.guest_session_id = $3)
        RETURNING p.id`,
-      [plantingId, accountId],
+      [plantingId, accountId, sessionId],
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Planting not found' });
     res.status(204).send();
