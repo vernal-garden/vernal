@@ -1,8 +1,10 @@
 import crypto from 'crypto';
 import { db } from './db';
+import type { PoolClient } from 'pg';
 import type { SessionData, SessionAccount } from '../types';
 
 const SESSION_DAYS = parseInt(process.env.SESSION_DAYS ?? '7', 10);
+const GUEST_SESSION_DAYS = parseInt(process.env.GUEST_SESSION_DAYS ?? '30', 10);
 const COOKIE_NAME = '_vernal_sid';
 
 export { COOKIE_NAME };
@@ -30,16 +32,22 @@ function verifyToken(signed: string): string | null {
   return token;
 }
 
+// Exported wrapper — lets auth.ts check expired-but-HMAC-valid cookies without a DB lookup
+export function verifySignedToken(signed: string): string | null {
+  return verifyToken(signed);
+}
+
 export function makeSessionCookie(
   signedToken: string,
   expiresAt: Date,
   res: import('express').Response,
+  cookieExpires?: Date,
 ): void {
   res.cookie(COOKIE_NAME, signedToken, {
     httpOnly: true,
     sameSite: 'lax',
     secure: process.env.NODE_ENV === 'production',
-    expires: expiresAt,
+    expires: cookieExpires ?? expiresAt,
     path: '/',
   });
 }
@@ -52,7 +60,7 @@ export function clearSessionCookie(res: import('express').Response): void {
 export async function createGuestSession(): Promise<{ signedToken: string; expiresAt: Date }> {
   const token = generateToken();
   const signedToken = signToken(token);
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + GUEST_SESSION_DAYS * 24 * 60 * 60 * 1000);
 
   await db.query(
     `INSERT INTO guest_sessions (token, expires_at)
@@ -69,13 +77,13 @@ export async function createGuestSession(): Promise<{ signedToken: string; expir
 export async function claimSession(
   accountId: number,
   existingToken: string | null,
+  client?: PoolClient,
 ): Promise<{ signedToken: string; expiresAt: Date }> {
-  const sessionDays = parseInt(process.env.SESSION_DAYS ?? '7', 10);
-  const expiresAt = new Date(Date.now() + sessionDays * 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const runner = client ?? db;
 
   if (existingToken) {
-    // Migrate the existing guest session
-    await db.query(
+    await runner.query(
       `UPDATE guest_sessions
        SET account_id = $1, migrated_at = now(), expires_at = $2
        WHERE token = $3`,
@@ -85,15 +93,58 @@ export async function claimSession(
     return { signedToken, expiresAt };
   }
 
-  // No prior session — create a new one already claimed by this account
   const token = generateToken();
   const signedToken = signToken(token);
-  await db.query(
+  await runner.query(
     `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
      VALUES ($1, $2, $3, now())`,
     [token, expiresAt, accountId],
   );
   return { signedToken, expiresAt };
+}
+
+// Migrate guest gardens and seeds to an account — must be called inside a caller-owned transaction.
+export async function migrateGuestData(
+  client: PoolClient,
+  sessionId: string,
+  accountId: number,
+): Promise<void> {
+  await client.query(
+    `UPDATE gardens SET owner_id = $1, guest_session_id = NULL WHERE guest_session_id = $2`,
+    [accountId, sessionId],
+  );
+  await client.query(
+    `UPDATE seeds SET owner_id = $1, guest_session_id = NULL WHERE guest_session_id = $2`,
+    [accountId, sessionId],
+  );
+}
+
+// Returns pending guest data for the merge-prompt UI. Guests may have at most one garden;
+// if somehow multiple exist, returns the first by created_at and logs a warning.
+export async function getPendingGuestData(
+  sessionId: string,
+): Promise<{ gardenName: string; bedCount: number; plantCount: number } | null> {
+  // Counts are informational for the merge-prompt UI.
+  // Beds and plantings belong to gardens via FK and migrate implicitly when
+  // migrateGuestData updates the parent garden's owner_id.
+  const { rows } = await db.query<{ name: string; bed_count: number; plant_count: number }>(
+    `SELECT g.name,
+       (SELECT COUNT(*) FROM beds      WHERE garden_id = g.id)::int AS bed_count,
+       (SELECT COUNT(*) FROM plantings WHERE garden_id = g.id)::int AS plant_count
+     FROM gardens g
+     WHERE g.guest_session_id = $1
+     ORDER BY g.created_at ASC`,
+    [sessionId],
+  );
+  if (rows.length === 0) return null;
+  if (rows.length > 1) {
+    console.warn(`[sessions] Multiple guest gardens for session ${sessionId}; returning first`);
+  }
+  return {
+    gardenName: rows[0].name,
+    bedCount: rows[0].bed_count,
+    plantCount: rows[0].plant_count,
+  };
 }
 
 // Look up a session from a signed cookie value - returns null if invalid/expired

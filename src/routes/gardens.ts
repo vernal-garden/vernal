@@ -1,15 +1,15 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
-import { requireAuth } from '../middleware/auth';
+import { requireSession } from '../middleware/auth';
 
 const router = Router();
-router.use(requireAuth);
+router.use(requireSession);
 
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
 interface GardenRow {
   id: string;
-  owner_id: string;
+  owner_id: string | null;
   name: string;
   style: string;
   growing_method: string;
@@ -144,13 +144,14 @@ function validateFreeform(obj: unknown): string | null {
 // GET /api/gardens
 router.get('/', async (req, res) => {
   try {
-    const accountId = req.session!.account!.id;
+    const accountId = req.session!.account?.id ?? null;
+    const sessionId = req.session!.id;
     const result = await db.query<GardenRow>(
       `SELECT ${GARDEN_SELECT}
        FROM gardens
-       WHERE owner_id = $1
+       WHERE (owner_id = $1 OR guest_session_id = $2)
        ORDER BY created_at ASC`,
-      [accountId],
+      [accountId, sessionId],
     );
     res.json({ data: result.rows.map(formatGarden) });
   } catch (err) {
@@ -161,7 +162,8 @@ router.get('/', async (req, res) => {
 
 // POST /api/gardens
 router.post('/', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const { name, style, zone, description, zoneLocationLabel, growingMethod } = req.body as Record<string, unknown>;
 
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
@@ -185,12 +187,27 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    if (accountId === null) {
+      // Enforce single-garden limit for guests
+      const { rows: limitRows } = await db.query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM gardens WHERE guest_session_id = $1',
+        [sessionId],
+      );
+      if (parseInt(limitRows[0].count, 10) >= 1) {
+        return res.status(403).json({
+          error: 'Guest sessions can have one garden — create a free account for more',
+          guest_limit: true,
+        });
+      }
+    }
+
     const result = await db.query<GardenRow>(
-      `INSERT INTO gardens (owner_id, name, style, growing_method, zone, description, zone_location_label)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO gardens (owner_id, guest_session_id, name, style, growing_method, zone, description, zone_location_label)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING ${GARDEN_SELECT}`,
       [
         accountId,
+        accountId === null ? sessionId : null,
         name.trim(),
         style,
         growingMethod,
@@ -208,15 +225,16 @@ router.post('/', async (req, res) => {
 
 // GET /api/gardens/:id  (includes beds filtered by season)
 router.get('/:id', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
   try {
     const gardenResult = await db.query<GardenRow>(
       `SELECT ${GARDEN_SELECT}
        FROM gardens
-       WHERE id = $1 AND owner_id = $2`,
-      [gardenId, accountId],
+       WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)`,
+      [gardenId, accountId, sessionId],
     );
     if (gardenResult.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
@@ -252,13 +270,14 @@ router.get('/:id', async (req, res) => {
 
 // PATCH /api/gardens/:id
 router.patch('/:id', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
   try {
     const existing = await db.query(
-      'SELECT id FROM gardens WHERE id = $1 AND owner_id = $2',
-      [gardenId, accountId],
+      'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+      [gardenId, accountId, sessionId],
     );
     if (existing.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
@@ -334,13 +353,14 @@ router.patch('/:id', async (req, res) => {
 
 // DELETE /api/gardens/:id
 router.delete('/:id', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
   try {
     const result = await db.query(
-      'DELETE FROM gardens WHERE id = $1 AND owner_id = $2 RETURNING id',
-      [gardenId, accountId],
+      'DELETE FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3) RETURNING id',
+      [gardenId, accountId, sessionId],
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
@@ -356,13 +376,14 @@ router.delete('/:id', async (req, res) => {
 
 // GET /api/gardens/:gardenId/beds
 router.get('/:gardenId/beds', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
 
   try {
     const garden = await db.query(
-      'SELECT id FROM gardens WHERE id = $1 AND owner_id = $2',
-      [gardenId, accountId],
+      'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+      [gardenId, accountId, sessionId],
     );
     if (garden.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
@@ -394,13 +415,14 @@ router.get('/:gardenId/beds', async (req, res) => {
 
 // POST /api/gardens/:gardenId/beds
 router.post('/:gardenId/beds', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
 
   try {
     const garden = await db.query(
-      'SELECT id FROM gardens WHERE id = $1 AND owner_id = $2',
-      [gardenId, accountId],
+      'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+      [gardenId, accountId, sessionId],
     );
     if (garden.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
@@ -471,14 +493,15 @@ router.post('/:gardenId/beds', async (req, res) => {
 
 // PATCH /api/gardens/:gardenId/beds/:bedId
 router.patch('/:gardenId/beds/:bedId', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;
 
   try {
     const garden = await db.query(
-      'SELECT id FROM gardens WHERE id = $1 AND owner_id = $2',
-      [gardenId, accountId],
+      'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+      [gardenId, accountId, sessionId],
     );
     if (garden.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
@@ -607,14 +630,15 @@ router.patch('/:gardenId/beds/:bedId', async (req, res) => {
 
 // DELETE /api/gardens/:gardenId/beds/:bedId
 router.delete('/:gardenId/beds/:bedId', async (req, res) => {
-  const accountId = req.session!.account!.id;
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;
 
   try {
     const garden = await db.query(
-      'SELECT id FROM gardens WHERE id = $1 AND owner_id = $2',
-      [gardenId, accountId],
+      'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+      [gardenId, accountId, sessionId],
     );
     if (garden.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });

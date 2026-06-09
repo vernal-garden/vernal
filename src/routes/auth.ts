@@ -6,12 +6,17 @@ import {
   makeSessionCookie,
   clearSessionCookie,
   claimSession,
+  verifySignedToken,
+  migrateGuestData,
+  getPendingGuestData,
+  COOKIE_NAME,
 } from '../lib/sessions';
 import { db } from '../lib/db';
 import { sendMail } from '../lib/mailer';
 import { encryptToBuffer } from '../lib/crypto';
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
+import { requireAuth } from '../middleware/auth';
 
 export const authRouter = Router();
 
@@ -32,30 +37,49 @@ authRouter.post('/guest', async (req: Request, res: Response): Promise<void> => 
   }
 
   const { signedToken, expiresAt } = await createGuestSession();
-  makeSessionCookie(signedToken, expiresAt, res);
+  const cookieExpires = new Date(expiresAt.getTime() + 60 * 24 * 60 * 60 * 1000);
+  makeSessionCookie(signedToken, expiresAt, res, cookieExpires);
 
-  res.status(201).json({
-    data: {
-      isGuest: true,
-    },
-  });
+  res.status(201).json({ data: { isGuest: true } });
 });
 
 // GET /api/auth/session
 // Returns the current session state. Used by the frontend on app load to determine
 // whether the user is a guest, authenticated, or unauthenticated.
-authRouter.get('/session', (req: Request, res: Response): void => {
+authRouter.get('/session', async (req: Request, res: Response): Promise<void> => {
   if (!req.session) {
+    // Cold path: check for expired cookie whose HMAC is still valid
+    const rawCookie = req.cookies[COOKIE_NAME] as string | undefined;
+    if (rawCookie) {
+      const token = verifySignedToken(rawCookie);
+      if (token) {
+        const { rows } = await db.query<{ migrated_at: Date | null }>(
+          'SELECT migrated_at FROM guest_sessions WHERE token = $1',
+          [token],
+        );
+        if (rows.length > 0 && rows[0].migrated_at === null) {
+          res.json({ data: { authenticated: false, isGuest: false, guestExpired: 'recoverable' } });
+          return;
+        }
+        if (rows.length === 0) {
+          res.json({ data: { authenticated: false, isGuest: false, guestExpired: 'gone' } });
+          return;
+        }
+      }
+    }
     res.json({ data: { authenticated: false, isGuest: false } });
     return;
   }
 
   if (req.session.isGuest) {
-    res.json({ data: { authenticated: false, isGuest: true } });
+    const expiresAt = req.session.expiresAt;
+    const daysRemaining = Math.ceil((expiresAt.getTime() - Date.now()) / 86_400_000);
+    res.json({ data: { authenticated: false, isGuest: true, expiresAt, daysRemaining } });
     return;
   }
 
   const { account } = req.session;
+  const pendingGuestData = await getPendingGuestData(req.session.id);
   res.json({
     data: {
       authenticated: true,
@@ -67,6 +91,7 @@ authRouter.get('/session', (req: Request, res: Response): void => {
         subscriptionTier: account!.subscriptionTier,
         deletionScheduledAt: account!.deletionScheduledAt,
       },
+      pendingGuestData,
     },
   });
 });
@@ -111,28 +136,60 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
 
   const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
-  // Create the account
-  // zone and zone_location_label are required fields — for registration they are set
-  // to placeholder values and updated when the user completes onboarding
-  const { rows } = await db.query<{ id: number }>(
-    `INSERT INTO accounts (email, password_hash, zone, zone_location_label)
-     VALUES ($1, $2, 'unknown', 'Not set')
-     RETURNING id`,
-    [email.toLowerCase(), passwordHash],
-  );
-  const accountId = rows[0].id;
+  // Prefer a live session; fall back to an expired-but-unmigrated session from the cookie
+  let existingToken = req.session?.token ?? null;
+  let guestSessionId = req.session?.id ?? null;
 
-  // Claim (or create) a session for the new account
-  const existingToken = req.session?.token ?? null;
-  const { signedToken, expiresAt } = await claimSession(accountId, existingToken);
-  makeSessionCookie(signedToken, expiresAt, res);
+  if (!existingToken) {
+    const rawCookie = req.cookies[COOKIE_NAME] as string | undefined;
+    if (rawCookie) {
+      const rawToken = verifySignedToken(rawCookie);
+      if (rawToken) {
+        const { rows: expiredRows } = await db.query<{ id: string }>(
+          'SELECT id FROM guest_sessions WHERE token = $1 AND migrated_at IS NULL',
+          [rawToken],
+        );
+        if (expiredRows.length > 0) {
+          existingToken = rawToken;
+          guestSessionId = expiredRows[0].id;
+        }
+      }
+    }
+  }
 
-  res.status(201).json({
-    data: {
-      authenticated: true,
-      account: { id: accountId, email: email.toLowerCase() },
-    },
-  });
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query<{ id: number }>(
+      `INSERT INTO accounts (email, password_hash, zone, zone_location_label)
+       VALUES ($1, $2, 'unknown', 'Not set')
+       RETURNING id`,
+      [email.toLowerCase(), passwordHash],
+    );
+    const accountId = rows[0].id;
+
+    const { signedToken, expiresAt } = await claimSession(accountId, existingToken, client);
+
+    if (guestSessionId) {
+      await migrateGuestData(client, guestSessionId, accountId);
+    }
+
+    await client.query('COMMIT');
+
+    makeSessionCookie(signedToken, expiresAt, res);
+    res.status(201).json({
+      data: {
+        authenticated: true,
+        account: { id: accountId, email: email.toLowerCase() },
+      },
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // POST /api/auth/login
@@ -152,12 +209,10 @@ authRouter.post('/login', async (req: Request, res: Response): Promise<void> => 
     subscription_tier: string;
   }>(
     `SELECT id, email, password_hash, role, subscription_tier
-     FROM accounts
-     WHERE email = $1`,
+     FROM accounts WHERE email = $1`,
     [email.toLowerCase()],
   );
 
-  // Hash a dummy string on miss to prevent timing attacks
   const dummyHash = '$2b$12$invalidhashfordummycomparisononly.........';
   const hash = rows[0]?.password_hash ?? dummyHash;
   const valid = await bcrypt.compare(password, hash);
@@ -169,16 +224,29 @@ authRouter.post('/login', async (req: Request, res: Response): Promise<void> => 
 
   const account = rows[0];
 
-  // Update last_active_at
   await db.query(
     `UPDATE accounts SET last_active_at = now() WHERE id = $1
      AND (last_active_at IS NULL OR last_active_at < now() - interval '1 hour')`,
     [account.id],
   );
 
+  const sessionId = req.session?.id ?? null;
   const existingToken = req.session?.token ?? null;
   const { signedToken, expiresAt } = await claimSession(account.id, existingToken);
   makeSessionCookie(signedToken, expiresAt, res);
+
+  // Silent-discard: delete any guest gardens with zero plantings (cascade removes beds).
+  // Gardens with plantings survive for the merge prompt.
+  if (sessionId) {
+    await db.query(
+      `DELETE FROM gardens
+       WHERE guest_session_id = $1
+         AND (SELECT COUNT(*) FROM plantings p
+              JOIN beds b ON b.id = p.bed_id
+              WHERE b.garden_id = gardens.id) = 0`,
+      [sessionId],
+    );
+  }
 
   res.json({
     data: {
@@ -282,7 +350,10 @@ authRouter.post('/reset-password', async (req: Request, res: Response): Promise<
   res.json({ data: { success: true, message: 'Password updated. You can now log in.' } });
 });
 
-async function resolveOAuthAccount(oauthUser: OAuthUser): Promise<{ accountId: number; isNew: boolean }> {
+async function resolveOAuthAccount(
+  oauthUser: OAuthUser,
+  guestSessionId?: string | null,
+): Promise<{ accountId: number; isNew: boolean }> {
   const { provider, profile, accessToken, refreshToken } = oauthUser;
   const email = profile.emails?.[0]?.value ?? null;
   const displayName = profile.displayName || email?.split('@')[0] || 'Grower';
@@ -295,10 +366,9 @@ async function resolveOAuthAccount(oauthUser: OAuthUser): Promise<{ accountId: n
   try {
     await client.query('BEGIN');
 
-    // 1. Check for existing identity
     const identityRow = await client.query<{ account_id: string }>(
       'SELECT account_id FROM oauth_identities WHERE provider = $1 AND provider_user_id = $2',
-      [provider, profile.id]
+      [provider, profile.id],
     );
 
     if (identityRow.rows.length > 0) {
@@ -308,20 +378,19 @@ async function resolveOAuthAccount(oauthUser: OAuthUser): Promise<{ accountId: n
          SET access_token_encrypted = $1, refresh_token_encrypted = $2,
              token_expires_at = NOW() + INTERVAL '1 hour', updated_at = NOW()
          WHERE provider = $3 AND provider_user_id = $4`,
-        [encAccess, encRefresh, provider, profile.id]
+        [encAccess, encRefresh, provider, profile.id],
       );
       await client.query('COMMIT');
       return { accountId, isNew: false };
     }
 
-    // 2. Find or create account
     let accountId: number;
     let isNew = false;
 
     if (email) {
       const emailRow = await client.query<{ id: string }>(
         'SELECT id FROM accounts WHERE email = $1',
-        [email]
+        [email],
       );
       if (emailRow.rows.length > 0) {
         accountId = Number(emailRow.rows[0].id);
@@ -329,7 +398,7 @@ async function resolveOAuthAccount(oauthUser: OAuthUser): Promise<{ accountId: n
         const newAccount = await client.query<{ id: string }>(
           `INSERT INTO accounts (email, display_name, email_verified, zone, zone_location_label)
            VALUES ($1, $2, true, 'unknown', 'Not set') RETURNING id`,
-          [email, displayName]
+          [email, displayName],
         );
         accountId = Number(newAccount.rows[0].id);
         isNew = true;
@@ -338,20 +407,24 @@ async function resolveOAuthAccount(oauthUser: OAuthUser): Promise<{ accountId: n
       const newAccount = await client.query<{ id: string }>(
         `INSERT INTO accounts (display_name, email_verified, zone, zone_location_label)
          VALUES ($1, false, 'unknown', 'Not set') RETURNING id`,
-        [displayName]
+        [displayName],
       );
       accountId = Number(newAccount.rows[0].id);
       isNew = true;
     }
 
-    // 3. Create identity record
     await client.query(
       `INSERT INTO oauth_identities
          (account_id, provider, provider_user_id, email, display_name, avatar_url,
           access_token_encrypted, refresh_token_encrypted, token_expires_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + INTERVAL '1 hour')`,
-      [accountId, provider, profile.id, email, displayName, avatarUrl, encAccess, encRefresh]
+      [accountId, provider, profile.id, email, displayName, avatarUrl, encAccess, encRefresh],
     );
+
+    // For brand-new accounts only: migrate guest data inside this transaction
+    if (isNew && guestSessionId) {
+      await migrateGuestData(client, guestSessionId, accountId);
+    }
 
     await client.query('COMMIT');
     return { accountId, isNew };
@@ -397,7 +470,6 @@ authRouter.get(
   }),
   async (req: Request, res: Response) => {
     try {
-      // 1. Verify nonce
       let returnTo = '/';
       const rawState = req.query.state as string | undefined;
       if (rawState) {
@@ -418,20 +490,76 @@ authRouter.get(
 
       res.clearCookie(OAUTH_NONCE_COOKIE);
 
-      // 2. Resolve or create account
       const oauthUser = req.user as OAuthUser;
-      const { accountId } = await resolveOAuthAccount(oauthUser);
+      const guestSessionId = req.session?.id ?? null;
+      const { accountId, isNew } = await resolveOAuthAccount(oauthUser, guestSessionId);
 
-      // 3. Claim or create session
       const existingToken = req.session?.token ?? null;
       const { signedToken, expiresAt } = await claimSession(accountId, existingToken);
       makeSessionCookie(signedToken, expiresAt, res);
 
-      // 4. Redirect
+      // Existing accounts: silent-discard guest gardens with zero plantings
+      if (!isNew && guestSessionId) {
+        await db.query(
+          `DELETE FROM gardens
+           WHERE guest_session_id = $1
+             AND (SELECT COUNT(*) FROM plantings p
+                  JOIN beds b ON b.id = p.bed_id
+                  WHERE b.garden_id = gardens.id) = 0`,
+          [guestSessionId],
+        );
+      }
+
       res.redirect(`${process.env.FRONTEND_URL}${returnTo}`);
     } catch (err) {
       console.error('OAuth callback error:', err);
       res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
     }
-  }
+  },
+);
+
+// POST /api/auth/guest-data/merge
+// Migrate pending guest gardens/seeds to the authenticated account. No-op-safe.
+authRouter.post(
+  '/guest-data/merge',
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const sessionId = req.session!.id;
+    const accountId = req.session!.account!.id;
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await migrateGuestData(client, sessionId, accountId);
+      await client.query('COMMIT');
+      res.json({ data: { merged: true } });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+);
+
+// POST /api/auth/guest-data/discard
+// Delete pending guest gardens and seeds. No-op-safe.
+authRouter.post(
+  '/guest-data/discard',
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const sessionId = req.session!.id;
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM gardens WHERE guest_session_id = $1', [sessionId]);
+      await client.query('DELETE FROM seeds    WHERE guest_session_id = $1', [sessionId]);
+      await client.query('COMMIT');
+      res.json({ data: { discarded: true } });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
 );
