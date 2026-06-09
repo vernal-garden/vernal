@@ -348,6 +348,40 @@ describe('Beds — nested CRUD', () => {
   });
 });
 
+// ── Id validation ─────────────────────────────────────────────────────────────
+
+describe('Id validation', () => {
+  let agent: ReturnType<typeof request.agent>;
+
+  beforeAll(async () => {
+    await createUser('id-validation@example.com');
+    agent = await loginAgent('id-validation@example.com');
+  });
+
+  it('GET /api/gardens/abc → 400', async () => {
+    const res = await agent.get('/api/gardens/abc');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid id');
+  });
+
+  it('GET /api/gardens/abc/beds → 400', async () => {
+    const res = await agent.get('/api/gardens/abc/beds');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid id');
+  });
+
+  it('PATCH /api/gardens/1/beds/xyz → 400', async () => {
+    const res = await agent.patch('/api/gardens/1/beds/xyz').send({ label: 'x' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid id');
+  });
+
+  it('GET /api/gardens/99999999 → 404 (valid numeric id, nonexistent)', async () => {
+    const res = await agent.get('/api/gardens/99999999');
+    expect(res.status).toBe(404);
+  });
+});
+
 // ── Auth enforcement ──────────────────────────────────────────────────────────
 
 describe('Auth enforcement', () => {
