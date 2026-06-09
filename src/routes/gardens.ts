@@ -229,6 +229,8 @@ router.get('/:id', async (req, res) => {
   const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
+  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+
   try {
     const gardenResult = await db.query<GardenRow>(
       `SELECT ${GARDEN_SELECT}
@@ -273,6 +275,8 @@ router.patch('/:id', async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
+
+  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const existing = await db.query(
@@ -357,6 +361,8 @@ router.delete('/:id', async (req, res) => {
   const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
+  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+
   try {
     const result = await db.query(
       'DELETE FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3) RETURNING id',
@@ -379,6 +385,8 @@ router.get('/:gardenId/beds', async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
+
+  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(
@@ -418,6 +426,8 @@ router.post('/:gardenId/beds', async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
+
+  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(
@@ -497,6 +507,9 @@ router.patch('/:gardenId/beds/:bedId', async (req, res) => {
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;
+
+  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!/^\d+$/.test(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(
@@ -634,6 +647,9 @@ router.delete('/:gardenId/beds/:bedId', async (req, res) => {
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;
+
+  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!/^\d+$/.test(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(
