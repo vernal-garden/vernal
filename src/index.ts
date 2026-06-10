@@ -9,6 +9,8 @@ import catalogueRouter from './routes/catalogue';
 import gardensRouter from './routes/gardens';
 import { plantingsNestedRouter, gardenPlantingsRouter, plantingsFlatRouter } from './routes/plantings';
 import meRouter from './routes/me';
+import seedsRouter from './routes/seeds';
+import correctionsRouter from './routes/corrections';
 import { sessionMiddleware } from './middleware/session';
 import { initPassport, passport } from './lib/oauth/index';
 
@@ -53,6 +55,8 @@ app.use('/api/gardens/:gardenId/plantings', gardenPlantingsRouter);
 app.use('/api/gardens', gardensRouter);
 app.use('/api/plantings', plantingsFlatRouter);
 app.use('/api/me', meRouter);
+app.use('/api/seeds', seedsRouter);
+app.use('/api/corrections', correctionsRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
