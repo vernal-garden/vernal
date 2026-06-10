@@ -19,6 +19,12 @@ export interface SeedDetail extends SeedSummary {
   frostTolerance: string | null;
   weeksToTransplant: number | null;
   successionIntervalWeeks: number | null;
+  plantingDepthInches: number | null;
+  rowSpacingInches: number | null;
+  germinationDaysMin: number | null;
+  germinationDaysMax: number | null;
+  germinationTempMinF: number | null;
+  germinationTempMaxF: number | null;
   source: 'openfarm' | 'community' | 'editorial';
   companions: CompanionEntry[];
 }

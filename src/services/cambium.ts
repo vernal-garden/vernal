@@ -122,6 +122,9 @@ export async function getSeedById(id: number): Promise<SeedDetail | null> {
             sunlight, watering_needs,
             hardiness_zone_min, hardiness_zone_max,
             frost_tolerance, weeks_to_transplant, succession_interval_weeks,
+            planting_depth_inches, row_spacing_inches,
+            germination_days_min, germination_days_max,
+            germination_temp_min_f, germination_temp_max_f,
             source
      FROM cambium.seeds
      WHERE id = $1 AND moderation_status = 'active'`,
@@ -153,6 +156,12 @@ export async function getSeedById(id: number): Promise<SeedDetail | null> {
     frostTolerance: (row.frost_tolerance as string | null) ?? null,
     weeksToTransplant: (row.weeks_to_transplant as number | null) ?? null,
     successionIntervalWeeks: (row.succession_interval_weeks as number | null) ?? null,
+    plantingDepthInches: row.planting_depth_inches != null ? Number(row.planting_depth_inches) : null,
+    rowSpacingInches: row.row_spacing_inches != null ? Number(row.row_spacing_inches) : null,
+    germinationDaysMin: (row.germination_days_min as number | null) ?? null,
+    germinationDaysMax: (row.germination_days_max as number | null) ?? null,
+    germinationTempMinF: (row.germination_temp_min_f as number | null) ?? null,
+    germinationTempMaxF: (row.germination_temp_max_f as number | null) ?? null,
     source: row.source as 'openfarm' | 'community' | 'editorial',
     companions: companions ?? [],
   };
