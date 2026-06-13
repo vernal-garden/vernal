@@ -20,7 +20,12 @@ async function request<T>(method: string, path: string, payload?: unknown): Prom
 
   if (res.status === 204) return undefined;
 
-  const data: unknown = await res.json();
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    data = await res.text().catch(() => null);
+  }
   if (!res.ok) throw new ApiError(res.status, data);
   return data as T;
 }
