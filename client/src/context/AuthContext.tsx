@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import * as api from '../lib/api';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<SessionState>({ kind: 'loading' });
   const bootstrapped = useRef(false);
 
-  const resolveSession = async (): Promise<void> => {
+  const resolveSession = useCallback(async (): Promise<void> => {
     const body = await api.get<{ data: Record<string, unknown> }>('/api/auth/session');
     const data = body!.data;
 
@@ -86,12 +86,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       bootstrapped.current = true;
       await api.post('/api/auth/guest');
       await resolveSession();
+      return;
     }
-  };
+
+    // Degenerate: bootstrap ran but still no session — show expired UI
+    setState({ kind: 'expired', recoverable: false });
+  }, []); // bootstrapped ref is stable; no deps needed
 
   useEffect(() => {
-    void resolveSession();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    resolveSession().catch(() => {
+      setState({ kind: 'expired', recoverable: false });
+    });
+  }, [resolveSession]);
 
   // ── Derived context values ────────────────────────────────────────────────
 
