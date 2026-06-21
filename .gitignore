@@ -34,3 +34,5 @@ docs/superpowers/
 
 # Worktrees
 .worktrees/
+.claude/
+verify-cambium.js

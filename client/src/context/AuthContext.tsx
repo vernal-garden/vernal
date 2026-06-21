@@ -65,7 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const gardens = await api.get<{ data: unknown[] }>('/api/gardens');
       setState({
         kind: 'account',
-        account: data['account'] as SessionAccount,
+        account: { ...(data['account'] as SessionAccount), id: String((data['account'] as SessionAccount).id) },
         pendingGuestData: (data['pendingGuestData'] as PendingGuestData | null) ?? null,
         gardenCount: gardens?.data.length ?? 0,
       });
