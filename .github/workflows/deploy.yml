@@ -22,6 +22,10 @@ jobs:
             git pull origin main
             npm ci
             npm run build
+            cd /var/www/vernal/client
+            npm ci
+            npm run build
+            cd /var/www/vernal
             pm2 reload vernal --update-env
             sleep 5
             pm2 jlist | node -e '
