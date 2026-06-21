@@ -7,6 +7,7 @@ import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import OnboardingPage from './pages/OnboardingPage';
 import SessionExpiredPage from './pages/SessionExpiredPage';
+import ResetPasswordPage from './pages/ResetPasswordPage';
 import MyGardensPage from './pages/MyGardensPage';
 import SeedCataloguePage from './pages/SeedCataloguePage';
 import PlantingGuidePage from './pages/PlantingGuidePage';
@@ -50,6 +51,10 @@ const router = createBrowserRouter([
   {
     path: '/session-expired',
     element: <SessionExpiredPage />,
+  },
+  {
+    path: '/reset-password',
+    element: <ResetPasswordPage />,
   },
   {
     path: '/gardens',
