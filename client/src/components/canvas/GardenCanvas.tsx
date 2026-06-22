@@ -144,7 +144,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
       height={size.h}
       draggable
       onWheel={handleWheel}
-      onClick={(e) => { console.log('STAGE click target:', e.target.className, 'bedLayerChild?', e.target !== e.target.getStage()); if (e.target === e.target.getStage()) onSelectBed(null); }}
+      onClick={() => onSelectBed(null)}
     >
       <Layer listening={false}>
         {scale >= GRID_HIDE_THRESHOLD && gridLines}
@@ -188,7 +188,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   stroke={selected ? '#1a5c3a' : '#2d6a4f'}
                   strokeWidth={selected ? 3 : 1.5}
                   cornerRadius={2}
-                  onClick={(e) => { console.log('BED click fired:', bed.type, bed.id); e.cancelBubble = true; onSelectBed(bed); }}
+                  onClick={(e) => { e.cancelBubble = true; onSelectBed(bed); }}
                 />
                 {cellLines}
                 <Text
@@ -211,7 +211,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
             return (
               <Group
                 key={bed.id}
-                onClick={(e) => { console.log('BED click fired:', bed.type, bed.id); e.cancelBubble = true; onSelectBed(bed); }}
+                onClick={(e) => { e.cancelBubble = true; onSelectBed(bed); }}
               >
                 <Line
                   points={points}
