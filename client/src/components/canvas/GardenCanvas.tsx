@@ -231,12 +231,12 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   stroke={selected ? '#8a5a00' : '#b8860b'}
                   strokeWidth={selected ? 3 : 1.5}
                   dash={[6, 4]}
-                  hitFunc={(ctx, shape) => {
-                    ctx.beginPath();
-                    ctx.moveTo(points[0], points[1]);
-                    for (let i = 2; i < points.length; i += 2) ctx.lineTo(points[i], points[i + 1]);
-                    ctx.closePath();
-                    ctx.fillStrokeShape(shape);
+                  hitFunc={(context, shape) => {
+                    context.beginPath();
+                    context.moveTo(points[0], points[1]);
+                    for (let i = 2; i < points.length; i += 2) context.lineTo(points[i], points[i + 1]);
+                    context.closePath();
+                    context.fillStrokeShape(shape);
                   }}
                 />
                 <Text
