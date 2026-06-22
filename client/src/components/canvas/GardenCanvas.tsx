@@ -58,13 +58,19 @@ function freeformBbox(points: number[]) {
   return { minX, minY };
 }
 
+function pointInPolygon(px: number, py: number, pts: number[]) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 2; i < pts.length; j = i, i += 2) {
+    const xi = pts[i], yi = pts[i + 1], xj = pts[j], yj = pts[j + 1];
+    if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
 const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, onSelectBed, onScaleChange }, ref) => {
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(1);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  useEffect(() => { (window as any).__stage = stageRef.current; });
 
   useEffect(() => {
     const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
@@ -152,16 +158,26 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
       draggable
       onWheel={handleWheel}
       onClick={(e) => {
-        const st = e.target.getStage();
-        console.log('STAGE CLICK — target:', e.target.getClassName(), '| wasDragging:', st?.isDragging());
-        if (e.target === st) onSelectBed(null);
+        const stage = e.target.getStage();
+        const p = stage!.getPointerPosition();
+        const w = stage!.getAbsoluteTransform().copy().invert().point(p!);
+        for (let i = beds.length - 1; i >= 0; i--) {
+          const b = beds[i];
+          if (b.type === 'grid' && b.grid) {
+            const { x, y, cols, rows } = b.grid;
+            if (w.x >= x * GRID_PX && w.x <= (x + cols) * GRID_PX && w.y >= y * GRID_PX && w.y <= (y + rows) * GRID_PX) { onSelectBed(b); return; }
+          } else if (b.type === 'freeform' && b.freeform) {
+            if (pointInPolygon(w.x, w.y, b.freeform.points)) { onSelectBed(b); return; }
+          }
+        }
+        onSelectBed(null);
       }}
     >
       <Layer listening={false}>
         {scale >= GRID_HIDE_THRESHOLD && gridLines}
       </Layer>
 
-      <Layer>
+      <Layer listening={false}>
         {beds.map(bed => {
           const selected = bed.id === selectedBedId;
 
@@ -175,23 +191,19 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
               cellLines.push(
                 <Line key={`vc${col}`}
                   points={[col * GRID_PX, 0, col * GRID_PX, h]}
-                  stroke="#b8d0ba" strokeWidth={0.5} listening={false} />,
+                  stroke="#b8d0ba" strokeWidth={0.5} />,
               );
             }
             for (let row = 1; row < rows; row++) {
               cellLines.push(
                 <Line key={`hr${row}`}
                   points={[0, row * GRID_PX, w, row * GRID_PX]}
-                  stroke="#b8d0ba" strokeWidth={0.5} listening={false} />,
+                  stroke="#b8d0ba" strokeWidth={0.5} />,
               );
             }
 
             return (
-              <Group
-                key={bed.id}
-                x={x * GRID_PX}
-                y={y * GRID_PX}
-              >
+              <Group key={bed.id} x={x * GRID_PX} y={y * GRID_PX}>
                 <Rect
                   width={w}
                   height={h}
@@ -199,7 +211,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   stroke={selected ? '#1a5c3a' : '#2d6a4f'}
                   strokeWidth={selected ? 3 : 1.5}
                   cornerRadius={2}
-                  onClick={(e) => { console.log('GRID HIT'); e.cancelBubble = true; onSelectBed(bed); }}
                 />
                 {cellLines}
                 <Text
@@ -209,7 +220,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   y={4}
                   fill="#264a2e"
                   fontFamily="Georgia, serif"
-                  listening={false}
                 />
               </Group>
             );
@@ -220,10 +230,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
             const { minX, minY } = freeformBbox(points);
 
             return (
-              <Group
-                key={bed.id}
-                onClick={(e) => { console.log('FREEFORM HIT'); e.cancelBubble = true; onSelectBed(bed); }}
-              >
+              <Group key={bed.id}>
                 <Line
                   points={points}
                   closed={closed}
@@ -231,13 +238,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   stroke={selected ? '#8a5a00' : '#b8860b'}
                   strokeWidth={selected ? 3 : 1.5}
                   dash={[6, 4]}
-                  hitFunc={(context, shape) => {
-                    context.beginPath();
-                    context.moveTo(points[0], points[1]);
-                    for (let i = 2; i < points.length; i += 2) context.lineTo(points[i], points[i + 1]);
-                    context.closePath();
-                    context.fillStrokeShape(shape);
-                  }}
                 />
                 <Text
                   text={bed.label || 'Bed'}
@@ -246,7 +246,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   y={minY + 4}
                   fill="#5a3e00"
                   fontFamily="Georgia, serif"
-                  listening={false}
                 />
               </Group>
             );
