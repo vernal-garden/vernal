@@ -4,6 +4,8 @@ import Konva from 'konva';
 import { Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
 import type { Bed } from '../../hooks/useGarden';
 
+Konva.hitOnDragEnabled = true;
+
 export const GRID_PX = 30;
 const ZOOM_STEP = 1.1;
 const MIN_SCALE = 0.2;
@@ -78,6 +80,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
     const pt = { x: (cx - stage.x()) / old, y: (cy - stage.y()) / old };
     stage.scale({ x: clamped, y: clamped });
     stage.position({ x: cx - pt.x * clamped, y: cy - pt.y * clamped });
+    stage.batchDraw();
     setScale(clamped);
     onScaleChange?.(clamped);
   }, [onScaleChange]);
@@ -102,6 +105,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
       const pt = { x: (cx - stage.x()) / old, y: (cy - stage.y()) / old };
       stage.scale({ x: 1, y: 1 });
       stage.position({ x: cx - pt.x * 1, y: cy - pt.y * 1 });
+      stage.batchDraw();
       setScale(1);
       onScaleChange?.(1);
     },
