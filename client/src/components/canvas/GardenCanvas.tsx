@@ -164,14 +164,14 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
               cellLines.push(
                 <Line key={`vc${col}`}
                   points={[col * GRID_PX, 0, col * GRID_PX, h]}
-                  stroke="#b8d0ba" strokeWidth={0.5} />,
+                  stroke="#b8d0ba" strokeWidth={0.5} listening={false} />,
               );
             }
             for (let row = 1; row < rows; row++) {
               cellLines.push(
                 <Line key={`hr${row}`}
                   points={[0, row * GRID_PX, w, row * GRID_PX]}
-                  stroke="#b8d0ba" strokeWidth={0.5} />,
+                  stroke="#b8d0ba" strokeWidth={0.5} listening={false} />,
               );
             }
 
@@ -198,6 +198,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   y={4}
                   fill="#264a2e"
                   fontFamily="Georgia, serif"
+                  listening={false}
                 />
               </Group>
             );
@@ -227,6 +228,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   y={minY + 4}
                   fill="#5a3e00"
                   fontFamily="Georgia, serif"
+                  listening={false}
                 />
               </Group>
             );
