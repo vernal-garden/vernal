@@ -228,7 +228,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   y={minY + 4}
                   fill="#5a3e00"
                   fontFamily="Georgia, serif"
-                  listening={false}
                 />
               </Group>
             );
