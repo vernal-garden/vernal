@@ -61,6 +61,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
   const [scale, setScale] = useState(1);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  useEffect(() => { (window as any).__stage = stageRef.current; });
+
   useEffect(() => {
     const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
     window.addEventListener('resize', onResize);
@@ -144,7 +147,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
       height={size.h}
       draggable
       onWheel={handleWheel}
-      onClick={() => onSelectBed(null)}
+      onClick={(e) => {
+        const st = e.target.getStage();
+        console.log('STAGE CLICK — target:', e.target.getClassName(), '| wasDragging:', st?.isDragging());
+        if (e.target === st) onSelectBed(null);
+      }}
     >
       <Layer listening={false}>
         {scale >= GRID_HIDE_THRESHOLD && gridLines}
@@ -188,7 +195,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
                   stroke={selected ? '#1a5c3a' : '#2d6a4f'}
                   strokeWidth={selected ? 3 : 1.5}
                   cornerRadius={2}
-                  onClick={(e) => { e.cancelBubble = true; onSelectBed(bed); }}
+                  onClick={(e) => { console.log('GRID HIT'); e.cancelBubble = true; onSelectBed(bed); }}
                 />
                 {cellLines}
                 <Text
@@ -211,7 +218,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({ beds, selectedBedId, 
             return (
               <Group
                 key={bed.id}
-                onClick={(e) => { e.cancelBubble = true; onSelectBed(bed); }}
+                onClick={(e) => { console.log('FREEFORM HIT'); e.cancelBubble = true; onSelectBed(bed); }}
               >
                 <Line
                   points={points}
