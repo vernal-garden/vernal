@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import type { ReactNode } from 'react';
 import Konva from 'konva';
 import { Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
-import type { Bed, CreateBedPayload, UpdateBedPayload } from '../../hooks/useGarden';
+import type { Bed, BedGrid, BedFreeform, CreateBedPayload, UpdateBedPayload } from '../../hooks/useGarden';
 
 Konva.hitOnDragEnabled = true;
 
@@ -28,6 +28,7 @@ interface Props {
   onCreateBed: (payload: CreateBedPayload) => void;
   onUpdateBedGeometry: (bedId: string, payload: UpdateBedPayload) => void;
   onScaleChange?: (scale: number) => void;
+  onOverlapWarning?: (msg: string) => void;
   mode: 'grid' | 'freeform';
   panActive: boolean;
   gardenId: string;
@@ -37,7 +38,7 @@ type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
 
 type ResizePreview =
   | { kind: 'grid'; x: number; y: number; cols: number; rows: number; overlap: boolean }
-  | { kind: 'freeform'; points: number[] };
+  | { kind: 'freeform'; points: number[]; overlap: boolean };
 
 // ---- Pure helpers ----
 
@@ -135,12 +136,62 @@ function gridFromCells(
   };
 }
 
-function gridBedsOverlap(
-  a: { x: number; y: number; cols: number; rows: number },
-  b: { x: number; y: number; cols: number; rows: number }
-) {
-  return a.x < b.x + b.cols && a.x + a.cols > b.x &&
-         a.y < b.y + b.rows && a.y + a.rows > b.y;
+function bedToPolygon(bed: Bed): number[] | null {
+  if (bed.type === 'grid' && bed.grid) {
+    const { x, y, cols, rows } = bed.grid;
+    return [
+      x * GRID_PX, y * GRID_PX,
+      (x + cols) * GRID_PX, y * GRID_PX,
+      (x + cols) * GRID_PX, (y + rows) * GRID_PX,
+      x * GRID_PX, (y + rows) * GRID_PX,
+    ];
+  }
+  if (bed.type === 'freeform' && bed.freeform) return bed.freeform.points;
+  return null;
+}
+
+function segmentsIntersect(
+  ax: number, ay: number, bx: number, by: number,
+  cx: number, cy: number, dx: number, dy: number,
+): boolean {
+  const d1x = bx - ax, d1y = by - ay;
+  const d2x = dx - cx, d2y = dy - cy;
+  const cross = d1x * d2y - d1y * d2x;
+  if (Math.abs(cross) < 1e-10) return false;
+  const t = ((cx - ax) * d2y - (cy - ay) * d2x) / cross;
+  const u = ((cx - ax) * d1y - (cy - ay) * d1x) / cross;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+}
+
+function polygonsOverlap(ptsA: number[], ptsB: number[]): boolean {
+  const nA = ptsA.length / 2;
+  const nB = ptsB.length / 2;
+  for (let i = 0; i < nA; i++) {
+    const ax = ptsA[i * 2], ay = ptsA[i * 2 + 1];
+    const bx = ptsA[((i + 1) % nA) * 2], by = ptsA[((i + 1) % nA) * 2 + 1];
+    for (let j = 0; j < nB; j++) {
+      const cx = ptsB[j * 2], cy = ptsB[j * 2 + 1];
+      const dx = ptsB[((j + 1) % nB) * 2], dy = ptsB[((j + 1) % nB) * 2 + 1];
+      if (segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy)) return true;
+    }
+  }
+  for (let i = 0; i < nA; i++) {
+    if (pointInPolygon(ptsA[i * 2], ptsA[i * 2 + 1], ptsB)) return true;
+  }
+  for (let j = 0; j < nB; j++) {
+    if (pointInPolygon(ptsB[j * 2], ptsB[j * 2 + 1], ptsA)) return true;
+  }
+  return false;
+}
+
+function bedOverlapsAny(candidatePoly: number[], excludeId: string, bedsArr: Bed[]): boolean {
+  for (const bed of bedsArr) {
+    if (bed.id === excludeId) continue;
+    const poly = bedToPolygon(bed);
+    if (!poly || poly.length < 4) continue;
+    if (polygonsOverlap(candidatePoly, poly)) return true;
+  }
+  return false;
 }
 
 // ---- Component ----
@@ -148,7 +199,7 @@ function gridBedsOverlap(
 const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   beds, selectedBedId, onSelectBed, onDoubleBed,
   onCreateBed, onUpdateBedGeometry,
-  onScaleChange, mode, panActive, gardenId: _gardenId,
+  onScaleChange, onOverlapWarning, mode, panActive, gardenId: _gardenId,
 }, ref) => {
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(1);
@@ -164,6 +215,14 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const freeformPtsRef = useRef<number[]>([]);
   const [cursorWorld, setCursorWorld] = useState<{ x: number; y: number } | null>(null);
   const lastClickTimeRef = useRef(0);
+
+  // Move overlap indicator
+  const [moveOverlap, setMoveOverlap] = useState(false);
+  const moveOverlapRef = useRef(false);
+  const setMoveOverlapSynced = useCallback((v: boolean) => {
+    moveOverlapRef.current = v;
+    setMoveOverlap(v);
+  }, []);
 
   // Move
   const moveRef = useRef<{ bedId: string; startWorld: { x: number; y: number }; moved: boolean } | null>(null);
@@ -192,7 +251,16 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const selectedBedIdRef = useRef<string | null>(selectedBedId);
   useEffect(() => { selectedBedIdRef.current = selectedBedId; }, [selectedBedId]);
   const bedsRef = useRef<Bed[]>(beds);
-  useEffect(() => { bedsRef.current = beds; }, [beds]);
+  // committedGeomRef: holds the geometry just committed on move/resize so the canvas
+  // renders the correct position immediately, before the parent's beds prop propagates.
+  const committedGeomRef = useRef<{ bedId: string; grid?: BedGrid; freeform?: BedFreeform } | null>(null);
+  useEffect(() => {
+    bedsRef.current = beds;
+    // Once the beds prop reflects the committed bed, the override is no longer needed.
+    if (committedGeomRef.current && beds.find(b => b.id === committedGeomRef.current!.bedId)) {
+      committedGeomRef.current = null;
+    }
+  }, [beds]);
 
   const setFreeformPtsSynced = useCallback((pts: number[]) => {
     freeformPtsRef.current = pts;
@@ -201,6 +269,12 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const closeFreeform = useCallback((pts: number[]) => {
     if (pts.length < 6) { setFreeformPtsSynced([]); setCursorWorld(null); return; }
+    if (bedOverlapsAny(pts, '', bedsRef.current)) {
+      setFreeformPtsSynced([]);
+      setCursorWorld(null);
+      onOverlapWarning?.("Beds can't overlap");
+      return;
+    }
     onCreateBed({
       type: 'freeform',
       label: `Bed ${bedsRef.current.length + 1}`,
@@ -208,7 +282,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     });
     setFreeformPtsSynced([]);
     setCursorWorld(null);
-  }, [onCreateBed, setFreeformPtsSynced]);
+  }, [onCreateBed, onOverlapWarning, setFreeformPtsSynced]);
 
   // Keyboard: space-pan, Escape
   useEffect(() => {
@@ -226,6 +300,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         setCursorWorld(null);
         setGridPreview(null);
         gridDragRef.current = null;
+        moveRef.current = null;
+        setDragOffsetSynced(null);
+        setMoveOverlapSynced(false);
+        committedGeomRef.current = null;
         resizeRef.current = null;
         setResizePreviewSynced(null);
       }
@@ -323,7 +401,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
 
     // Check resize handles for selected bed before anything else
-    if (selectedBedIdRef.current) {
+    // Skip if a freeform polygon is in progress (clicks place vertices, not drag operations)
+    if (selectedBedIdRef.current && freeformPtsRef.current.length === 0) {
       const selBed = bedsRef.current.find(b => b.id === selectedBedIdRef.current);
       if (selBed) {
         const bbox = getBedBbox(selBed);
@@ -360,8 +439,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       const cell = worldToCell(w.x, w.y);
       gridDragRef.current = { startCell: cell, startWorld: w, curCell: cell, moved: false };
     } else {
-      const hitBed = hitTestBeds(w, beds);
-      if (hitBed) moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
+      // freeform mode: only start a move when no polygon is in progress
+      if (freeformPtsRef.current.length === 0) {
+        const hitBed = hitTestBeds(w, beds);
+        if (hitBed) moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
+      }
     }
   }, [mode, panActive, spaceHeld, beds]);
 
@@ -392,10 +474,13 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         const gy1 = Math.round(ny1 / GRID_PX);
         const gx2 = Math.max(gx1 + 1, Math.round(nx2 / GRID_PX));
         const gy2 = Math.max(gy1 + 1, Math.round(ny2 / GRID_PX));
-        const overlap = bedsRef.current.some(b =>
-          b.id !== bedId && b.type === 'grid' && b.grid &&
-          gridBedsOverlap({ x: gx1, y: gy1, cols: gx2 - gx1, rows: gy2 - gy1 }, b.grid)
-        );
+        const gResizePoly = [
+          gx1 * GRID_PX, gy1 * GRID_PX,
+          gx2 * GRID_PX, gy1 * GRID_PX,
+          gx2 * GRID_PX, gy2 * GRID_PX,
+          gx1 * GRID_PX, gy2 * GRID_PX,
+        ];
+        const overlap = bedOverlapsAny(gResizePoly, bedId, bedsRef.current);
         setResizePreviewSynced({ kind: 'grid', x: gx1, y: gy1, cols: gx2 - gx1, rows: gy2 - gy1, overlap });
       } else if (bed.type === 'freeform' && origPoints) {
         const origW = origBbox.x2 - origBbox.x1;
@@ -407,7 +492,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             ? nx1 + (v - origBbox.x1) * scaleX
             : ny1 + (v - origBbox.y1) * scaleY
         );
-        setResizePreviewSynced({ kind: 'freeform', points: newPoints });
+        const overlap = bedOverlapsAny(newPoints, bedId, bedsRef.current);
+        setResizePreviewSynced({ kind: 'freeform', points: newPoints, overlap });
       }
       return;
     }
@@ -421,7 +507,13 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         const cell = worldToCell(w.x, w.y);
         gridDragRef.current.curCell = cell;
         const g = gridFromCells(startCell, cell);
-        const overlap = beds.some(b => b.type === 'grid' && b.grid && gridBedsOverlap(g, b.grid));
+        const gPoly = [
+          g.x * GRID_PX, g.y * GRID_PX,
+          (g.x + g.cols) * GRID_PX, g.y * GRID_PX,
+          (g.x + g.cols) * GRID_PX, (g.y + g.rows) * GRID_PX,
+          g.x * GRID_PX, (g.y + g.rows) * GRID_PX,
+        ];
+        const overlap = bedOverlapsAny(gPoly, '', beds);
         setGridPreview({ ...g, overlap });
       }
       return;
@@ -431,9 +523,28 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       const dx = w.x - moveRef.current.startWorld.x;
       const dy = w.y - moveRef.current.startWorld.y;
       if (!moveRef.current.moved && Math.hypot(dx, dy) > 4) moveRef.current.moved = true;
-      if (moveRef.current.moved) setDragOffsetSynced({ x: dx, y: dy });
+      if (moveRef.current.moved) {
+        setDragOffsetSynced({ x: dx, y: dy });
+        // Compute live overlap for the moving bed to show warning colour
+        const movingBed = bedsRef.current.find(b => b.id === moveRef.current!.bedId);
+        if (movingBed) {
+          let candidatePoly: number[] | null = null;
+          if (movingBed.type === 'grid' && movingBed.grid) {
+            const nx = movingBed.grid.x * GRID_PX + dx;
+            const ny = movingBed.grid.y * GRID_PX + dy;
+            const bw = movingBed.grid.cols * GRID_PX;
+            const bh = movingBed.grid.rows * GRID_PX;
+            candidatePoly = [nx, ny, nx + bw, ny, nx + bw, ny + bh, nx, ny + bh];
+          } else if (movingBed.type === 'freeform' && movingBed.freeform) {
+            candidatePoly = movingBed.freeform.points.map((v, i) => i % 2 === 0 ? v + dx : v + dy);
+          }
+          if (candidatePoly) {
+            setMoveOverlapSynced(bedOverlapsAny(candidatePoly, moveRef.current.bedId, bedsRef.current));
+          }
+        }
+      }
     }
-  }, [mode, beds, setDragOffsetSynced, setResizePreviewSynced]);
+  }, [mode, beds, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleMouseUp = useCallback(() => {
     if (resizeRef.current) {
@@ -446,9 +557,15 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         const bed = bedsRef.current.find(b => b.id === bedId);
         if (bed) {
           if (preview.kind === 'grid' && !preview.overlap) {
-            onUpdateBedGeometry(bedId, { grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
-          } else if (preview.kind === 'freeform' && bed.freeform) {
-            onUpdateBedGeometry(bedId, { freeform: { points: preview.points, closed: bed.freeform.closed } });
+            const geom = { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows };
+            committedGeomRef.current = { bedId, grid: geom };
+            onUpdateBedGeometry(bedId, { grid: geom });
+          } else if (preview.kind === 'freeform' && bed.freeform && !preview.overlap) {
+            const geom = { points: preview.points, closed: bed.freeform.closed };
+            committedGeomRef.current = { bedId, freeform: geom };
+            onUpdateBedGeometry(bedId, { freeform: geom });
+          } else if (preview.overlap) {
+            onOverlapWarning?.("Beds can't overlap");
           }
         }
       }
@@ -463,6 +580,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         setGridPreview(null);
         if (!preview.overlap) {
           onCreateBed({ type: 'grid', label: `Bed ${bedsRef.current.length + 1}`, grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
+        } else {
+          onOverlapWarning?.("Beds can't overlap");
         }
         return;
       }
@@ -479,17 +598,34 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           const newX = Math.round((bed.grid.x * GRID_PX + dragOffsetRef.current.x) / GRID_PX);
           const newY = Math.round((bed.grid.y * GRID_PX + dragOffsetRef.current.y) / GRID_PX);
           const newGrid = { x: newX, y: newY, cols: bed.grid.cols, rows: bed.grid.rows };
-          const overlap = bedsRef.current.some(b => b.id !== bedId && b.type === 'grid' && b.grid && gridBedsOverlap(newGrid, b.grid));
-          if (!overlap) onUpdateBedGeometry(bedId, { grid: newGrid });
+          const gPoly = [
+            newX * GRID_PX, newY * GRID_PX,
+            (newX + bed.grid.cols) * GRID_PX, newY * GRID_PX,
+            (newX + bed.grid.cols) * GRID_PX, (newY + bed.grid.rows) * GRID_PX,
+            newX * GRID_PX, (newY + bed.grid.rows) * GRID_PX,
+          ];
+          if (bedOverlapsAny(gPoly, bedId, bedsRef.current)) {
+            onOverlapWarning?.("Beds can't overlap");
+          } else {
+            committedGeomRef.current = { bedId, grid: newGrid };
+            onUpdateBedGeometry(bedId, { grid: newGrid });
+          }
         } else if (bed.type === 'freeform' && bed.freeform) {
           const newPoints = bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffsetRef.current!.x : v + dragOffsetRef.current!.y);
-          onUpdateBedGeometry(bedId, { freeform: { points: newPoints, closed: bed.freeform.closed } });
+          if (bedOverlapsAny(newPoints, bedId, bedsRef.current)) {
+            onOverlapWarning?.("Beds can't overlap");
+          } else {
+            const geom = { points: newPoints, closed: bed.freeform.closed };
+            committedGeomRef.current = { bedId, freeform: geom };
+            onUpdateBedGeometry(bedId, { freeform: geom });
+          }
         }
       }
     }
     moveRef.current = null;
     setDragOffsetSynced(null);
-  }, [gridPreview, onCreateBed, onUpdateBedGeometry, setDragOffsetSynced, setResizePreviewSynced]);
+    setMoveOverlapSynced(false);
+  }, [gridPreview, onCreateBed, onUpdateBedGeometry, onOverlapWarning, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (resizeDoneRef.current) { resizeDoneRef.current = false; return; }
@@ -502,24 +638,45 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const isPanning = panActive || spaceHeld;
 
     if (mode === 'freeform' && !isPanning) {
-      const now = Date.now();
-      const isDbl = now - lastClickTimeRef.current < 300;
-      lastClickTimeRef.current = now;
+      const inProgress = freeformPtsRef.current.length > 0;
 
-      if (isDbl && freeformPtsRef.current.length >= 6) {
-        const trimmed = freeformPtsRef.current.slice(0, -2);
-        setFreeformPtsSynced(trimmed);
-        closeFreeform(trimmed);
+      if (inProgress) {
+        // Polygon in progress: place vertex or close, same as before
+        const now = Date.now();
+        const isDbl = now - lastClickTimeRef.current < 300;
+        lastClickTimeRef.current = now;
+
+        if (isDbl && freeformPtsRef.current.length >= 6) {
+          const trimmed = freeformPtsRef.current.slice(0, -2);
+          setFreeformPtsSynced(trimmed);
+          closeFreeform(trimmed);
+          return;
+        }
+
+        const pts = freeformPtsRef.current;
+        if (pts.length >= 4) {
+          const currentScale = stageRef.current?.scaleX() ?? 1;
+          const distScreen = Math.hypot(w.x - pts[0], w.y - pts[1]) * currentScale;
+          if (distScreen <= 12) { closeFreeform(pts); return; }
+        }
+        setFreeformPtsSynced([...pts, w.x, w.y]);
         return;
       }
 
-      const pts = freeformPtsRef.current;
-      if (pts.length >= 4) {
-        const currentScale = stageRef.current?.scaleX() ?? 1;
-        const distScreen = Math.hypot(w.x - pts[0], w.y - pts[1]) * currentScale;
-        if (distScreen <= 12) { closeFreeform(pts); return; }
+      // No polygon in progress: select/deselect/start drawing
+      const hit = hitTestBeds(w, beds);
+      if (hit) {
+        onSelectBed(hit);
+        return;
       }
-      setFreeformPtsSynced([...pts, w.x, w.y]);
+      if (selectedBedIdRef.current) {
+        // Deselect; next click will place the first vertex
+        onSelectBed(null);
+        return;
+      }
+      // Nothing selected, no hit: place first vertex and start drawing
+      lastClickTimeRef.current = Date.now();
+      setFreeformPtsSynced([w.x, w.y]);
       return;
     }
 
@@ -575,11 +732,16 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         {beds.map(bed => {
           const selected = bed.id === selectedBedId;
           const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
+          const isMoveOverlapping = isMoving && moveOverlap;
 
           if (bed.type === 'grid' && bed.grid) {
-            const { x, y, cols, rows } = bed.grid;
-            const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
-            const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
+            // Use committedGeomRef while the parent's optimistic beds prop catches up (Fix C)
+            const committed = !isMoving && committedGeomRef.current?.bedId === bed.id
+              ? (committedGeomRef.current.grid ?? null)
+              : null;
+            const { x, y, cols, rows } = committed ?? bed.grid;
+            const renderX = isMoving ? bed.grid.x * GRID_PX + dragOffset!.x : x * GRID_PX;
+            const renderY = isMoving ? bed.grid.y * GRID_PX + dragOffset!.y : y * GRID_PX;
             const w = cols * GRID_PX;
             const h = rows * GRID_PX;
 
@@ -593,8 +755,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
             return (
               <Group key={bed.id} id={bed.id} x={renderX} y={renderY}>
-                <Rect width={w} height={h} fill="#d4edda"
-                  stroke={selected ? '#1a5c3a' : '#2d6a4f'}
+                <Rect width={w} height={h}
+                  fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : '#d4edda'}
+                  stroke={isMoveOverlapping ? '#c05050' : (selected ? '#1a5c3a' : '#2d6a4f')}
                   strokeWidth={selected ? 3 : 1.5} cornerRadius={2} />
                 {cellLines}
                 <Text text={bed.label || 'Bed'} fontSize={12} x={4} y={4} fill="#264a2e" fontFamily="Georgia, serif" />
@@ -604,9 +767,13 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
           if (bed.type === 'freeform' && bed.freeform) {
             const { closed } = bed.freeform;
+            // Use committedGeomRef while parent catches up (Fix C)
+            const committedF = !isMoving && committedGeomRef.current?.bedId === bed.id
+              ? (committedGeomRef.current.freeform ?? null)
+              : null;
             const pts = isMoving
               ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
-              : bed.freeform.points;
+              : (committedF?.points ?? bed.freeform.points);
             let sumX = 0, sumY = 0;
             for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
             const labelX = sumX / (pts.length / 2);
@@ -615,8 +782,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             return (
               <Group key={bed.id} id={bed.id}>
                 <Line points={pts} closed={closed}
-                  fill="rgba(255,243,205,0.7)"
-                  stroke={selected ? '#8a5a00' : '#b8860b'}
+                  fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : 'rgba(255,243,205,0.7)'}
+                  stroke={isMoveOverlapping ? '#c05050' : (selected ? '#8a5a00' : '#b8860b')}
                   strokeWidth={selected ? 3 : 1.5} dash={[6, 4]} />
                 <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
               </Group>
@@ -705,8 +872,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             <Line
               points={resizePreview.points}
               closed
-              fill="rgba(255,243,205,0.5)"
-              stroke="#b8860b"
+              fill={resizePreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(255,243,205,0.5)'}
+              stroke={resizePreview.overlap ? '#c05050' : '#b8860b'}
               strokeWidth={1.5}
               dash={[4, 3]}
             />

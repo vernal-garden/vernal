@@ -19,6 +19,8 @@ export default function HomePage() {
   const [bedManagerOpen, setBedManagerOpen] = useState(false);
   const [pendingMode, setPendingMode] = useState<CanvasMode | null>(null);
   const [detailFocusName, setDetailFocusName] = useState(false);
+  const [overlapWarning, setOverlapWarning] = useState<string | null>(null);
+  const overlapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canvasRef = useRef<GardenCanvasRef>(null);
 
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
@@ -103,6 +105,12 @@ export default function HomePage() {
     updateBed(bedId, payload);
   }, [updateBed]);
 
+  const handleOverlapWarning = useCallback((msg: string) => {
+    setOverlapWarning(msg);
+    if (overlapTimerRef.current) clearTimeout(overlapTimerRef.current);
+    overlapTimerRef.current = setTimeout(() => setOverlapWarning(null), 3000);
+  }, []);
+
   const handleFocusBed = useCallback((bed: Bed) => {
     canvasRef.current?.focusBed(bed);
     setBedManagerOpen(false);
@@ -137,6 +145,7 @@ export default function HomePage() {
         gardenId={resolvedId ?? ''}
         onCreateBed={handleCreateBed}
         onUpdateBedGeometry={handleUpdateBedGeometry}
+        onOverlapWarning={handleOverlapWarning}
       />
 
       {/* Empty-beds overlay */}
@@ -162,15 +171,15 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Mutation error toast */}
-      {mutationError && (
+      {/* Mutation error / overlap warning toast */}
+      {(mutationError || overlapWarning) && (
         <div style={{
           position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
           background: '#5a1e1e', color: '#ffd8d8', borderRadius: 8,
           padding: '10px 18px', fontSize: 13, zIndex: 100,
           boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
         }}>
-          {mutationError}
+          {mutationError || overlapWarning}
         </div>
       )}
 
