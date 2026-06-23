@@ -131,7 +131,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const [spaceHeld, setSpaceHeld] = useState(false);
 
   // Grid creation
-  const gridDragRef = useRef<{ startCell: { cellX: number; cellY: number }; curCell: { cellX: number; cellY: number } } | null>(null);
+  const gridDragRef = useRef<{ startCell: { cellX: number; cellY: number }; startWorld: { x: number; y: number }; curCell: { cellX: number; cellY: number }; moved: boolean } | null>(null);
   const [gridPreview, setGridPreview] = useState<{ x: number; y: number; cols: number; rows: number; overlap: boolean } | null>(null);
 
   // Freeform creation
@@ -343,10 +343,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         return;
       }
       const cell = worldToCell(w.x, w.y);
-      gridDragRef.current = { startCell: cell, curCell: cell };
-      const g = gridFromCells(cell, cell);
-      const overlap = beds.some(b => b.type === 'grid' && b.grid && gridBedsOverlap(g, b.grid));
-      setGridPreview({ ...g, overlap });
+      gridDragRef.current = { startCell: cell, startWorld: w, curCell: cell, moved: false };
     } else {
       const hitBed = hitTestBeds(w, beds);
       if (hitBed) moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
@@ -361,11 +358,17 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     if (mode === 'freeform') setCursorWorld(w);
 
     if (gridDragRef.current) {
-      const cell = worldToCell(w.x, w.y);
-      gridDragRef.current.curCell = cell;
-      const g = gridFromCells(gridDragRef.current.startCell, cell);
-      const overlap = beds.some(b => b.type === 'grid' && b.grid && gridBedsOverlap(g, b.grid));
-      setGridPreview({ ...g, overlap });
+      const { startCell, startWorld, moved } = gridDragRef.current;
+      if (!moved && Math.hypot(w.x - startWorld.x, w.y - startWorld.y) > 4) {
+        gridDragRef.current.moved = true;
+      }
+      if (gridDragRef.current.moved) {
+        const cell = worldToCell(w.x, w.y);
+        gridDragRef.current.curCell = cell;
+        const g = gridFromCells(startCell, cell);
+        const overlap = beds.some(b => b.type === 'grid' && b.grid && gridBedsOverlap(g, b.grid));
+        setGridPreview({ ...g, overlap });
+      }
       return;
     }
 
@@ -378,13 +381,19 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, beds]);
 
   const handleMouseUp = useCallback(() => {
-    if (gridDragRef.current && gridPreview) {
-      const preview = gridPreview;
+    if (gridDragRef.current) {
+      const wasMoved = gridDragRef.current.moved;
       gridDragRef.current = null;
-      setGridPreview(null);
-      if (!preview.overlap) {
-        onCreateBed({ type: 'grid', label: `Bed ${bedsRef.current.length + 1}`, grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
+      if (wasMoved && gridPreview) {
+        const preview = gridPreview;
+        setGridPreview(null);
+        if (!preview.overlap) {
+          onCreateBed({ type: 'grid', label: `Bed ${bedsRef.current.length + 1}`, grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
+        }
+        return;
       }
+      setGridPreview(null);
+      // Not a drag — fall through so handleClick runs selection
       return;
     }
 
