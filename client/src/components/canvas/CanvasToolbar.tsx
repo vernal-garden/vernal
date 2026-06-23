@@ -1,5 +1,7 @@
 import type { GardenSummary } from '../../hooks/useGardenList';
 
+export type CanvasMode = 'grid' | 'freeform';
+
 interface Props {
   scale: number;
   onZoomIn: () => void;
@@ -8,6 +10,12 @@ interface Props {
   gardens: GardenSummary[];
   activeGardenId: string;
   onGardenChange: (id: string) => void;
+  mode: CanvasMode;
+  onModeChange: (mode: CanvasMode) => void;
+  panActive: boolean;
+  onPanToggle: () => void;
+  bedManagerOpen: boolean;
+  onBedManagerToggle: () => void;
 }
 
 const btnStyle: React.CSSProperties = {
@@ -28,8 +36,56 @@ const btnStyle: React.CSSProperties = {
   flexShrink: 0,
 };
 
-export default function CanvasToolbar({ scale, onZoomIn, onZoomOut, onResetZoom, gardens, activeGardenId, onGardenChange }: Props) {
+const divider = (
+  <div style={{ width: 1, height: 18, background: 'rgba(100,160,100,0.2)', margin: '0 6px' }} />
+);
+
+export default function CanvasToolbar({
+  scale, onZoomIn, onZoomOut, onResetZoom,
+  gardens, activeGardenId, onGardenChange,
+  mode, onModeChange,
+  panActive, onPanToggle,
+  bedManagerOpen, onBedManagerToggle,
+}: Props) {
   const pct = Math.round(scale * 100);
+
+  const modeBtn = (m: CanvasMode, label: string) => (
+    <button
+      onClick={() => onModeChange(m)}
+      title={`${label} bed mode`}
+      style={{
+        padding: '3px 10px',
+        borderRadius: 999,
+        fontSize: 11,
+        fontFamily: "'DM Mono', 'Courier New', monospace",
+        cursor: 'pointer',
+        border: '1px solid',
+        transition: 'all 0.15s',
+        ...(mode === m
+          ? { background: 'rgba(140,200,140,0.18)', borderColor: 'rgba(140,200,140,0.4)', color: '#c8e8c8' }
+          : { background: 'transparent', borderColor: 'transparent', color: '#7a9e7a' }),
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  const iconBtn = (icon: string, label: string, active: boolean, onClick: () => void) => (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      style={{
+        ...btnStyle,
+        background: active ? 'rgba(140,200,140,0.18)' : 'transparent',
+        borderColor: active ? 'rgba(140,200,140,0.4)' : 'rgba(140,200,140,0.22)',
+        color: active ? '#c8e8c8' : '#b8d4b8',
+        fontSize: 14,
+      }}
+    >
+      {icon}
+    </button>
+  );
 
   return (
     <div style={{
@@ -50,12 +106,22 @@ export default function CanvasToolbar({ scale, onZoomIn, onZoomOut, onResetZoom,
       zIndex: 10,
       userSelect: 'none',
     }}>
-      {/* Zoom out */}
-      <button style={btnStyle} onClick={onZoomOut} aria-label="Zoom out">
-        −
-      </button>
+      {/* Mode switcher */}
+      {modeBtn('grid', 'Grid')}
+      {modeBtn('freeform', 'Freeform')}
 
-      {/* Zoom percentage — click to reset */}
+      {divider}
+
+      {/* Pan tool */}
+      {iconBtn('✋', 'Pan tool (or hold Space)', panActive, onPanToggle)}
+
+      {/* Beds manager */}
+      {iconBtn('☰', 'Bed manager', bedManagerOpen, onBedManagerToggle)}
+
+      {divider}
+
+      {/* Zoom */}
+      <button style={btnStyle} onClick={onZoomOut} aria-label="Zoom out">−</button>
       <button
         onClick={onResetZoom}
         aria-label="Reset zoom to 100%"
@@ -75,16 +141,12 @@ export default function CanvasToolbar({ scale, onZoomIn, onZoomOut, onResetZoom,
       >
         {pct}%
       </button>
+      <button style={btnStyle} onClick={onZoomIn} aria-label="Zoom in">+</button>
 
-      {/* Zoom in */}
-      <button style={btnStyle} onClick={onZoomIn} aria-label="Zoom in">
-        +
-      </button>
-
-      {/* Garden switcher — only when >1 garden */}
+      {/* Garden switcher */}
       {gardens.length > 1 && (
         <>
-          <div style={{ width: 1, height: 18, background: 'rgba(100,160,100,0.2)', margin: '0 8px' }} />
+          {divider}
           <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
             {gardens.map(g => (
               <button
@@ -100,16 +162,8 @@ export default function CanvasToolbar({ scale, onZoomIn, onZoomOut, onResetZoom,
                   border: '1px solid',
                   transition: 'all 0.15s',
                   ...(g.id === activeGardenId
-                    ? {
-                        background: 'rgba(140,200,140,0.18)',
-                        borderColor: 'rgba(140,200,140,0.4)',
-                        color: '#c8e8c8',
-                      }
-                    : {
-                        background: 'transparent',
-                        borderColor: 'transparent',
-                        color: '#7a9e7a',
-                      }),
+                    ? { background: 'rgba(140,200,140,0.18)', borderColor: 'rgba(140,200,140,0.4)', color: '#c8e8c8' }
+                    : { background: 'transparent', borderColor: 'transparent', color: '#7a9e7a' }),
                 }}
               >
                 {g.name.length > 14 ? g.name.slice(0, 13) + '…' : g.name}
