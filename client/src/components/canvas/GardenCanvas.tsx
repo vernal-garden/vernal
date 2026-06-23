@@ -1,8 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Konva from 'konva';
-import type { Box as KonvaBox } from 'konva/lib/shapes/Transformer';
-import { Layer, Line, Group, Rect, Stage, Text, Transformer } from 'react-konva';
+import { Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../../hooks/useGarden';
 
 Konva.hitOnDragEnabled = true;
@@ -12,6 +11,7 @@ const ZOOM_STEP = 1.1;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 5;
 const GRID_HIDE_THRESHOLD = 0.4;
+const HANDLE_HALF = 6;
 
 export interface GardenCanvasRef {
   zoomIn: () => void;
@@ -32,6 +32,12 @@ interface Props {
   panActive: boolean;
   gardenId: string;
 }
+
+type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
+
+type ResizePreview =
+  | { kind: 'grid'; x: number; y: number; cols: number; rows: number; overlap: boolean }
+  | { kind: 'freeform'; points: number[] };
 
 // ---- Pure helpers ----
 
@@ -68,6 +74,26 @@ function freeformBbox(points: number[]) {
     maxY = Math.max(maxY, points[i + 1]);
   }
   return { minX, minY, maxX, maxY };
+}
+
+function getBedBbox(bed: Bed): { x1: number; y1: number; x2: number; y2: number } | null {
+  if (bed.type === 'grid' && bed.grid) {
+    return {
+      x1: bed.grid.x * GRID_PX,
+      y1: bed.grid.y * GRID_PX,
+      x2: (bed.grid.x + bed.grid.cols) * GRID_PX,
+      y2: (bed.grid.y + bed.grid.rows) * GRID_PX,
+    };
+  }
+  if (bed.type === 'freeform' && bed.freeform) {
+    const bb = freeformBbox(bed.freeform.points);
+    return { x1: bb.minX, y1: bb.minY, x2: bb.maxX, y2: bb.maxY };
+  }
+  return null;
+}
+
+function hitTestHandle(w: { x: number; y: number }, cx: number, cy: number, hitHalf: number): boolean {
+  return Math.abs(w.x - cx) <= hitHalf && Math.abs(w.y - cy) <= hitHalf;
 }
 
 function pointInPolygon(px: number, py: number, pts: number[]) {
@@ -125,7 +151,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   onScaleChange, mode, panActive, gardenId: _gardenId,
 }, ref) => {
   const stageRef = useRef<Konva.Stage>(null);
-  const transformerRef = useRef<Konva.Transformer>(null);
   const [scale, setScale] = useState(1);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [spaceHeld, setSpaceHeld] = useState(false);
@@ -148,6 +173,22 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     dragOffsetRef.current = v;
     setDragOffset(v);
   }, []);
+
+  // Resize
+  const resizeRef = useRef<{
+    bedId: string;
+    handle: ResizeHandle;
+    origBbox: { x1: number; y1: number; x2: number; y2: number };
+    origPoints?: number[];
+  } | null>(null);
+  const [resizePreview, setResizePreview] = useState<ResizePreview | null>(null);
+  const resizePreviewRef = useRef<ResizePreview | null>(null);
+  const setResizePreviewSynced = useCallback((v: ResizePreview | null) => {
+    resizePreviewRef.current = v;
+    setResizePreview(v);
+  }, []);
+  const resizeDoneRef = useRef(false);
+
   const selectedBedIdRef = useRef<string | null>(selectedBedId);
   useEffect(() => { selectedBedIdRef.current = selectedBedId; }, [selectedBedId]);
   const bedsRef = useRef<Bed[]>(beds);
@@ -185,6 +226,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         setCursorWorld(null);
         setGridPreview(null);
         gridDragRef.current = null;
+        resizeRef.current = null;
+        setResizePreviewSynced(null);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -193,7 +236,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [setFreeformPtsSynced, setDragOffsetSynced]);
+  }, [setFreeformPtsSynced, setDragOffsetSynced, setResizePreviewSynced]);
 
   // Cursor style
   useEffect(() => {
@@ -203,63 +246,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     else if (mode === 'freeform') { el.style.cursor = 'crosshair'; }
     else { el.style.cursor = 'default'; }
   }, [panActive, spaceHeld, mode]);
-
-  // Transformer: attach to selected bed's node
-  useEffect(() => {
-    const stage = stageRef.current;
-    const tr = transformerRef.current;
-    if (!stage || !tr) return;
-    if (!selectedBedId) {
-      tr.nodes([]);
-      tr.getLayer()?.batchDraw();
-      return;
-    }
-    const node = stage.findOne('#' + selectedBedId);
-    if (node) {
-      tr.nodes([node as Konva.Node]);
-    } else {
-      tr.nodes([]);
-    }
-    tr.getLayer()?.batchDraw();
-  }, [selectedBedId, beds]);
-
-  // Transformer resize end
-  const handleTransformEnd = useCallback(() => {
-    const tr = transformerRef.current;
-    if (!tr || !selectedBedId) return;
-    const node = tr.nodes()[0] as Konva.Group | undefined;
-    if (!node) return;
-    const bed = bedsRef.current.find(b => b.id === selectedBedId);
-    if (!bed) return;
-
-    if (bed.type === 'grid' && bed.grid) {
-      const newX = Math.round(node.x() / GRID_PX);
-      const newY = Math.round(node.y() / GRID_PX);
-      const newCols = Math.max(1, Math.round((bed.grid.cols * GRID_PX * node.scaleX()) / GRID_PX));
-      const newRows = Math.max(1, Math.round((bed.grid.rows * GRID_PX * node.scaleY()) / GRID_PX));
-      node.scaleX(1); node.scaleY(1);
-      node.x(newX * GRID_PX); node.y(newY * GRID_PX);
-      const newGrid = { x: newX, y: newY, cols: newCols, rows: newRows };
-      const overlap = bedsRef.current.some(b => b.id !== selectedBedId && b.type === 'grid' && b.grid && gridBedsOverlap(newGrid, b.grid));
-      if (!overlap) {
-        onUpdateBedGeometry(selectedBedId, { grid: newGrid });
-      } else {
-        node.x(bed.grid.x * GRID_PX); node.y(bed.grid.y * GRID_PX);
-        node.getLayer()?.batchDraw();
-      }
-    } else if (bed.type === 'freeform' && bed.freeform) {
-      const sx = node.scaleX();
-      const sy = node.scaleY();
-      const tx = node.x();
-      const ty = node.y();
-      const newPoints = bed.freeform.points.map((v, i) =>
-        i % 2 === 0 ? tx + v * sx : ty + v * sy
-      );
-      node.scaleX(1); node.scaleY(1); node.x(0); node.y(0);
-      onUpdateBedGeometry(selectedBedId, { freeform: { points: newPoints, closed: bed.freeform.closed } });
-    }
-    tr.getLayer()?.batchDraw();
-  }, [selectedBedId, onUpdateBedGeometry]);
 
   // Window resize
   useEffect(() => {
@@ -336,6 +322,35 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
 
+    // Check resize handles for selected bed before anything else
+    if (selectedBedIdRef.current) {
+      const selBed = bedsRef.current.find(b => b.id === selectedBedIdRef.current);
+      if (selBed) {
+        const bbox = getBedBbox(selBed);
+        if (bbox) {
+          const currentScale = stage.scaleX();
+          const hitHalf = Math.max(HANDLE_HALF, 8 / currentScale);
+          const corners: [ResizeHandle, number, number][] = [
+            ['nw', bbox.x1, bbox.y1],
+            ['ne', bbox.x2, bbox.y1],
+            ['sw', bbox.x1, bbox.y2],
+            ['se', bbox.x2, bbox.y2],
+          ];
+          for (const [handle, cx, cy] of corners) {
+            if (hitTestHandle(w, cx, cy, hitHalf)) {
+              resizeRef.current = {
+                bedId: selBed.id,
+                handle,
+                origBbox: bbox,
+                origPoints: selBed.type === 'freeform' ? selBed.freeform?.points : undefined,
+              };
+              return;
+            }
+          }
+        }
+      }
+    }
+
     if (mode === 'grid') {
       const hitBed = hitTestBeds(w, beds);
       if (hitBed) {
@@ -356,6 +371,46 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
 
     if (mode === 'freeform') setCursorWorld(w);
+
+    if (resizeRef.current) {
+      const { handle, origBbox, origPoints, bedId } = resizeRef.current;
+      const bed = bedsRef.current.find(b => b.id === bedId);
+      if (!bed) return;
+
+      let { x1, y1, x2, y2 } = origBbox;
+      if (handle === 'nw' || handle === 'sw') x1 = w.x;
+      if (handle === 'ne' || handle === 'se') x2 = w.x;
+      if (handle === 'nw' || handle === 'ne') y1 = w.y;
+      if (handle === 'sw' || handle === 'se') y2 = w.y;
+      const nx1 = Math.min(x1, x2);
+      const ny1 = Math.min(y1, y2);
+      const nx2 = Math.max(x1, x2);
+      const ny2 = Math.max(y1, y2);
+
+      if (bed.type === 'grid') {
+        const gx1 = Math.round(nx1 / GRID_PX);
+        const gy1 = Math.round(ny1 / GRID_PX);
+        const gx2 = Math.max(gx1 + 1, Math.round(nx2 / GRID_PX));
+        const gy2 = Math.max(gy1 + 1, Math.round(ny2 / GRID_PX));
+        const overlap = bedsRef.current.some(b =>
+          b.id !== bedId && b.type === 'grid' && b.grid &&
+          gridBedsOverlap({ x: gx1, y: gy1, cols: gx2 - gx1, rows: gy2 - gy1 }, b.grid)
+        );
+        setResizePreviewSynced({ kind: 'grid', x: gx1, y: gy1, cols: gx2 - gx1, rows: gy2 - gy1, overlap });
+      } else if (bed.type === 'freeform' && origPoints) {
+        const origW = origBbox.x2 - origBbox.x1;
+        const origH = origBbox.y2 - origBbox.y1;
+        const scaleX = origW > 0 ? (nx2 - nx1) / origW : 1;
+        const scaleY = origH > 0 ? (ny2 - ny1) / origH : 1;
+        const newPoints = origPoints.map((v, i) =>
+          i % 2 === 0
+            ? nx1 + (v - origBbox.x1) * scaleX
+            : ny1 + (v - origBbox.y1) * scaleY
+        );
+        setResizePreviewSynced({ kind: 'freeform', points: newPoints });
+      }
+      return;
+    }
 
     if (gridDragRef.current) {
       const { startCell, startWorld, moved } = gridDragRef.current;
@@ -378,9 +433,28 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       if (!moveRef.current.moved && Math.hypot(dx, dy) > 4) moveRef.current.moved = true;
       if (moveRef.current.moved) setDragOffsetSynced({ x: dx, y: dy });
     }
-  }, [mode, beds]);
+  }, [mode, beds, setDragOffsetSynced, setResizePreviewSynced]);
 
   const handleMouseUp = useCallback(() => {
+    if (resizeRef.current) {
+      const { bedId } = resizeRef.current;
+      resizeRef.current = null;
+      resizeDoneRef.current = true;
+      const preview = resizePreviewRef.current;
+      setResizePreviewSynced(null);
+      if (preview) {
+        const bed = bedsRef.current.find(b => b.id === bedId);
+        if (bed) {
+          if (preview.kind === 'grid' && !preview.overlap) {
+            onUpdateBedGeometry(bedId, { grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
+          } else if (preview.kind === 'freeform' && bed.freeform) {
+            onUpdateBedGeometry(bedId, { freeform: { points: preview.points, closed: bed.freeform.closed } });
+          }
+        }
+      }
+      return;
+    }
+
     if (gridDragRef.current) {
       const wasMoved = gridDragRef.current.moved;
       gridDragRef.current = null;
@@ -415,9 +489,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
     moveRef.current = null;
     setDragOffsetSynced(null);
-  }, [gridPreview, onCreateBed, onUpdateBedGeometry, setDragOffsetSynced]);
+  }, [gridPreview, onCreateBed, onUpdateBedGeometry, setDragOffsetSynced, setResizePreviewSynced]);
 
   const handleClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (resizeDoneRef.current) { resizeDoneRef.current = false; return; }
     if (moveRef.current?.moved) { moveRef.current = null; return; }
     if (gridDragRef.current) return;
 
@@ -477,17 +552,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const selectedBed = beds.find(b => b.id === selectedBedId) ?? null;
 
-  const boundBoxFunc = useCallback((_oldBox: KonvaBox, newBox: KonvaBox): KonvaBox => {
-    if (selectedBed?.type === 'grid') {
-      return {
-        ...newBox,
-        width: Math.max(GRID_PX, Math.round(newBox.width / GRID_PX) * GRID_PX),
-        height: Math.max(GRID_PX, Math.round(newBox.height / GRID_PX) * GRID_PX),
-      };
-    }
-    return newBox;
-  }, [selectedBed]);
-
   return (
     <Stage
       ref={stageRef}
@@ -506,7 +570,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         {scale >= GRID_HIDE_THRESHOLD && gridLines}
       </Layer>
 
-      {/* Layer 2: beds (listening=true for Transformer) */}
+      {/* Layer 2: beds */}
       <Layer listening={true}>
         {beds.map(bed => {
           const selected = bed.id === selectedBedId;
@@ -543,7 +607,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             const pts = isMoving
               ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
               : bed.freeform.points;
-            const { minX, minY } = freeformBbox(pts);
+            let sumX = 0, sumY = 0;
+            for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
+            const labelX = sumX / (pts.length / 2);
+            const labelY = sumY / (pts.length / 2);
 
             return (
               <Group key={bed.id} id={bed.id}>
@@ -551,7 +618,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                   fill="rgba(255,243,205,0.7)"
                   stroke={selected ? '#8a5a00' : '#b8860b'}
                   strokeWidth={selected ? 3 : 1.5} dash={[6, 4]} />
-                <Text text={bed.label || 'Bed'} fontSize={12} x={minX + 4} y={minY + 4} fill="#5a3e00" fontFamily="Georgia, serif" />
+                <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
               </Group>
             );
           }
@@ -560,8 +627,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         })}
       </Layer>
 
-      {/* Layer 3: creation previews + Transformer */}
-      <Layer listening={true}>
+      {/* Layer 3: creation previews + resize handles */}
+      <Layer listening={false}>
         {/* Grid creation preview */}
         {gridPreview && (
           <Rect
@@ -573,46 +640,78 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             stroke={gridPreview.overlap ? '#c05050' : '#2d6a4f'}
             strokeWidth={1.5}
             dash={[6, 3]}
-            listening={false}
           />
         )}
 
         {/* Freeform creation preview */}
         {mode === 'freeform' && freeformPts.length >= 2 && (
           <>
-            <Line points={freeformPts} stroke="#b8860b" strokeWidth={1.5} dash={[4, 3]} closed={false} listening={false} />
+            <Line points={freeformPts} stroke="#b8860b" strokeWidth={1.5} dash={[4, 3]} closed={false} />
             {cursorWorld && (
               <Line
                 points={[freeformPts[freeformPts.length - 2], freeformPts[freeformPts.length - 1], cursorWorld.x, cursorWorld.y]}
-                stroke="#b8860b" strokeWidth={1} dash={[4, 4]} opacity={0.5} listening={false}
+                stroke="#b8860b" strokeWidth={1} dash={[4, 4]} opacity={0.5}
               />
             )}
             {cursorWorld && freeformPts.length >= 4 && (() => {
               const dist = Math.hypot(cursorWorld.x - freeformPts[0], cursorWorld.y - freeformPts[1]) * scale;
               return dist <= 12 ? (
                 <Rect x={freeformPts[0] - 5} y={freeformPts[1] - 5} width={10} height={10}
-                  fill="rgba(184,134,11,0.3)" stroke="#b8860b" strokeWidth={1.5} listening={false} />
+                  fill="rgba(184,134,11,0.3)" stroke="#b8860b" strokeWidth={1.5} />
               ) : null;
             })()}
             {Array.from({ length: freeformPts.length / 2 }, (_, i) => (
               <Rect key={i} x={freeformPts[i * 2] - 3} y={freeformPts[i * 2 + 1] - 3}
-                width={6} height={6} fill="#b8860b" listening={false} />
+                width={6} height={6} fill="#b8860b" />
             ))}
           </>
         )}
 
-        {/* Transformer for selected bed */}
-        <Transformer
-          ref={transformerRef}
-          rotateEnabled={false}
-          boundBoxFunc={boundBoxFunc}
-          onTransformEnd={handleTransformEnd}
-          anchorStroke="#2d6a4f"
-          anchorFill="#fff"
-          anchorSize={8}
-          borderStroke="#2d6a4f"
-          borderDash={[4, 3]}
-        />
+        {/* Resize handles + bbox frame for selected bed */}
+        {selectedBed && (() => {
+          const bbox = getBedBbox(selectedBed);
+          if (!bbox) return null;
+          const { x1, y1, x2, y2 } = bbox;
+          const corners: [number, number][] = [[x1, y1], [x2, y1], [x1, y2], [x2, y2]];
+          return (
+            <>
+              <Rect x={x1} y={y1} width={x2 - x1} height={y2 - y1}
+                stroke="#2d6a4f" strokeWidth={1} dash={[4, 3]} fill="transparent" />
+              {corners.map(([cx, cy], i) => (
+                <Rect key={i}
+                  x={cx - HANDLE_HALF} y={cy - HANDLE_HALF}
+                  width={HANDLE_HALF * 2} height={HANDLE_HALF * 2}
+                  fill="#fff" stroke="#2d6a4f" strokeWidth={1.5}
+                />
+              ))}
+            </>
+          );
+        })()}
+
+        {/* Resize preview */}
+        {resizePreview && (
+          resizePreview.kind === 'grid' ? (
+            <Rect
+              x={resizePreview.x * GRID_PX}
+              y={resizePreview.y * GRID_PX}
+              width={resizePreview.cols * GRID_PX}
+              height={resizePreview.rows * GRID_PX}
+              fill={resizePreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(80,160,100,0.2)'}
+              stroke={resizePreview.overlap ? '#c05050' : '#2d6a4f'}
+              strokeWidth={1.5}
+              dash={[4, 3]}
+            />
+          ) : (
+            <Line
+              points={resizePreview.points}
+              closed
+              fill="rgba(255,243,205,0.5)"
+              stroke="#b8860b"
+              strokeWidth={1.5}
+              dash={[4, 3]}
+            />
+          )
+        )}
       </Layer>
     </Stage>
   );
