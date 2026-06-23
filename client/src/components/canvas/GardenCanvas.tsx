@@ -256,9 +256,25 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const committedGeomRef = useRef<{ bedId: string; grid?: BedGrid; freeform?: BedFreeform } | null>(null);
   useEffect(() => {
     bedsRef.current = beds;
-    // Once the beds prop reflects the committed bed, the override is no longer needed.
-    if (committedGeomRef.current && beds.find(b => b.id === committedGeomRef.current!.bedId)) {
-      committedGeomRef.current = null;
+    // Clear the override only when the beds prop actually carries the committed geometry,
+    // so the canvas never flickers back to the pre-move position mid-propagation.
+    const c = committedGeomRef.current;
+    if (c) {
+      const bed = beds.find(b => b.id === c.bedId);
+      if (bed) {
+        if (c.grid && bed.type === 'grid' && bed.grid) {
+          const g = bed.grid;
+          if (g.x === c.grid.x && g.y === c.grid.y && g.cols === c.grid.cols && g.rows === c.grid.rows) {
+            committedGeomRef.current = null;
+          }
+        } else if (c.freeform && bed.type === 'freeform' && bed.freeform) {
+          const bp = bed.freeform.points;
+          const cp = c.freeform.points;
+          if (bp.length === cp.length && bp.every((v, i) => v === cp[i])) {
+            committedGeomRef.current = null;
+          }
+        }
+      }
     }
   }, [beds]);
 
