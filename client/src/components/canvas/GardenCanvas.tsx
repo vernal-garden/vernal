@@ -289,11 +289,13 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const selectedBedIdRef = useRef<string | null>(selectedBedId);
   useEffect(() => { selectedBedIdRef.current = selectedBedId; }, [selectedBedId]);
   const bedsRef = useRef<Bed[]>(beds);
+  // Sync bedsRef synchronously during render so event handlers always read current geometry.
+  // useEffect fires after paint; a fast user interaction before it runs would see stale data.
+  bedsRef.current = beds;
   // committedGeomRef: holds the geometry just committed on move/resize so the canvas
   // renders the correct position immediately, before the parent's beds prop propagates.
   const committedGeomRef = useRef<{ bedId: string; grid?: BedGrid; freeform?: BedFreeform } | null>(null);
   useEffect(() => {
-    bedsRef.current = beds;
     // Clear the override only when the beds prop actually carries the committed geometry,
     // so the canvas never flickers back to the pre-move position mid-propagation.
     const c = committedGeomRef.current;
@@ -486,7 +488,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
 
     if (mode === 'grid') {
-      const hitBed = hitTestBeds(w, beds);
+      const hitBed = hitTestBeds(w, bedsRef.current);
       if (hitBed) {
         moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
         dragStartOverlapsRef.current = getBedCurrentOverlaps(hitBed, bedsRef.current);
@@ -497,14 +499,14 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     } else {
       // freeform mode: only start a move when no polygon is in progress
       if (freeformPtsRef.current.length === 0) {
-        const hitBed = hitTestBeds(w, beds);
+        const hitBed = hitTestBeds(w, bedsRef.current);
         if (hitBed) {
           moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
           dragStartOverlapsRef.current = getBedCurrentOverlaps(hitBed, bedsRef.current);
         }
       }
     }
-  }, [mode, panActive, spaceHeld, beds]);
+  }, [mode, panActive, spaceHeld]);
 
   const handleMouseMove = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = stageRef.current; if (!stage) return;
@@ -572,7 +574,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           (g.x + g.cols) * GRID_PX, (g.y + g.rows) * GRID_PX,
           g.x * GRID_PX, (g.y + g.rows) * GRID_PX,
         ];
-        const overlap = bedOverlapsAny(gPoly, '', beds);
+        const overlap = bedOverlapsAny(gPoly, '', bedsRef.current);
         setGridPreview({ ...g, overlap });
       }
       return;
@@ -603,7 +605,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         }
       }
     }
-  }, [mode, beds, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
+  }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleMouseUp = useCallback(() => {
     if (resizeRef.current) {
@@ -724,7 +726,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       }
 
       // No polygon in progress: select/deselect/start drawing
-      const hit = hitTestBeds(w, beds);
+      const hit = hitTestBeds(w, bedsRef.current);
       if (hit) {
         onSelectBed(hit);
         return;
@@ -740,17 +742,17 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       return;
     }
 
-    const hit = hitTestBeds(w, beds);
+    const hit = hitTestBeds(w, bedsRef.current);
     onSelectBed(hit ?? null);
-  }, [mode, panActive, spaceHeld, beds, onSelectBed, closeFreeform, setFreeformPtsSynced]);
+  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced]);
 
   const handleDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = e.target.getStage(); if (!stage) return;
     const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
-    const hit = hitTestBeds(w, beds);
+    const hit = hitTestBeds(w, bedsRef.current);
     if (hit) onDoubleBed(hit);
-  }, [beds, onDoubleBed]);
+  }, [onDoubleBed]);
 
   const extents = useMemo(() => computeExtents(beds), [beds]);
 
