@@ -566,10 +566,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     if (resizeRef.current) {
       const { bedId } = resizeRef.current;
       resizeRef.current = null;
-      resizeDoneRef.current = true;
       const preview = resizePreviewRef.current;
       setResizePreviewSynced(null);
       if (preview) {
+        // A drag actually occurred — suppress the click so it doesn't select/deselect
+        resizeDoneRef.current = true;
         const bed = bedsRef.current.find(b => b.id === bedId);
         if (bed) {
           if (preview.kind === 'grid' && !preview.overlap) {
