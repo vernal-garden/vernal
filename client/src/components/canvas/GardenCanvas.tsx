@@ -184,9 +184,42 @@ function polygonsOverlap(ptsA: number[], ptsB: number[]): boolean {
   return false;
 }
 
+// Strict check used for creation only — every other bed must be clear.
 function bedOverlapsAny(candidatePoly: number[], excludeId: string, bedsArr: Bed[]): boolean {
   for (const bed of bedsArr) {
     if (bed.id === excludeId) continue;
+    const poly = bedToPolygon(bed);
+    if (!poly || poly.length < 4) continue;
+    if (polygonsOverlap(candidatePoly, poly)) return true;
+  }
+  return false;
+}
+
+// Returns the IDs of every bed that the given bed's current footprint already overlaps.
+// Snapshot this at drag/resize start so we can ignore pre-existing overlaps.
+function getBedCurrentOverlaps(bed: Bed, bedsArr: Bed[]): Set<string> {
+  const currentPoly = bedToPolygon(bed);
+  if (!currentPoly || currentPoly.length < 4) return new Set();
+  const result = new Set<string>();
+  for (const other of bedsArr) {
+    if (other.id === bed.id) continue;
+    const otherPoly = bedToPolygon(other);
+    if (!otherPoly || otherPoly.length < 4) continue;
+    if (polygonsOverlap(currentPoly, otherPoly)) result.add(other.id);
+  }
+  return result;
+}
+
+// Used for move and resize — only rejects geometry that would overlap a bed that the
+// dragged/resized bed was NOT already touching at the start of the gesture.
+function introducesNewOverlap(
+  candidatePoly: number[],
+  excludeId: string,
+  preExisting: Set<string>,
+  bedsArr: Bed[],
+): boolean {
+  for (const bed of bedsArr) {
+    if (bed.id === excludeId || preExisting.has(bed.id)) continue;
     const poly = bedToPolygon(bed);
     if (!poly || poly.length < 4) continue;
     if (polygonsOverlap(candidatePoly, poly)) return true;
@@ -223,6 +256,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     moveOverlapRef.current = v;
     setMoveOverlap(v);
   }, []);
+
+  // Pre-existing overlaps captured at the start of each move/resize gesture.
+  // introducesNewOverlap uses this to allow a bed to be dragged/resized freely
+  // through positions it already occupied (including its own prior footprint).
+  const dragStartOverlapsRef = useRef<Set<string>>(new Set());
 
   // Move
   const moveRef = useRef<{ bedId: string; startWorld: { x: number; y: number }; moved: boolean } | null>(null);
@@ -439,6 +477,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                 origBbox: bbox,
                 origPoints: selBed.type === 'freeform' ? selBed.freeform?.points : undefined,
               };
+              dragStartOverlapsRef.current = getBedCurrentOverlaps(selBed, bedsRef.current);
               return;
             }
           }
@@ -450,6 +489,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       const hitBed = hitTestBeds(w, beds);
       if (hitBed) {
         moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
+        dragStartOverlapsRef.current = getBedCurrentOverlaps(hitBed, bedsRef.current);
         return;
       }
       const cell = worldToCell(w.x, w.y);
@@ -458,7 +498,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       // freeform mode: only start a move when no polygon is in progress
       if (freeformPtsRef.current.length === 0) {
         const hitBed = hitTestBeds(w, beds);
-        if (hitBed) moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
+        if (hitBed) {
+          moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
+          dragStartOverlapsRef.current = getBedCurrentOverlaps(hitBed, bedsRef.current);
+        }
       }
     }
   }, [mode, panActive, spaceHeld, beds]);
@@ -496,7 +539,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           gx2 * GRID_PX, gy2 * GRID_PX,
           gx1 * GRID_PX, gy2 * GRID_PX,
         ];
-        const overlap = bedOverlapsAny(gResizePoly, bedId, bedsRef.current);
+        const overlap = introducesNewOverlap(gResizePoly, bedId, dragStartOverlapsRef.current, bedsRef.current);
         setResizePreviewSynced({ kind: 'grid', x: gx1, y: gy1, cols: gx2 - gx1, rows: gy2 - gy1, overlap });
       } else if (bed.type === 'freeform' && origPoints) {
         const origW = origBbox.x2 - origBbox.x1;
@@ -508,7 +551,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             ? nx1 + (v - origBbox.x1) * scaleX
             : ny1 + (v - origBbox.y1) * scaleY
         );
-        const overlap = bedOverlapsAny(newPoints, bedId, bedsRef.current);
+        const overlap = introducesNewOverlap(newPoints, bedId, dragStartOverlapsRef.current, bedsRef.current);
         setResizePreviewSynced({ kind: 'freeform', points: newPoints, overlap });
       }
       return;
@@ -555,7 +598,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             candidatePoly = movingBed.freeform.points.map((v, i) => i % 2 === 0 ? v + dx : v + dy);
           }
           if (candidatePoly) {
-            setMoveOverlapSynced(bedOverlapsAny(candidatePoly, moveRef.current.bedId, bedsRef.current));
+            setMoveOverlapSynced(introducesNewOverlap(candidatePoly, moveRef.current.bedId, dragStartOverlapsRef.current, bedsRef.current));
           }
         }
       }
@@ -621,7 +664,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             (newX + bed.grid.cols) * GRID_PX, (newY + bed.grid.rows) * GRID_PX,
             newX * GRID_PX, (newY + bed.grid.rows) * GRID_PX,
           ];
-          if (bedOverlapsAny(gPoly, bedId, bedsRef.current)) {
+          if (introducesNewOverlap(gPoly, bedId, dragStartOverlapsRef.current, bedsRef.current)) {
             onOverlapWarning?.("Beds can't overlap");
           } else {
             committedGeomRef.current = { bedId, grid: newGrid };
@@ -629,7 +672,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           }
         } else if (bed.type === 'freeform' && bed.freeform) {
           const newPoints = bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffsetRef.current!.x : v + dragOffsetRef.current!.y);
-          if (bedOverlapsAny(newPoints, bedId, bedsRef.current)) {
+          if (introducesNewOverlap(newPoints, bedId, dragStartOverlapsRef.current, bedsRef.current)) {
             onOverlapWarning?.("Beds can't overlap");
           } else {
             const geom = { points: newPoints, closed: bed.freeform.closed };
