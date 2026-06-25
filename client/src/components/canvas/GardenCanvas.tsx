@@ -472,6 +472,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     if (mode === 'grid') {
       const hitBed = hitTestBeds(w, bedsRef.current);
+      console.log('[md] hit=', hitBed?.id ?? 'NONE→create', 'press=', w.x|0, w.y|0);
       if (hitBed) {
         moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
         dragStartOverlapsRef.current = getBedCurrentOverlaps(hitBed, bedsRef.current);
@@ -591,6 +592,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleMouseUp = useCallback(() => {
+    console.log('[mu] moveRef=', moveRef.current?.bedId, 'moved=', moveRef.current?.moved, 'offset=', dragOffsetRef.current, 'willCommit=', !!(moveRef.current?.moved && dragOffsetRef.current));
     if (resizeRef.current) {
       const { bedId } = resizeRef.current;
       resizeRef.current = null;
@@ -648,6 +650,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           if (introducesNewOverlap(gPoly, bedId, dragStartOverlapsRef.current, bedsRef.current)) {
             onOverlapWarning?.("Beds can't overlap");
           } else {
+            console.log('[mu] COMMIT', bedId, newGrid);
             onUpdateBedGeometry(bedId, { grid: newGrid });
           }
         } else if (bed.type === 'freeform' && bed.freeform) {
