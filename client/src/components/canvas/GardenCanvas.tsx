@@ -222,7 +222,17 @@ function introducesNewOverlap(
     if (bed.id === excludeId || preExisting.has(bed.id)) continue;
     const poly = bedToPolygon(bed);
     if (!poly || poly.length < 4) continue;
-    if (polygonsOverlap(candidatePoly, poly)) return true;
+    if (polygonsOverlap(candidatePoly, poly)) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (let i = 0; i < candidatePoly.length; i += 2) {
+        if (candidatePoly[i] < minX) minX = candidatePoly[i];
+        if (candidatePoly[i] > maxX) maxX = candidatePoly[i];
+        if (candidatePoly[i + 1] < minY) minY = candidatePoly[i + 1];
+        if (candidatePoly[i + 1] > maxY) maxY = candidatePoly[i + 1];
+      }
+      console.log('[overlap-block] movingBed=', excludeId, 'matched=', bed.id, bed.type, 'preExisting=', [...preExisting], 'candidateBBox=', { minX, minY, maxX, maxY });
+      return true;
+    }
   }
   return false;
 }
