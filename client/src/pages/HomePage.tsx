@@ -78,8 +78,6 @@ export default function HomePage() {
     setSelectedBed(bed);
     setDetailFocusName(false);
     if (bed) setBedManagerOpen(false);
-    // Disarm but keep picker open if a new bed was selected (picker will re-show for it)
-    setArmedSeed(null);
     if (!bed) setPickerOpen(false);
   }, []);
 
@@ -146,6 +144,10 @@ export default function HomePage() {
     setArmedSeed(null);
   }, []);
 
+  const handleDisarmSeed = useCallback(() => {
+    setArmedSeed(null);
+  }, []);
+
   const handleClosePicker = useCallback(() => {
     setPickerOpen(false);
     setArmedSeed(null);
@@ -159,6 +161,8 @@ export default function HomePage() {
     date: string | null,
   ) => {
     if (!armedSeed) return;
+    const seed = armedSeed;
+    setArmedSeed(null); // return to picker so user can choose the next seed
     const payload: {
       seedId?: string;
       cambiumSeedId?: string;
@@ -171,9 +175,9 @@ export default function HomePage() {
       ...(date ? { plantingDate: date } : {}),
       ...(cell ? { cell } : {}),
       ...(point ? { point } : {}),
-      ...(armedSeed.source === 'catalogue' ? { cambiumSeedId: armedSeed.id } : { seedId: armedSeed.id }),
+      ...(seed.source === 'catalogue' ? { cambiumSeedId: seed.id } : { seedId: seed.id }),
     };
-    await placePlanting(bedId, payload, armedSeed.commonName);
+    await placePlanting(bedId, payload, seed.commonName);
   }, [armedSeed, placePlanting]);
 
   const handleConfirmRemoval = useCallback(async (planting: Planting) => {
@@ -236,6 +240,19 @@ export default function HomePage() {
             Select <strong>Grid</strong> or <strong>Freeform</strong> in the toolbar,<br />
             then draw on the canvas to place your first bed.
           </div>
+        </div>
+      )}
+
+      {/* Placing banner */}
+      {armedSeed && selectedBed && (
+        <div style={{
+          position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
+          background: '#1c3a28', color: '#d4edda', borderRadius: 8,
+          padding: '10px 18px', fontSize: 13, zIndex: 99,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
+          whiteSpace: 'nowrap', pointerEvents: 'none',
+        }}>
+          Placing {armedSeed.commonName} — click inside &ldquo;{selectedBed.label}&rdquo; · Esc to cancel
         </div>
       )}
 
@@ -320,7 +337,9 @@ export default function HomePage() {
         <PlantPicker
           garden={garden}
           bed={selectedBed}
+          armedSeed={armedSeed}
           onArm={setArmedSeed}
+          onDisarm={handleDisarmSeed}
           onClose={handleClosePicker}
         />
       )}

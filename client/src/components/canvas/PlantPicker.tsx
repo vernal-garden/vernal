@@ -15,10 +15,12 @@ interface Props {
   garden: Garden;
   bed: Bed;
   onArm: (seed: ArmedSeed) => void;
+  onDisarm: () => void;
   onClose: () => void;
+  armedSeed: ArmedSeed | null;
 }
 
-export default function PlantPicker({ garden, bed, onArm, onClose }: Props) {
+export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, armedSeed }: Props) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<'catalogue' | 'personal' | null>(null);
@@ -33,11 +35,17 @@ export default function PlantPicker({ garden, bed, onArm, onClose }: Props) {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        if (armedSeed) {
+          onDisarm(); // disarm only — keep picker open so user can pick again
+        } else {
+          onClose(); // nothing armed — close the picker
+        }
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
+  }, [armedSeed, onDisarm, onClose]);
 
   const handleSelect = async (id: string, source: 'catalogue' | 'personal', fallbackName: string) => {
     if (selectedId === id && selectedSource === source) return;

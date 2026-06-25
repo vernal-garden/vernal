@@ -817,6 +817,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           return;
         }
       }
+      // Armed but click didn't land inside the target bed — no-op.
+      // Never fall through to selection or marker-removal while armed.
+      return;
     }
 
     // Marker hit check for removal (only when not armed)
@@ -1029,6 +1032,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             const selected = bed.id === selectedBedId;
             const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
             const isMoveOverlapping = isMoving && moveOverlap;
+            // "Placing" state: this bed is the armed target
+            const isPlacing = selected && armedSeed != null && !isMoving;
 
             if (bed.type === 'grid' && bed.grid) {
               const { x, y, cols, rows } = bed.grid;
@@ -1045,12 +1050,21 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                 cellLines.push(<Line key={`hr${row}`} points={[0, row * GRID_PX, bw, row * GRID_PX]} stroke="#b8d0ba" strokeWidth={0.5} />);
               }
 
+              const gridFill = isMoveOverlapping ? 'rgba(200,80,80,0.4)'
+                : isPlacing ? 'rgba(45,106,79,0.18)'
+                : '#d4edda';
+              const gridStroke = isMoveOverlapping ? '#c05050'
+                : isPlacing ? '#2d6a4f'
+                : selected ? '#1a5c3a'
+                : '#2d6a4f';
+              const gridStrokeW = isPlacing ? 2 : selected ? 3 : 1.5;
+
               return (
                 <Group key={bed.id} id={bed.id} x={renderX} y={renderY}>
                   <Rect width={bw} height={bh}
-                    fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : '#d4edda'}
-                    stroke={isMoveOverlapping ? '#c05050' : (selected ? '#1a5c3a' : '#2d6a4f')}
-                    strokeWidth={selected ? 3 : 1.5} cornerRadius={2} />
+                    fill={gridFill}
+                    stroke={gridStroke}
+                    strokeWidth={gridStrokeW} cornerRadius={2} />
                   {cellLines}
                   <Text text={bed.label || 'Bed'} fontSize={12} x={4} y={4} fill="#264a2e" fontFamily="Georgia, serif" />
                 </Group>
@@ -1067,12 +1081,21 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
               const labelX = sumX / (pts.length / 2);
               const labelY = sumY / (pts.length / 2);
 
+              const ffFill = isMoveOverlapping ? 'rgba(200,80,80,0.4)'
+                : isPlacing ? 'rgba(45,106,79,0.15)'
+                : 'rgba(255,243,205,0.7)';
+              const ffStroke = isMoveOverlapping ? '#c05050'
+                : isPlacing ? '#2d6a4f'
+                : selected ? '#8a5a00'
+                : '#b8860b';
+              const ffStrokeW = isPlacing ? 2 : selected ? 3 : 1.5;
+
               return (
                 <Group key={bed.id} id={bed.id}>
                   <Line points={pts} closed={closed}
-                    fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : 'rgba(255,243,205,0.7)'}
-                    stroke={isMoveOverlapping ? '#c05050' : (selected ? '#8a5a00' : '#b8860b')}
-                    strokeWidth={selected ? 3 : 1.5} dash={[6, 4]} />
+                    fill={ffFill}
+                    stroke={ffStroke}
+                    strokeWidth={ffStrokeW} dash={[6, 4]} />
                   <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
                 </Group>
               );
