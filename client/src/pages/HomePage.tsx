@@ -2,12 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useGardenList } from '../hooks/useGardenList';
 import { useGarden } from '../hooks/useGarden';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../hooks/useGarden';
+import { usePlantings } from '../hooks/usePlantings';
+import type { Planting, ArmedSeed } from '../hooks/usePlantings';
 import GardenCanvas from '../components/canvas/GardenCanvas';
 import type { GardenCanvasRef } from '../components/canvas/GardenCanvas';
 import BedDetailPanel from '../components/canvas/BedDetailPanel';
 import BedManager from '../components/canvas/BedManager';
 import CanvasToolbar from '../components/canvas/CanvasToolbar';
 import type { CanvasMode } from '../components/canvas/CanvasToolbar';
+import PlantPicker from '../components/canvas/PlantPicker';
 
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
@@ -23,10 +26,15 @@ export default function HomePage() {
   const overlapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canvasRef = useRef<GardenCanvasRef>(null);
 
+  // Phase 19: plant picker + placement
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [armedSeed, setArmedSeed] = useState<ArmedSeed | null>(null);
+
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
   const { garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed } = useGarden(resolvedId);
+  const { plantingsByBedId, placePlanting, deletePlanting } = usePlantings(resolvedId);
 
-  // Keep selectedBed in sync when beds update (optimistic mutations change the object)
+  // Keep selectedBed in sync when beds update
   useEffect(() => {
     if (!selectedBed) return;
     const fresh = beds.find(b => b.id === selectedBed.id);
@@ -34,7 +42,15 @@ export default function HomePage() {
     else if (fresh !== selectedBed) setSelectedBed(fresh);
   }, [beds, selectedBed]);
 
-  // Delete/Backspace keyboard shortcut for selected bed (0 plants only — >0 requires panel confirm)
+  // Close picker when bed deselects
+  useEffect(() => {
+    if (!selectedBed) {
+      setPickerOpen(false);
+      setArmedSeed(null);
+    }
+  }, [selectedBed]);
+
+  // Delete/Backspace keyboard shortcut for selected bed (0 plants only)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
@@ -44,7 +60,6 @@ export default function HomePage() {
           deleteBed(selectedBed.id);
           setSelectedBed(null);
         }
-        // If plantingCount > 0, user must use the Delete button in the detail panel (shows confirm)
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -55,18 +70,25 @@ export default function HomePage() {
     setActiveId(id);
     setSelectedBed(null);
     setBedManagerOpen(false);
+    setPickerOpen(false);
+    setArmedSeed(null);
   }, []);
 
   const handleSelectBed = useCallback((bed: Bed | null) => {
     setSelectedBed(bed);
     setDetailFocusName(false);
     if (bed) setBedManagerOpen(false);
+    // Disarm but keep picker open if a new bed was selected (picker will re-show for it)
+    setArmedSeed(null);
+    if (!bed) setPickerOpen(false);
   }, []);
 
   const handleDoubleBed = useCallback((bed: Bed) => {
     setSelectedBed(bed);
     setBedManagerOpen(false);
     setDetailFocusName(true);
+    setPickerOpen(false);
+    setArmedSeed(null);
   }, []);
 
   const handleZoomIn = useCallback(() => canvasRef.current?.zoomIn(), []);
@@ -95,6 +117,8 @@ export default function HomePage() {
   const handleCloseDetail = useCallback(() => {
     setSelectedBed(null);
     setDetailFocusName(false);
+    setPickerOpen(false);
+    setArmedSeed(null);
   }, []);
 
   const handleCreateBed = useCallback((payload: CreateBedPayload) => {
@@ -116,6 +140,45 @@ export default function HomePage() {
     setBedManagerOpen(false);
     setSelectedBed(bed);
   }, []);
+
+  const handleAddPlant = useCallback(() => {
+    setPickerOpen(true);
+    setArmedSeed(null);
+  }, []);
+
+  const handleClosePicker = useCallback(() => {
+    setPickerOpen(false);
+    setArmedSeed(null);
+  }, []);
+
+  const handleConfirmPlacement = useCallback(async (
+    bedId: string,
+    cell: { x: number; y: number } | null,
+    point: { x: number; y: number } | null,
+    qty: number,
+    date: string | null,
+  ) => {
+    if (!armedSeed) return;
+    const payload: {
+      seedId?: string;
+      cambiumSeedId?: string;
+      cell?: { x: number; y: number };
+      point?: { x: number; y: number };
+      quantity?: number;
+      plantingDate?: string;
+    } = {
+      quantity: qty,
+      ...(date ? { plantingDate: date } : {}),
+      ...(cell ? { cell } : {}),
+      ...(point ? { point } : {}),
+      ...(armedSeed.source === 'catalogue' ? { cambiumSeedId: armedSeed.id } : { seedId: armedSeed.id }),
+    };
+    await placePlanting(bedId, payload, armedSeed.commonName);
+  }, [armedSeed, placePlanting]);
+
+  const handleConfirmRemoval = useCallback(async (planting: Planting) => {
+    await deletePlanting(planting.id, planting.bedId);
+  }, [deletePlanting]);
 
   if (listLoading) {
     return (
@@ -146,6 +209,11 @@ export default function HomePage() {
         onCreateBed={handleCreateBed}
         onUpdateBedGeometry={handleUpdateBedGeometry}
         onOverlapWarning={handleOverlapWarning}
+        garden={garden}
+        plantingsByBedId={plantingsByBedId}
+        armedSeed={armedSeed}
+        onConfirmPlacement={handleConfirmPlacement}
+        onConfirmRemoval={handleConfirmRemoval}
       />
 
       {/* Empty-beds overlay */}
@@ -235,14 +303,25 @@ export default function HomePage() {
         />
       )}
 
-      {/* Bed detail panel */}
-      {selectedBed && (
+      {/* Bed detail panel (hidden when picker is open) */}
+      {selectedBed && !pickerOpen && (
         <BedDetailPanel
           bed={selectedBed}
           onClose={handleCloseDetail}
           onRename={(label) => updateBed(selectedBed.id, { label })}
           onDelete={() => { deleteBed(selectedBed.id); setSelectedBed(null); }}
           focusName={detailFocusName}
+          onAddPlant={handleAddPlant}
+        />
+      )}
+
+      {/* Plant picker */}
+      {pickerOpen && selectedBed && garden && (
+        <PlantPicker
+          garden={garden}
+          bed={selectedBed}
+          onArm={setArmedSeed}
+          onClose={handleClosePicker}
         />
       )}
 

@@ -1,8 +1,11 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Konva from 'konva';
-import { Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
-import type { Bed, CreateBedPayload, UpdateBedPayload } from '../../hooks/useGarden';
+import { Circle, Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
+import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
+import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
+import { computeFit } from '../../lib/fit';
+import FitLine from './FitLine';
 
 Konva.hitOnDragEnabled = true;
 
@@ -12,6 +15,25 @@ const MIN_SCALE = 0.2;
 const MAX_SCALE = 5;
 const GRID_HIDE_THRESHOLD = 0.4;
 const HANDLE_HALF = 6;
+const MARKER_RADIUS = GRID_PX * 0.38;
+const MARKER_HIT_RADIUS = GRID_PX * 0.5;
+
+const MARKER_COLORS = [
+  '#2d6a4f', '#b5652a', '#5e3d8a', '#1a5f7a',
+  '#8b4513', '#4a7c59', '#7a3b3b', '#3b6e8c',
+];
+
+function markerColor(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
+  return MARKER_COLORS[Math.abs(h) % MARKER_COLORS.length];
+}
+
+function markerLabel(planting: Planting): string {
+  const name = planting._commonName ?? '';
+  if (!name) return '•';
+  return name.slice(0, 3).toUpperCase();
+}
 
 export interface GardenCanvasRef {
   zoomIn: () => void;
@@ -32,6 +54,18 @@ interface Props {
   mode: 'grid' | 'freeform';
   panActive: boolean;
   gardenId: string;
+  // Phase 19
+  garden: Garden | null;
+  plantingsByBedId: PlantingsByBedId;
+  armedSeed: ArmedSeed | null;
+  onConfirmPlacement: (
+    bedId: string,
+    cell: { x: number; y: number } | null,
+    point: { x: number; y: number } | null,
+    qty: number,
+    date: string | null,
+  ) => void;
+  onConfirmRemoval: (planting: Planting) => void;
 }
 
 type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
@@ -39,6 +73,20 @@ type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
 type ResizePreview =
   | { kind: 'grid'; x: number; y: number; cols: number; rows: number; overlap: boolean }
   | { kind: 'freeform'; points: number[]; overlap: boolean };
+
+type PendingPlacement = {
+  bedId: string;
+  cell?: { x: number; y: number };
+  point?: { x: number; y: number };
+  screenX: number;
+  screenY: number;
+};
+
+type PendingRemoval = {
+  planting: Planting;
+  screenX: number;
+  screenY: number;
+};
 
 // ---- Pure helpers ----
 
@@ -184,7 +232,6 @@ function polygonsOverlap(ptsA: number[], ptsB: number[]): boolean {
   return false;
 }
 
-// Strict check used for creation only — every other bed must be clear.
 function bedOverlapsAny(candidatePoly: number[], excludeId: string, bedsArr: Bed[]): boolean {
   for (const bed of bedsArr) {
     if (bed.id === excludeId) continue;
@@ -195,8 +242,6 @@ function bedOverlapsAny(candidatePoly: number[], excludeId: string, bedsArr: Bed
   return false;
 }
 
-// Returns the IDs of every bed that the given bed's current footprint already overlaps.
-// Snapshot this at drag/resize start so we can ignore pre-existing overlaps.
 function getBedCurrentOverlaps(bed: Bed, bedsArr: Bed[]): Set<string> {
   const currentPoly = bedToPolygon(bed);
   if (!currentPoly || currentPoly.length < 4) return new Set();
@@ -210,8 +255,6 @@ function getBedCurrentOverlaps(bed: Bed, bedsArr: Bed[]): Set<string> {
   return result;
 }
 
-// Used for move and resize — only rejects geometry that would overlap a bed that the
-// dragged/resized bed was NOT already touching at the start of the gesture.
 function introducesNewOverlap(
   candidatePoly: number[],
   excludeId: string,
@@ -227,12 +270,30 @@ function introducesNewOverlap(
   return false;
 }
 
+// ---- Marker world-coords helper ----
+
+function markerWorldCenter(
+  planting: Planting,
+  bed: Bed,
+): { x: number; y: number } | null {
+  if (planting.cell && bed.type === 'grid' && bed.grid) {
+    return {
+      x: (bed.grid.x + planting.cell.x + 0.5) * GRID_PX,
+      y: (bed.grid.y + planting.cell.y + 0.5) * GRID_PX,
+    };
+  }
+  if (planting.point) return planting.point;
+  return null;
+}
+
 // ---- Component ----
 
 const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   beds, selectedBedId, onSelectBed, onDoubleBed,
   onCreateBed, onUpdateBedGeometry,
   onScaleChange, onOverlapWarning, mode, panActive, gardenId: _gardenId,
+  garden, plantingsByBedId, armedSeed,
+  onConfirmPlacement, onConfirmRemoval,
 }, ref) => {
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(1);
@@ -257,9 +318,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     setMoveOverlap(v);
   }, []);
 
-  // Pre-existing overlaps captured at the start of each move/resize gesture.
-  // introducesNewOverlap uses this to allow a bed to be dragged/resized freely
-  // through positions it already occupied (including its own prior footprint).
   const dragStartOverlapsRef = useRef<Set<string>>(new Set());
 
   // Move
@@ -290,13 +348,37 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const selectedBedIdRef = useRef<string | null>(selectedBedId);
   useEffect(() => { selectedBedIdRef.current = selectedBedId; }, [selectedBedId]);
+
+  // Synced refs for event handlers (avoids stale closures without adding to dep arrays)
   const bedsRef = useRef<Bed[]>(beds);
-  // Sync bedsRef synchronously during render so event handlers always read current geometry.
-  // useEffect fires after paint; a fast user interaction before it runs would see stale data.
   bedsRef.current = beds;
+
+  const plantingsByBedIdRef = useRef<PlantingsByBedId>({});
+  plantingsByBedIdRef.current = plantingsByBedId;
+
+  const armedSeedRef = useRef<ArmedSeed | null>(null);
+  armedSeedRef.current = armedSeed;
+
   const setFreeformPtsSynced = useCallback((pts: number[]) => {
     freeformPtsRef.current = pts;
     setFreeformPts(pts);
+  }, []);
+
+  // Phase 19: placement + removal popovers
+  const [pendingPlacement, setPendingPlacement] = useState<PendingPlacement | null>(null);
+  const pendingPlacementRef = useRef<PendingPlacement | null>(null);
+  const setPendingPlacementSynced = useCallback((v: PendingPlacement | null) => {
+    pendingPlacementRef.current = v;
+    setPendingPlacement(v);
+  }, []);
+  const [placementQty, setPlacementQty] = useState(1);
+  const [placementDate, setPlacementDate] = useState('');
+
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
+  const pendingRemovalRef = useRef<PendingRemoval | null>(null);
+  const setPendingRemovalSynced = useCallback((v: PendingRemoval | null) => {
+    pendingRemovalRef.current = v;
+    setPendingRemoval(v);
   }, []);
 
   const closeFreeform = useCallback((pts: number[]) => {
@@ -316,7 +398,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     setCursorWorld(null);
   }, [onCreateBed, onOverlapWarning, setFreeformPtsSynced]);
 
-  // Keyboard: space-pan, Escape
+  // Keyboard handlers
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' && !e.repeat) {
@@ -337,6 +419,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         setMoveOverlapSynced(false);
         resizeRef.current = null;
         setResizePreviewSynced(null);
+        setPendingPlacementSynced(null);
+        setPendingRemovalSynced(null);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -345,16 +429,17 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [setFreeformPtsSynced, setDragOffsetSynced, setResizePreviewSynced]);
+  }, [setFreeformPtsSynced, setDragOffsetSynced, setResizePreviewSynced, setMoveOverlapSynced, setPendingPlacementSynced, setPendingRemovalSynced]);
 
   // Cursor style
   useEffect(() => {
     const el = stageRef.current?.container();
     if (!el) return;
     if (panActive || spaceHeld) { el.style.cursor = 'grab'; }
+    else if (armedSeed) { el.style.cursor = 'crosshair'; }
     else if (mode === 'freeform') { el.style.cursor = 'crosshair'; }
     else { el.style.cursor = 'default'; }
-  }, [panActive, spaceHeld, mode]);
+  }, [panActive, spaceHeld, mode, armedSeed]);
 
   // Window resize
   useEffect(() => {
@@ -431,8 +516,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
 
-    // Check resize handles for selected bed before anything else
-    // Skip if a freeform polygon is in progress (clicks place vertices, not drag operations)
+    // Resize handles (skip if freeform polygon in progress)
     if (selectedBedIdRef.current && freeformPtsRef.current.length === 0) {
       const selBed = bedsRef.current.find(b => b.id === selectedBedIdRef.current);
       if (selBed) {
@@ -462,6 +546,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       }
     }
 
+    // Don't start move/draw when armed (placement click is handled in handleClick)
+    if (armedSeedRef.current) return;
+
     if (mode === 'grid') {
       const hitBed = hitTestBeds(w, bedsRef.current);
       if (hitBed) {
@@ -472,7 +559,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       const cell = worldToCell(w.x, w.y);
       gridDragRef.current = { startCell: cell, startWorld: w, curCell: cell, moved: false };
     } else {
-      // freeform mode: only start a move when no polygon is in progress
       if (freeformPtsRef.current.length === 0) {
         const hitBed = hitTestBeds(w, bedsRef.current);
         if (hitBed) {
@@ -561,7 +647,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       if (!moveRef.current.moved && Math.hypot(dx, dy) > 4) moveRef.current.moved = true;
       if (moveRef.current.moved) {
         setDragOffsetSynced({ x: dx, y: dy });
-        // Compute live overlap for the moving bed to show warning colour
         const movingBed = bedsRef.current.find(b => b.id === moveRef.current!.bedId);
         if (movingBed) {
           let candidatePoly: number[] | null = null;
@@ -589,7 +674,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       const preview = resizePreviewRef.current;
       setResizePreviewSynced(null);
       if (preview) {
-        // A drag actually occurred — suppress the click so it doesn't select/deselect
         resizeDoneRef.current = true;
         const bed = bedsRef.current.find(b => b.id === bedId);
         if (bed) {
@@ -620,7 +704,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         return;
       }
       setGridPreview(null);
-      // Not a drag — fall through so handleClick runs selection/deselection
       return;
     }
 
@@ -669,44 +752,107 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
     const isPanning = panActive || spaceHeld;
 
-    if (mode === 'freeform' && !isPanning) {
-      const inProgress = freeformPtsRef.current.length > 0;
+    // Close any open popovers if user clicks elsewhere on canvas
+    if (pendingPlacementRef.current || pendingRemovalRef.current) {
+      setPendingPlacementSynced(null);
+      setPendingRemovalSynced(null);
+      return;
+    }
 
-      if (inProgress) {
-        // Polygon in progress: place vertex or close, same as before
-        const now = Date.now();
-        const isDbl = now - lastClickTimeRef.current < 300;
-        lastClickTimeRef.current = now;
+    if (isPanning) return;
 
-        if (isDbl && freeformPtsRef.current.length >= 6) {
-          const trimmed = freeformPtsRef.current.slice(0, -2);
-          setFreeformPtsSynced(trimmed);
-          closeFreeform(trimmed);
+    // Freeform polygon in progress: always handle polygon, skip placement/removal
+    if (mode === 'freeform' && freeformPtsRef.current.length > 0) {
+      const now = Date.now();
+      const isDbl = now - lastClickTimeRef.current < 300;
+      lastClickTimeRef.current = now;
+
+      if (isDbl && freeformPtsRef.current.length >= 6) {
+        const trimmed = freeformPtsRef.current.slice(0, -2);
+        setFreeformPtsSynced(trimmed);
+        closeFreeform(trimmed);
+        return;
+      }
+
+      const pts = freeformPtsRef.current;
+      if (pts.length >= 4) {
+        const currentScale = stageRef.current?.scaleX() ?? 1;
+        const distScreen = Math.hypot(w.x - pts[0], w.y - pts[1]) * currentScale;
+        if (distScreen <= 12) { closeFreeform(pts); return; }
+      }
+      setFreeformPtsSynced([...pts, w.x, w.y]);
+      return;
+    }
+
+    // Placement mode: armed seed + selected bed
+    const armed = armedSeedRef.current;
+    if (armed && selectedBedIdRef.current) {
+      const selBed = bedsRef.current.find(b => b.id === selectedBedIdRef.current);
+      if (selBed) {
+        let placement: { cell?: { x: number; y: number }; point?: { x: number; y: number } } | null = null;
+
+        if (selBed.type === 'grid' && selBed.grid) {
+          const { x: gx, y: gy, cols, rows } = selBed.grid;
+          const cellX = Math.floor((w.x - gx * GRID_PX) / GRID_PX);
+          const cellY = Math.floor((w.y - gy * GRID_PX) / GRID_PX);
+          if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows) {
+            placement = { cell: { x: cellX, y: cellY } };
+          }
+        } else if (selBed.type === 'freeform' && selBed.freeform) {
+          if (pointInPolygon(w.x, w.y, selBed.freeform.points)) {
+            placement = { point: { x: Math.round(w.x), y: Math.round(w.y) } };
+          }
+        }
+
+        if (placement) {
+          const screenPos = stage.getAbsoluteTransform().point(w);
+          setPendingPlacementSynced({
+            bedId: selBed.id,
+            ...placement,
+            screenX: screenPos.x,
+            screenY: screenPos.y,
+          });
+          setPlacementQty(1);
+          setPlacementDate('');
           return;
         }
+      }
+    }
 
-        const pts = freeformPtsRef.current;
-        if (pts.length >= 4) {
-          const currentScale = stageRef.current?.scaleX() ?? 1;
-          const distScreen = Math.hypot(w.x - pts[0], w.y - pts[1]) * currentScale;
-          if (distScreen <= 12) { closeFreeform(pts); return; }
+    // Marker hit check for removal (only when not armed)
+    if (!armed) {
+      let nearest: Planting | null = null;
+      let nearestDist = MARKER_HIT_RADIUS;
+      for (const [bedId, plantings] of Object.entries(plantingsByBedIdRef.current)) {
+        const bed = bedsRef.current.find(b => b.id === bedId);
+        if (!bed) continue;
+        for (const planting of plantings) {
+          const center = markerWorldCenter(planting, bed);
+          if (!center) continue;
+          const dist = Math.hypot(w.x - center.x, w.y - center.y);
+          if (dist < nearestDist) {
+            nearest = planting;
+            nearestDist = dist;
+          }
         }
-        setFreeformPtsSynced([...pts, w.x, w.y]);
+      }
+      if (nearest) {
+        const nearestBed = bedsRef.current.find(b => b.id === nearest!.bedId);
+        const center = nearestBed ? markerWorldCenter(nearest, nearestBed) : null;
+        const screenPos = center
+          ? stage.getAbsoluteTransform().point(center)
+          : { x: p.x, y: p.y };
+        setPendingRemovalSynced({ planting: nearest, screenX: screenPos.x, screenY: screenPos.y });
         return;
       }
+    }
 
-      // No polygon in progress: select/deselect/start drawing
+    // Normal selection flow
+    if (mode === 'freeform' && !isPanning) {
       const hit = hitTestBeds(w, bedsRef.current);
-      if (hit) {
-        onSelectBed(hit);
-        return;
-      }
-      if (selectedBedIdRef.current) {
-        // Deselect; next click will place the first vertex
-        onSelectBed(null);
-        return;
-      }
-      // Nothing selected, no hit: place first vertex and start drawing
+      if (hit) { onSelectBed(hit); return; }
+      if (selectedBedIdRef.current) { onSelectBed(null); return; }
+      // Start freeform drawing
       lastClickTimeRef.current = Date.now();
       setFreeformPtsSynced([w.x, w.y]);
       return;
@@ -714,7 +860,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     const hit = hitTestBeds(w, bedsRef.current);
     onSelectBed(hit ?? null);
-  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced]);
+  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingRemovalSynced]);
 
   const handleDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = e.target.getStage(); if (!stage) return;
@@ -741,170 +887,329 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const selectedBed = beds.find(b => b.id === selectedBedId) ?? null;
 
-  return (
-    <Stage
-      ref={stageRef}
-      width={size.w}
-      height={size.h}
-      draggable={panActive || spaceHeld}
-      onWheel={handleWheel}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onClick={handleClick}
-      onDblClick={handleDblClick}
-    >
-      {/* Layer 1: grid lines */}
-      <Layer listening={false}>
-        {scale >= GRID_HIDE_THRESHOLD && gridLines}
-      </Layer>
+  // Build placement popover
+  const placementPopover = (() => {
+    if (!pendingPlacement) return null;
+    const selBed = beds.find(b => b.id === pendingPlacement.bedId) ?? null;
+    const fit = selBed && garden && armedSeed
+      ? computeFit({ garden, bed: selBed, spacingInches: armedSeed.spacingInches })
+      : null;
 
-      {/* Layer 2: beds */}
-      <Layer listening={true}>
-        {beds.map(bed => {
-          const selected = bed.id === selectedBedId;
-          const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
-          const isMoveOverlapping = isMoving && moveOverlap;
+    const popW = 248;
+    const popH = 260;
+    let left = pendingPlacement.screenX + 12;
+    if (left + popW > size.w - 8) left = pendingPlacement.screenX - popW - 12;
+    let top = pendingPlacement.screenY - popH / 2;
+    if (top < 8) top = 8;
+    if (top + popH > size.h - 8) top = size.h - popH - 8;
 
-          if (bed.type === 'grid' && bed.grid) {
-            const { x, y, cols, rows } = bed.grid;
-            const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
-            const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
-            const w = cols * GRID_PX;
-            const h = rows * GRID_PX;
-
-            const cellLines: ReactNode[] = [];
-            for (let col = 1; col < cols; col++) {
-              cellLines.push(<Line key={`vc${col}`} points={[col * GRID_PX, 0, col * GRID_PX, h]} stroke="#b8d0ba" strokeWidth={0.5} />);
-            }
-            for (let row = 1; row < rows; row++) {
-              cellLines.push(<Line key={`hr${row}`} points={[0, row * GRID_PX, w, row * GRID_PX]} stroke="#b8d0ba" strokeWidth={0.5} />);
-            }
-
-            return (
-              <Group key={bed.id} id={bed.id} x={renderX} y={renderY}>
-                <Rect width={w} height={h}
-                  fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : '#d4edda'}
-                  stroke={isMoveOverlapping ? '#c05050' : (selected ? '#1a5c3a' : '#2d6a4f')}
-                  strokeWidth={selected ? 3 : 1.5} cornerRadius={2} />
-                {cellLines}
-                <Text text={bed.label || 'Bed'} fontSize={12} x={4} y={4} fill="#264a2e" fontFamily="Georgia, serif" />
-              </Group>
-            );
-          }
-
-          if (bed.type === 'freeform' && bed.freeform) {
-            const { closed } = bed.freeform;
-            const pts = isMoving
-              ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
-              : bed.freeform.points;
-            let sumX = 0, sumY = 0;
-            for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
-            const labelX = sumX / (pts.length / 2);
-            const labelY = sumY / (pts.length / 2);
-
-            return (
-              <Group key={bed.id} id={bed.id}>
-                <Line points={pts} closed={closed}
-                  fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : 'rgba(255,243,205,0.7)'}
-                  stroke={isMoveOverlapping ? '#c05050' : (selected ? '#8a5a00' : '#b8860b')}
-                  strokeWidth={selected ? 3 : 1.5} dash={[6, 4]} />
-                <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
-              </Group>
-            );
-          }
-
-          return null;
-        })}
-      </Layer>
-
-      {/* Layer 3: creation previews + resize handles */}
-      <Layer listening={false}>
-        {/* Grid creation preview */}
-        {gridPreview && (
-          <Rect
-            x={gridPreview.x * GRID_PX}
-            y={gridPreview.y * GRID_PX}
-            width={gridPreview.cols * GRID_PX}
-            height={gridPreview.rows * GRID_PX}
-            fill={gridPreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(80,160,100,0.25)'}
-            stroke={gridPreview.overlap ? '#c05050' : '#2d6a4f'}
-            strokeWidth={1.5}
-            dash={[6, 3]}
+    return (
+      <div style={{
+        position: 'absolute', left, top, width: popW,
+        background: '#faf7f2', border: '1px solid #d8ceba', borderRadius: 10,
+        boxShadow: '0 4px 24px rgba(0,0,0,0.22)', padding: 16, zIndex: 30,
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+      }}>
+        {fit && armedSeed && (
+          <div style={{ marginBottom: 12 }}>
+            <FitLine fit={fit} name={armedSeed.commonName} spacingInches={armedSeed.spacingInches} />
+          </div>
+        )}
+        <div style={{ marginBottom: 10 }}>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9a8e7e', marginBottom: 4 }}>
+            Quantity
+          </label>
+          <input
+            type="number" min={1} max={99} value={placementQty}
+            onChange={e => setPlacementQty(Math.max(1, parseInt(e.target.value) || 1))}
+            style={{ width: '100%', boxSizing: 'border-box', padding: '6px 10px', borderRadius: 6, border: '1px solid #d0c8b8', fontSize: 13, fontFamily: 'inherit' }}
           />
-        )}
+        </div>
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9a8e7e', marginBottom: 4 }}>
+            Planting date (optional)
+          </label>
+          <input
+            type="date" value={placementDate}
+            onChange={e => setPlacementDate(e.target.value)}
+            style={{ width: '100%', boxSizing: 'border-box', padding: '6px 10px', borderRadius: 6, border: '1px solid #d0c8b8', fontSize: 13, fontFamily: 'inherit' }}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => setPendingPlacementSynced(null)}
+            style={{ flex: 1, padding: '8px', borderRadius: 6, border: '1px solid #d8ceba', background: 'transparent', cursor: 'pointer', fontSize: 12 }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              onConfirmPlacement(
+                pendingPlacement.bedId,
+                pendingPlacement.cell ?? null,
+                pendingPlacement.point ?? null,
+                placementQty,
+                placementDate || null,
+              );
+              setPendingPlacementSynced(null);
+            }}
+            style={{ flex: 1, padding: '8px', borderRadius: 6, border: 'none', background: '#2d6a4f', color: '#fff', cursor: 'pointer', fontSize: 12 }}
+          >
+            Place
+          </button>
+        </div>
+      </div>
+    );
+  })();
 
-        {/* Freeform creation preview */}
-        {mode === 'freeform' && freeformPts.length >= 2 && (
-          <>
-            <Line points={freeformPts} stroke="#b8860b" strokeWidth={1.5} dash={[4, 3]} closed={false} />
-            {cursorWorld && (
-              <Line
-                points={[freeformPts[freeformPts.length - 2], freeformPts[freeformPts.length - 1], cursorWorld.x, cursorWorld.y]}
-                stroke="#b8860b" strokeWidth={1} dash={[4, 4]} opacity={0.5}
-              />
-            )}
-            {cursorWorld && freeformPts.length >= 4 && (() => {
-              const dist = Math.hypot(cursorWorld.x - freeformPts[0], cursorWorld.y - freeformPts[1]) * scale;
-              return dist <= 12 ? (
-                <Rect x={freeformPts[0] - 5} y={freeformPts[1] - 5} width={10} height={10}
-                  fill="rgba(184,134,11,0.3)" stroke="#b8860b" strokeWidth={1.5} />
-              ) : null;
-            })()}
-            {Array.from({ length: freeformPts.length / 2 }, (_, i) => (
-              <Rect key={i} x={freeformPts[i * 2] - 3} y={freeformPts[i * 2 + 1] - 3}
-                width={6} height={6} fill="#b8860b" />
-            ))}
-          </>
-        )}
+  // Build removal popover
+  const removalPopover = (() => {
+    if (!pendingRemoval) return null;
+    const popW = 200;
+    const popH = 110;
+    let left = pendingRemoval.screenX + 12;
+    if (left + popW > size.w - 8) left = pendingRemoval.screenX - popW - 12;
+    let top = pendingRemoval.screenY - popH / 2;
+    if (top < 8) top = 8;
+    if (top + popH > size.h - 8) top = size.h - popH - 8;
 
-        {/* Resize handles + bbox frame for selected bed */}
-        {selectedBed && (() => {
-          const bbox = getBedBbox(selectedBed);
-          if (!bbox) return null;
-          const { x1, y1, x2, y2 } = bbox;
-          const corners: [number, number][] = [[x1, y1], [x2, y1], [x1, y2], [x2, y2]];
-          return (
+    return (
+      <div style={{
+        position: 'absolute', left, top, width: popW,
+        background: '#faf7f2', border: '1px solid #d8ceba', borderRadius: 10,
+        boxShadow: '0 4px 24px rgba(0,0,0,0.22)', padding: 16, zIndex: 30,
+        fontFamily: 'system-ui, -apple-system, sans-serif',
+      }}>
+        <div style={{ fontSize: 13, color: '#2c3e2c', marginBottom: 12, fontWeight: 500 }}>
+          {pendingRemoval.planting._commonName ?? 'Remove plant?'}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => setPendingRemovalSynced(null)}
+            style={{ flex: 1, padding: '7px', borderRadius: 6, border: '1px solid #d8ceba', background: 'transparent', cursor: 'pointer', fontSize: 12 }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              onConfirmRemoval(pendingRemoval.planting);
+              setPendingRemovalSynced(null);
+            }}
+            style={{ flex: 1, padding: '7px', borderRadius: 6, border: 'none', background: '#c04040', color: '#fff', cursor: 'pointer', fontSize: 12 }}
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    );
+  })();
+
+  return (
+    <div style={{ position: 'relative', width: size.w, height: size.h }}>
+      <Stage
+        ref={stageRef}
+        width={size.w}
+        height={size.h}
+        draggable={panActive || spaceHeld}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onClick={handleClick}
+        onDblClick={handleDblClick}
+      >
+        {/* Layer 1: grid lines */}
+        <Layer listening={false}>
+          {scale >= GRID_HIDE_THRESHOLD && gridLines}
+        </Layer>
+
+        {/* Layer 2: beds */}
+        <Layer listening={true}>
+          {beds.map(bed => {
+            const selected = bed.id === selectedBedId;
+            const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
+            const isMoveOverlapping = isMoving && moveOverlap;
+
+            if (bed.type === 'grid' && bed.grid) {
+              const { x, y, cols, rows } = bed.grid;
+              const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
+              const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
+              const bw = cols * GRID_PX;
+              const bh = rows * GRID_PX;
+
+              const cellLines: ReactNode[] = [];
+              for (let col = 1; col < cols; col++) {
+                cellLines.push(<Line key={`vc${col}`} points={[col * GRID_PX, 0, col * GRID_PX, bh]} stroke="#b8d0ba" strokeWidth={0.5} />);
+              }
+              for (let row = 1; row < rows; row++) {
+                cellLines.push(<Line key={`hr${row}`} points={[0, row * GRID_PX, bw, row * GRID_PX]} stroke="#b8d0ba" strokeWidth={0.5} />);
+              }
+
+              return (
+                <Group key={bed.id} id={bed.id} x={renderX} y={renderY}>
+                  <Rect width={bw} height={bh}
+                    fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : '#d4edda'}
+                    stroke={isMoveOverlapping ? '#c05050' : (selected ? '#1a5c3a' : '#2d6a4f')}
+                    strokeWidth={selected ? 3 : 1.5} cornerRadius={2} />
+                  {cellLines}
+                  <Text text={bed.label || 'Bed'} fontSize={12} x={4} y={4} fill="#264a2e" fontFamily="Georgia, serif" />
+                </Group>
+              );
+            }
+
+            if (bed.type === 'freeform' && bed.freeform) {
+              const { closed } = bed.freeform;
+              const pts = isMoving
+                ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
+                : bed.freeform.points;
+              let sumX = 0, sumY = 0;
+              for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
+              const labelX = sumX / (pts.length / 2);
+              const labelY = sumY / (pts.length / 2);
+
+              return (
+                <Group key={bed.id} id={bed.id}>
+                  <Line points={pts} closed={closed}
+                    fill={isMoveOverlapping ? 'rgba(200,80,80,0.4)' : 'rgba(255,243,205,0.7)'}
+                    stroke={isMoveOverlapping ? '#c05050' : (selected ? '#8a5a00' : '#b8860b')}
+                    strokeWidth={selected ? 3 : 1.5} dash={[6, 4]} />
+                  <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
+                </Group>
+              );
+            }
+
+            return null;
+          })}
+        </Layer>
+
+        {/* Layer 3: planting markers (visual only — clicks resolved in JS) */}
+        <Layer listening={false}>
+          {beds.map(bed => {
+            const plantings = plantingsByBedId[bed.id] ?? [];
+            const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
+            const offsetX = isMoving ? dragOffset!.x : 0;
+            const offsetY = isMoving ? dragOffset!.y : 0;
+
+            return plantings.map(planting => {
+              const center = markerWorldCenter(planting, bed);
+              if (!center) return null;
+              const cx = center.x + offsetX;
+              const cy = center.y + offsetY;
+              const seedId = planting.cambiumSeedId ?? planting.seedId ?? planting.id;
+              const color = markerColor(seedId);
+              const label = markerLabel(planting);
+
+              return (
+                <Group key={planting.id}>
+                  <Circle x={cx} y={cy} radius={MARKER_RADIUS} fill={color} opacity={0.88} />
+                  <Text
+                    text={label}
+                    x={cx - MARKER_RADIUS}
+                    y={cy - 5}
+                    width={MARKER_RADIUS * 2}
+                    fontSize={8}
+                    align="center"
+                    fill="#fff"
+                    fontStyle="bold"
+                    listening={false}
+                  />
+                </Group>
+              );
+            });
+          })}
+        </Layer>
+
+        {/* Layer 4: creation previews + resize handles */}
+        <Layer listening={false}>
+          {/* Grid creation preview */}
+          {gridPreview && (
+            <Rect
+              x={gridPreview.x * GRID_PX}
+              y={gridPreview.y * GRID_PX}
+              width={gridPreview.cols * GRID_PX}
+              height={gridPreview.rows * GRID_PX}
+              fill={gridPreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(80,160,100,0.25)'}
+              stroke={gridPreview.overlap ? '#c05050' : '#2d6a4f'}
+              strokeWidth={1.5}
+              dash={[6, 3]}
+            />
+          )}
+
+          {/* Freeform creation preview */}
+          {mode === 'freeform' && freeformPts.length >= 2 && (
             <>
-              <Rect x={x1} y={y1} width={x2 - x1} height={y2 - y1}
-                stroke="#2d6a4f" strokeWidth={1} dash={[4, 3]} fill="transparent" />
-              {corners.map(([cx, cy], i) => (
-                <Rect key={i}
-                  x={cx - HANDLE_HALF} y={cy - HANDLE_HALF}
-                  width={HANDLE_HALF * 2} height={HANDLE_HALF * 2}
-                  fill="#fff" stroke="#2d6a4f" strokeWidth={1.5}
+              <Line points={freeformPts} stroke="#b8860b" strokeWidth={1.5} dash={[4, 3]} closed={false} />
+              {cursorWorld && (
+                <Line
+                  points={[freeformPts[freeformPts.length - 2], freeformPts[freeformPts.length - 1], cursorWorld.x, cursorWorld.y]}
+                  stroke="#b8860b" strokeWidth={1} dash={[4, 4]} opacity={0.5}
                 />
+              )}
+              {cursorWorld && freeformPts.length >= 4 && (() => {
+                const dist = Math.hypot(cursorWorld.x - freeformPts[0], cursorWorld.y - freeformPts[1]) * scale;
+                return dist <= 12 ? (
+                  <Rect x={freeformPts[0] - 5} y={freeformPts[1] - 5} width={10} height={10}
+                    fill="rgba(184,134,11,0.3)" stroke="#b8860b" strokeWidth={1.5} />
+                ) : null;
+              })()}
+              {Array.from({ length: freeformPts.length / 2 }, (_, i) => (
+                <Rect key={i} x={freeformPts[i * 2] - 3} y={freeformPts[i * 2 + 1] - 3}
+                  width={6} height={6} fill="#b8860b" />
               ))}
             </>
-          );
-        })()}
+          )}
 
-        {/* Resize preview */}
-        {resizePreview && (
-          resizePreview.kind === 'grid' ? (
-            <Rect
-              x={resizePreview.x * GRID_PX}
-              y={resizePreview.y * GRID_PX}
-              width={resizePreview.cols * GRID_PX}
-              height={resizePreview.rows * GRID_PX}
-              fill={resizePreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(80,160,100,0.2)'}
-              stroke={resizePreview.overlap ? '#c05050' : '#2d6a4f'}
-              strokeWidth={1.5}
-              dash={[4, 3]}
-            />
-          ) : (
-            <Line
-              points={resizePreview.points}
-              closed
-              fill={resizePreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(255,243,205,0.5)'}
-              stroke={resizePreview.overlap ? '#c05050' : '#b8860b'}
-              strokeWidth={1.5}
-              dash={[4, 3]}
-            />
-          )
-        )}
-      </Layer>
-    </Stage>
+          {/* Resize handles + bbox frame for selected bed */}
+          {selectedBed && (() => {
+            const bbox = getBedBbox(selectedBed);
+            if (!bbox) return null;
+            const { x1, y1, x2, y2 } = bbox;
+            const corners: [number, number][] = [[x1, y1], [x2, y1], [x1, y2], [x2, y2]];
+            return (
+              <>
+                <Rect x={x1} y={y1} width={x2 - x1} height={y2 - y1}
+                  stroke="#2d6a4f" strokeWidth={1} dash={[4, 3]} fill="transparent" />
+                {corners.map(([cx, cy], i) => (
+                  <Rect key={i}
+                    x={cx - HANDLE_HALF} y={cy - HANDLE_HALF}
+                    width={HANDLE_HALF * 2} height={HANDLE_HALF * 2}
+                    fill="#fff" stroke="#2d6a4f" strokeWidth={1.5}
+                  />
+                ))}
+              </>
+            );
+          })()}
+
+          {/* Resize preview */}
+          {resizePreview && (
+            resizePreview.kind === 'grid' ? (
+              <Rect
+                x={resizePreview.x * GRID_PX}
+                y={resizePreview.y * GRID_PX}
+                width={resizePreview.cols * GRID_PX}
+                height={resizePreview.rows * GRID_PX}
+                fill={resizePreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(80,160,100,0.2)'}
+                stroke={resizePreview.overlap ? '#c05050' : '#2d6a4f'}
+                strokeWidth={1.5}
+                dash={[4, 3]}
+              />
+            ) : (
+              <Line
+                points={resizePreview.points}
+                closed
+                fill={resizePreview.overlap ? 'rgba(200,80,80,0.25)' : 'rgba(255,243,205,0.5)'}
+                stroke={resizePreview.overlap ? '#c05050' : '#b8860b'}
+                strokeWidth={1.5}
+                dash={[4, 3]}
+              />
+            )
+          )}
+        </Layer>
+      </Stage>
+
+      {placementPopover}
+      {removalPopover}
+    </div>
   );
 });
 

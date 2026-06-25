@@ -19,9 +19,10 @@ interface Props {
   onRename: (label: string) => void;
   onDelete: () => void;
   focusName: boolean;
+  onAddPlant: () => void;
 }
 
-export default function BedDetailPanel({ bed, onClose, onRename, onDelete, focusName }: Props) {
+export default function BedDetailPanel({ bed, onClose, onRename, onDelete, focusName, onAddPlant }: Props) {
   const [nameVal, setNameVal] = useState(bed.label);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -135,6 +136,15 @@ export default function BedDetailPanel({ bed, onClose, onRename, onDelete, focus
             {bed.season}
           </div>
         </div>
+
+        {/* Add plant */}
+        <button onClick={onAddPlant} style={{
+          padding: '10px', borderRadius: 6,
+          border: '1px solid #2d6a4f', background: '#2d6a4f',
+          color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+        }}>
+          + Add plant
+        </button>
 
         {/* Delete */}
         {!confirmDelete ? (
