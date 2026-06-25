@@ -2,7 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import type { ReactNode } from 'react';
 import Konva from 'konva';
 import { Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
-import type { Bed, BedGrid, BedFreeform, CreateBedPayload, UpdateBedPayload } from '../../hooks/useGarden';
+import type { Bed, CreateBedPayload, UpdateBedPayload } from '../../hooks/useGarden';
 
 Konva.hitOnDragEnabled = true;
 
@@ -292,32 +292,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   // Sync bedsRef synchronously during render so event handlers always read current geometry.
   // useEffect fires after paint; a fast user interaction before it runs would see stale data.
   bedsRef.current = beds;
-  // committedGeomRef: holds the geometry just committed on move/resize so the canvas
-  // renders the correct position immediately, before the parent's beds prop propagates.
-  const committedGeomRef = useRef<{ bedId: string; grid?: BedGrid; freeform?: BedFreeform } | null>(null);
-  useEffect(() => {
-    // Clear the override only when the beds prop actually carries the committed geometry,
-    // so the canvas never flickers back to the pre-move position mid-propagation.
-    const c = committedGeomRef.current;
-    if (c) {
-      const bed = beds.find(b => b.id === c.bedId);
-      if (bed) {
-        if (c.grid && bed.type === 'grid' && bed.grid) {
-          const g = bed.grid;
-          if (g.x === c.grid.x && g.y === c.grid.y && g.cols === c.grid.cols && g.rows === c.grid.rows) {
-            committedGeomRef.current = null;
-          }
-        } else if (c.freeform && bed.type === 'freeform' && bed.freeform) {
-          const bp = bed.freeform.points;
-          const cp = c.freeform.points;
-          if (bp.length === cp.length && bp.every((v, i) => v === cp[i])) {
-            committedGeomRef.current = null;
-          }
-        }
-      }
-    }
-  }, [beds]);
-
   const setFreeformPtsSynced = useCallback((pts: number[]) => {
     freeformPtsRef.current = pts;
     setFreeformPts(pts);
@@ -359,7 +333,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         moveRef.current = null;
         setDragOffsetSynced(null);
         setMoveOverlapSynced(false);
-        committedGeomRef.current = null;
         resizeRef.current = null;
         setResizePreviewSynced(null);
       }
@@ -619,13 +592,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         const bed = bedsRef.current.find(b => b.id === bedId);
         if (bed) {
           if (preview.kind === 'grid' && !preview.overlap) {
-            const geom = { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows };
-            committedGeomRef.current = { bedId, grid: geom };
-            onUpdateBedGeometry(bedId, { grid: geom });
+            onUpdateBedGeometry(bedId, { grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
           } else if (preview.kind === 'freeform' && bed.freeform && !preview.overlap) {
-            const geom = { points: preview.points, closed: bed.freeform.closed };
-            committedGeomRef.current = { bedId, freeform: geom };
-            onUpdateBedGeometry(bedId, { freeform: geom });
+            onUpdateBedGeometry(bedId, { freeform: { points: preview.points, closed: bed.freeform.closed } });
           } else if (preview.overlap) {
             onOverlapWarning?.("Beds can't overlap");
           }
@@ -669,7 +638,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           if (introducesNewOverlap(gPoly, bedId, dragStartOverlapsRef.current, bedsRef.current)) {
             onOverlapWarning?.("Beds can't overlap");
           } else {
-            committedGeomRef.current = { bedId, grid: newGrid };
             onUpdateBedGeometry(bedId, { grid: newGrid });
           }
         } else if (bed.type === 'freeform' && bed.freeform) {
@@ -677,9 +645,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           if (introducesNewOverlap(newPoints, bedId, dragStartOverlapsRef.current, bedsRef.current)) {
             onOverlapWarning?.("Beds can't overlap");
           } else {
-            const geom = { points: newPoints, closed: bed.freeform.closed };
-            committedGeomRef.current = { bedId, freeform: geom };
-            onUpdateBedGeometry(bedId, { freeform: geom });
+            onUpdateBedGeometry(bedId, { freeform: { points: newPoints, closed: bed.freeform.closed } });
           }
         }
       }
@@ -797,13 +763,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           const isMoveOverlapping = isMoving && moveOverlap;
 
           if (bed.type === 'grid' && bed.grid) {
-            // Use committedGeomRef while the parent's optimistic beds prop catches up (Fix C)
-            const committed = !isMoving && committedGeomRef.current?.bedId === bed.id
-              ? (committedGeomRef.current.grid ?? null)
-              : null;
-            const { x, y, cols, rows } = committed ?? bed.grid;
-            const renderX = isMoving ? bed.grid.x * GRID_PX + dragOffset!.x : x * GRID_PX;
-            const renderY = isMoving ? bed.grid.y * GRID_PX + dragOffset!.y : y * GRID_PX;
+            const { x, y, cols, rows } = bed.grid;
+            const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
+            const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
             const w = cols * GRID_PX;
             const h = rows * GRID_PX;
 
@@ -829,13 +791,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
           if (bed.type === 'freeform' && bed.freeform) {
             const { closed } = bed.freeform;
-            // Use committedGeomRef while parent catches up (Fix C)
-            const committedF = !isMoving && committedGeomRef.current?.bedId === bed.id
-              ? (committedGeomRef.current.freeform ?? null)
-              : null;
             const pts = isMoving
               ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
-              : (committedF?.points ?? bed.freeform.points);
+              : bed.freeform.points;
             let sumX = 0, sumY = 0;
             for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
             const labelX = sumX / (pts.length / 2);
