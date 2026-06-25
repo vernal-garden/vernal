@@ -162,7 +162,7 @@ export default function HomePage() {
   ) => {
     if (!armedSeed) return;
     const seed = armedSeed;
-    setArmedSeed(null); // return to picker so user can choose the next seed
+    // Keep seed armed so the user can immediately place another
     const payload: {
       seedId?: string;
       cambiumSeedId?: string;

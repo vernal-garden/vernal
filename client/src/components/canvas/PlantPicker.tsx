@@ -33,6 +33,16 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
     inputRef.current?.focus();
   }, []);
 
+  // When the armed seed is cleared externally (Esc, close), reset picker selection
+  // so the next click on any row — including the same one — re-arms it.
+  useEffect(() => {
+    if (!armedSeed) {
+      setSelectedId(null);
+      setSelectedSource(null);
+      setDetail(null);
+    }
+  }, [armedSeed]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -48,7 +58,7 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
   }, [armedSeed, onDisarm, onClose]);
 
   const handleSelect = async (id: string, source: 'catalogue' | 'personal', fallbackName: string) => {
-    if (selectedId === id && selectedSource === source) return;
+    if (selectedId === id && selectedSource === source && armedSeed !== null) return;
     setSelectedId(id);
     setSelectedSource(source);
     setDetail(null);
