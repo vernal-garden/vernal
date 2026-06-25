@@ -286,6 +286,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, []);
   const resizeDoneRef = useRef(false);
   const moveDoneRef = useRef(false);
+  const gridCreateDoneRef = useRef(false);
 
   const selectedBedIdRef = useRef<string | null>(selectedBedId);
   useEffect(() => { selectedBedIdRef.current = selectedBedId; }, [selectedBedId]);
@@ -607,18 +608,19 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     if (gridDragRef.current) {
       const wasMoved = gridDragRef.current.moved;
       gridDragRef.current = null;
-      if (wasMoved && gridPreview) {
+      if (wasMoved) {
+        gridCreateDoneRef.current = true;
         const preview = gridPreview;
         setGridPreview(null);
-        if (!preview.overlap) {
+        if (preview && !preview.overlap) {
           onCreateBed({ type: 'grid', label: `Bed ${bedsRef.current.length + 1}`, grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
-        } else {
+        } else if (preview?.overlap) {
           onOverlapWarning?.("Beds can't overlap");
         }
         return;
       }
       setGridPreview(null);
-      // Not a drag — fall through so handleClick runs selection
+      // Not a drag — fall through so handleClick runs selection/deselection
       return;
     }
 
@@ -660,7 +662,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const handleClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (resizeDoneRef.current) { resizeDoneRef.current = false; return; }
     if (moveDoneRef.current) { moveDoneRef.current = false; return; }
-    if (gridDragRef.current) return;
+    if (gridCreateDoneRef.current) { gridCreateDoneRef.current = false; return; }
 
     const stage = e.target.getStage(); if (!stage) return;
     const p = stage.getPointerPosition(); if (!p) return;
