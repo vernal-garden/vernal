@@ -222,17 +222,7 @@ function introducesNewOverlap(
     if (bed.id === excludeId || preExisting.has(bed.id)) continue;
     const poly = bedToPolygon(bed);
     if (!poly || poly.length < 4) continue;
-    if (polygonsOverlap(candidatePoly, poly)) {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (let i = 0; i < candidatePoly.length; i += 2) {
-        if (candidatePoly[i] < minX) minX = candidatePoly[i];
-        if (candidatePoly[i] > maxX) maxX = candidatePoly[i];
-        if (candidatePoly[i + 1] < minY) minY = candidatePoly[i + 1];
-        if (candidatePoly[i + 1] > maxY) maxY = candidatePoly[i + 1];
-      }
-      console.log('[overlap-block] movingBed=', excludeId, 'matched=', bed.id, bed.type, 'preExisting=', [...preExisting], 'candidateBBox=', { minX, minY, maxX, maxY });
-      return true;
-    }
+    if (polygonsOverlap(candidatePoly, poly)) return true;
   }
   return false;
 }
@@ -295,6 +285,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     setResizePreview(v);
   }, []);
   const resizeDoneRef = useRef(false);
+  const moveDoneRef = useRef(false);
 
   const selectedBedIdRef = useRef<string | null>(selectedBedId);
   useEffect(() => { selectedBedIdRef.current = selectedBedId; }, [selectedBedId]);
@@ -472,7 +463,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     if (mode === 'grid') {
       const hitBed = hitTestBeds(w, bedsRef.current);
-      console.log('[md] hit=', hitBed?.id ?? 'NONE→create', 'press=', w.x|0, w.y|0);
       if (hitBed) {
         moveRef.current = { bedId: hitBed.id, startWorld: w, moved: false };
         dragStartOverlapsRef.current = getBedCurrentOverlaps(hitBed, bedsRef.current);
@@ -592,7 +582,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleMouseUp = useCallback(() => {
-    console.log('[mu] moveRef=', moveRef.current?.bedId, 'moved=', moveRef.current?.moved, 'offset=', dragOffsetRef.current, 'willCommit=', !!(moveRef.current?.moved && dragOffsetRef.current));
     if (resizeRef.current) {
       const { bedId } = resizeRef.current;
       resizeRef.current = null;
@@ -634,6 +623,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
 
     if (moveRef.current?.moved && dragOffsetRef.current) {
+      moveDoneRef.current = true;
       const { bedId } = moveRef.current;
       const bed = bedsRef.current.find(b => b.id === bedId);
       if (bed) {
@@ -650,7 +640,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           if (introducesNewOverlap(gPoly, bedId, dragStartOverlapsRef.current, bedsRef.current)) {
             onOverlapWarning?.("Beds can't overlap");
           } else {
-            console.log('[mu] COMMIT', bedId, newGrid);
             onUpdateBedGeometry(bedId, { grid: newGrid });
           }
         } else if (bed.type === 'freeform' && bed.freeform) {
@@ -670,7 +659,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const handleClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (resizeDoneRef.current) { resizeDoneRef.current = false; return; }
-    if (moveRef.current?.moved) { moveRef.current = null; return; }
+    if (moveDoneRef.current) { moveDoneRef.current = false; return; }
     if (gridDragRef.current) return;
 
     const stage = e.target.getStage(); if (!stage) return;
