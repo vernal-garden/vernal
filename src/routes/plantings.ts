@@ -34,6 +34,8 @@ interface PlantingRow {
   indicator_dismissed_at: string | null;
   created_at: string;
   updated_at: string;
+  companion_seed_id?: string | null;
+  spacing_inches?: string | null;
 }
 
 interface BedInfo {
@@ -56,6 +58,21 @@ const PLANTING_SELECT = `
   quantity, planting_date, cell_x, cell_y, point_x, point_y,
   growth_stage_pct, harvest_ready, harvest_window_end,
   indicator_dismissed_at, created_at, updated_at
+`;
+
+// Extended SELECT for GET handlers — includes companion resolution via JOINs.
+// POST/PATCH use PLANTING_SELECT (no JOINs) so these fields are absent there (null via ??) — acceptable.
+const PLANTING_GET_QUERY = `
+  SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
+    p.seed_id::text, p.cambium_seed_id::text,
+    p.quantity, p.planting_date, p.cell_x, p.cell_y, p.point_x, p.point_y,
+    p.growth_stage_pct, p.harvest_ready, p.harvest_window_end,
+    p.indicator_dismissed_at, p.created_at, p.updated_at,
+    COALESCE(p.cambium_seed_id, s.cambium_source_id)::text AS companion_seed_id,
+    COALESCE(cs.spacing_inches, s.spacing_inches) AS spacing_inches
+  FROM plantings p
+  LEFT JOIN seeds s          ON s.id  = p.seed_id
+  LEFT JOIN cambium.seeds cs ON cs.id = p.cambium_seed_id
 `;
 
 const GROWTH_KEYS = ['growthStagePct', 'harvestReady', 'harvestWindowEnd'];
@@ -82,6 +99,8 @@ function formatPlanting(row: PlantingRow) {
     },
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    companionSeedId: row.companion_seed_id ?? null,
+    spacingInches: row.spacing_inches != null ? Number(row.spacing_inches) : null,
   };
 }
 
@@ -180,10 +199,9 @@ gardenPlantingsRouter.get('/', async (req, res) => {
     }
 
     const { rows } = await db.query<PlantingRow>(
-      `SELECT ${PLANTING_SELECT}
-       FROM plantings
-       WHERE garden_id = $1 AND season = $2
-       ORDER BY bed_id ASC, created_at ASC`,
+      `${PLANTING_GET_QUERY}
+       WHERE p.garden_id = $1 AND p.season = $2
+       ORDER BY p.bed_id ASC, p.created_at ASC`,
       [gardenId, season],
     );
     res.json({ data: rows.map(formatPlanting) });
@@ -209,10 +227,9 @@ plantingsNestedRouter.get('/', async (req, res) => {
     if (!bed) return res.status(404).json({ error: 'Bed not found' });
 
     const { rows } = await db.query<PlantingRow>(
-      `SELECT ${PLANTING_SELECT}
-       FROM plantings
-       WHERE bed_id = $1
-       ORDER BY created_at ASC`,
+      `${PLANTING_GET_QUERY}
+       WHERE p.bed_id = $1
+       ORDER BY p.created_at ASC`,
       [bedId],
     );
     res.json({ data: rows.map(formatPlanting) });

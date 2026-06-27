@@ -64,7 +64,7 @@ beforeAll(async () => {
   // Create garden
   const gardenRes = await agent.post('/api/gardens').send({
     name: 'Planting Test Garden',
-    style: 'mixed',
+    style: 'grid',
     zone: '7b',
   });
   gardenId = gardenRes.body.id;
@@ -530,5 +530,84 @@ describe('Test 19: Bed deletion cascades plantings', () => {
       [cascadePlantingId],
     );
     expect(after.length).toBe(0);
+  });
+});
+
+// ── Test 20: GET plantings includes companionSeedId and spacingInches ─────────
+
+describe('Test 20: GET plantings includes companionSeedId and spacingInches', () => {
+  let linkedSeedId: number;
+  let linkedCambiumSeedWithSpacing: number;
+
+  beforeAll(async () => {
+    // Create a cambium seed with spacing
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source, spacing_inches)
+       VALUES ('Carrot', 'active', 'editorial', 9)
+       RETURNING id`,
+    );
+    linkedCambiumSeedWithSpacing = rows[0].id;
+
+    // Create a personal seed linked to that cambium seed
+    const { rows: sr } = await pool.query<{ id: number }>(
+      `INSERT INTO seeds (owner_id, common_name, origin, contribution_status, cambium_source_id)
+       VALUES ($1, 'Linked Carrot', 'cambium_linked', 'private', $2)
+       RETURNING id`,
+      [accountId, linkedCambiumSeedWithSpacing],
+    );
+    linkedSeedId = sr[0].id;
+  });
+
+  it('garden-wide GET: each planting has companionSeedId and spacingInches keys', async () => {
+    const res = await agent.get(`/api/gardens/${gardenId}/plantings`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const p of res.body.data) {
+      expect('companionSeedId' in p).toBe(true);
+      expect('spacingInches' in p).toBe(true);
+    }
+  });
+
+  it('bed GET: each planting has companionSeedId and spacingInches keys', async () => {
+    const res = await agent.get(`/api/gardens/${gardenId}/beds/${gridBedId}/plantings`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.length).toBeGreaterThan(0);
+    for (const p of res.body.data) {
+      expect('companionSeedId' in p).toBe(true);
+      expect('spacingInches' in p).toBe(true);
+    }
+  });
+
+  it('cambium planting: companionSeedId equals cambiumSeedId', async () => {
+    const res = await agent.get(`/api/gardens/${gardenId}/plantings`);
+    const p = res.body.data.find((x: { cambiumSeedId: string | null }) => x.cambiumSeedId != null);
+    expect(p).toBeDefined();
+    expect(p.companionSeedId).toBe(p.cambiumSeedId);
+  });
+
+  it('personal seed with cambium_source_id: companionSeedId uses cambium source', async () => {
+    // Place a planting with the linked personal seed
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/beds/${gridBedId}/plantings`)
+      .send({ seedId: linkedSeedId, cell: { x: 3, y: 7 } });
+    expect(res.status).toBe(201);
+    const plantingId = res.body.id;
+
+    const listRes = await agent.get(`/api/gardens/${gardenId}/plantings`);
+    const found = listRes.body.data.find((p: { id: string }) => p.id === plantingId);
+    expect(found).toBeDefined();
+    expect(found.companionSeedId).toBe(String(linkedCambiumSeedWithSpacing));
+    expect(found.spacingInches).toBe(9);
+  });
+
+  it('personal seed without cambium link: companionSeedId is null', async () => {
+    const res = await agent.get(`/api/gardens/${gardenId}/plantings`);
+    const p = res.body.data.find((x: { seedId: string | null; cambiumSeedId: string | null }) =>
+      x.seedId != null && x.cambiumSeedId == null
+    );
+    if (p) {
+      // personalSeedId has no cambium_source_id → companionSeedId should be null
+      expect(p.companionSeedId).toBeNull();
+    }
   });
 });

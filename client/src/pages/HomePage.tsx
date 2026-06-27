@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGardenList } from '../hooks/useGardenList';
 import { useGarden } from '../hooks/useGarden';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../hooks/useGarden';
@@ -11,6 +11,9 @@ import BedManager from '../components/canvas/BedManager';
 import CanvasToolbar from '../components/canvas/CanvasToolbar';
 import type { CanvasMode } from '../components/canvas/CanvasToolbar';
 import PlantPicker from '../components/canvas/PlantPicker';
+import { useCompanions } from '../hooks/useCompanions';
+import { useConflicts } from '../hooks/useConflicts';
+import { computeBedOccupancy } from '../lib/crowding';
 
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
@@ -32,7 +35,59 @@ export default function HomePage() {
 
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
   const { garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed } = useGarden(resolvedId);
-  const { plantingsByBedId, placePlanting, deletePlanting } = usePlantings(resolvedId);
+  const { plantingsByBedId, placePlanting, deletePlanting, latestPlacing } = usePlantings(resolvedId);
+
+  // Phase 20: companion / conflict / occupancy
+  const companionSeedIdsSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const plantings of Object.values(plantingsByBedId)) {
+      for (const p of plantings) {
+        if (p.companionSeedId) ids.add(p.companionSeedId);
+      }
+    }
+    return ids;
+  }, [plantingsByBedId]);
+
+  const { relationshipBetween, ensureLoaded, cacheVersion } = useCompanions(companionSeedIdsSet);
+
+  const { conflictedIds, conflictedBedIds } = useConflicts({
+    beds,
+    plantingsByBedId,
+    relationshipBetween,
+    cacheVersion,
+  });
+
+  const conflictJumpIndexRef = useRef(0);
+
+  const handleJumpToConflict = useCallback(() => {
+    const conflictBedArr = Array.from(conflictedBedIds);
+    if (conflictBedArr.length === 0) return;
+    const idx = conflictJumpIndexRef.current % conflictBedArr.length;
+    conflictJumpIndexRef.current += 1;
+    const bed = beds.find(b => b.id === conflictBedArr[idx]);
+    if (bed) {
+      canvasRef.current?.focusBed(bed);
+      setSelectedBed(bed);
+    }
+  }, [conflictedBedIds, beds]);
+
+  const occupancyByBedId = useMemo(() => {
+    if (!garden) return {};
+    const result: Record<string, { consumed: number; capacity: number; over: boolean }> = {};
+    for (const bed of beds) {
+      const plantings = plantingsByBedId[bed.id] ?? [];
+      result[bed.id] = computeBedOccupancy({ garden, bed, plantings });
+    }
+    return result;
+  }, [garden, beds, plantingsByBedId]);
+
+  const bedCompanionIds = useMemo(() => {
+    if (!selectedBed) return [];
+    const plantings = plantingsByBedId[selectedBed.id] ?? [];
+    return plantings.flatMap(p => (p.companionSeedId ? [p.companionSeedId] : []));
+  }, [selectedBed, plantingsByBedId]);
+
+  const selectedBedIsOver = selectedBed ? (occupancyByBedId[selectedBed.id]?.over ?? false) : false;
 
   // Keep selectedBed in sync when beds update
   useEffect(() => {
@@ -49,6 +104,13 @@ export default function HomePage() {
       setArmedSeed(null);
     }
   }, [selectedBed]);
+
+  // Ensure companion data loaded when picker opens
+  useEffect(() => {
+    if (pickerOpen && selectedBed) {
+      ensureLoaded(bedCompanionIds);
+    }
+  }, [pickerOpen, selectedBed, bedCompanionIds, ensureLoaded]);
 
   // Delete/Backspace keyboard shortcut for selected bed (0 plants only)
   useEffect(() => {
@@ -218,6 +280,11 @@ export default function HomePage() {
         armedSeed={armedSeed}
         onConfirmPlacement={handleConfirmPlacement}
         onConfirmRemoval={handleConfirmRemoval}
+        conflictedIds={conflictedIds}
+        conflictedBedIds={conflictedBedIds}
+        latestPlacing={latestPlacing}
+        occupancyByBedId={occupancyByBedId}
+        relationshipBetween={relationshipBetween}
       />
 
       {/* Empty-beds overlay */}
@@ -317,6 +384,8 @@ export default function HomePage() {
           onPanToggle={handlePanToggle}
           bedManagerOpen={bedManagerOpen}
           onBedManagerToggle={handleBedManagerToggle}
+          conflictCount={conflictedIds.size}
+          onJumpToConflict={handleJumpToConflict}
         />
       )}
 
@@ -341,6 +410,9 @@ export default function HomePage() {
           onArm={setArmedSeed}
           onDisarm={handleDisarmSeed}
           onClose={handleClosePicker}
+          bedCompanionIds={bedCompanionIds}
+          relationshipBetween={relationshipBetween}
+          bedIsOver={selectedBedIsOver}
         />
       )}
 

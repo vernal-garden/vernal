@@ -8,7 +8,7 @@ export type FitResult =
   | { mode: 'grid'; total: number }
   | { mode: 'freeform'; total: number; approximate: true };
 
-function shoelaceArea(points: number[]): number {
+export function shoelaceArea(points: number[]): number {
   let area = 0;
   const n = points.length / 2;
   for (let i = 0; i < n; i++) {

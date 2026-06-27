@@ -8,6 +8,8 @@ export interface Planting {
   season: number;
   seedId: string | null;
   cambiumSeedId: string | null;
+  companionSeedId: string | null;
+  spacingInches: number | null;
   quantity: number;
   plantingDate: string | null;
   cell: { x: number; y: number } | null;
@@ -31,7 +33,9 @@ export function usePlantings(gardenId: string | null) {
   const [plantingsByBedId, setPlantingsByBedId] = useState<PlantingsByBedId>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [latestPlacing, setLatestPlacing] = useState<{ id: string; seq: number } | null>(null);
   const plantingsRef = useRef<PlantingsByBedId>({});
+  const seqRef = useRef(0);
 
   const syncPlantings = useCallback((next: PlantingsByBedId) => {
     plantingsRef.current = next;
@@ -95,6 +99,8 @@ export function usePlantings(gardenId: string | null) {
       season: new Date().getFullYear(),
       seedId: payload.seedId ?? null,
       cambiumSeedId: payload.cambiumSeedId ?? null,
+      companionSeedId: null,
+      spacingInches: null,
       quantity: payload.quantity ?? 1,
       plantingDate: payload.plantingDate ?? null,
       cell: payload.cell ?? null,
@@ -110,6 +116,8 @@ export function usePlantings(gardenId: string | null) {
       if (!result) throw new Error('No planting returned');
       _removePlanting(tempId, bedId);
       _addPlanting({ ...result, _commonName: commonName });
+      seqRef.current += 1;
+      setLatestPlacing({ id: result.id, seq: seqRef.current });
     } catch (e) {
       _removePlanting(tempId, bedId);
       setError(e instanceof Error ? e.message : 'Failed to place planting');
@@ -127,5 +135,5 @@ export function usePlantings(gardenId: string | null) {
     }
   }, [_removePlanting, syncPlantings]);
 
-  return { plantingsByBedId, loading, error, reload, placePlanting, deletePlanting };
+  return { plantingsByBedId, loading, error, reload, placePlanting, deletePlanting, latestPlacing };
 }

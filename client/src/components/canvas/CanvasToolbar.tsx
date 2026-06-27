@@ -16,6 +16,8 @@ interface Props {
   onPanToggle: () => void;
   bedManagerOpen: boolean;
   onBedManagerToggle: () => void;
+  conflictCount?: number;
+  onJumpToConflict?: () => void;
 }
 
 const btnStyle: React.CSSProperties = {
@@ -46,6 +48,8 @@ export default function CanvasToolbar({
   mode, onModeChange,
   panActive, onPanToggle,
   bedManagerOpen, onBedManagerToggle,
+  conflictCount,
+  onJumpToConflict,
 }: Props) {
   const pct = Math.round(scale * 100);
 
@@ -171,6 +175,26 @@ export default function CanvasToolbar({
             ))}
           </div>
         </>
+      )}
+
+      {/* Companion conflict indicator */}
+      {conflictCount != null && conflictCount > 0 && (
+        <button
+          onClick={onJumpToConflict}
+          style={{
+            padding: '5px 10px',
+            borderRadius: 6,
+            border: '1px solid #C88A2A',
+            background: 'transparent',
+            color: '#C88A2A',
+            cursor: 'pointer',
+            fontSize: 12,
+            fontWeight: 600,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {conflictCount} companion conflict{conflictCount === 1 ? '' : 's'}
+        </button>
       )}
     </div>
   );

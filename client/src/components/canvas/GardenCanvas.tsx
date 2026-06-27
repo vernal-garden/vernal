@@ -23,6 +23,9 @@ const MARKER_COLORS = [
   '#8b4513', '#4a7c59', '#7a3b3b', '#3b6e8c',
 ];
 
+const REDUCED_MOTION = typeof window !== 'undefined'
+  && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
 function markerColor(id: string): string {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
@@ -66,6 +69,12 @@ interface Props {
     date: string | null,
   ) => void;
   onConfirmRemoval: (planting: Planting) => void;
+  // Phase 20: companion indicators
+  conflictedIds?: Set<string>;
+  conflictedBedIds?: Set<string>;
+  latestPlacing?: { id: string; seq: number } | null;
+  occupancyByBedId?: Record<string, { consumed: number; capacity: number; over: boolean }>;
+  relationshipBetween?: (a: string, b: string) => 'beneficial' | 'antagonistic' | null;
 }
 
 type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
@@ -294,6 +303,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   onScaleChange, onOverlapWarning, mode, panActive, gardenId: _gardenId,
   garden, plantingsByBedId, armedSeed,
   onConfirmPlacement, onConfirmRemoval,
+  // Phase 20
+  conflictedIds, conflictedBedIds, latestPlacing,
+  occupancyByBedId, relationshipBetween,
 }, ref) => {
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(1);
@@ -358,6 +370,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const armedSeedRef = useRef<ArmedSeed | null>(null);
   armedSeedRef.current = armedSeed;
+
+  const markerCircleRefs = useRef<Map<string, Konva.Circle>>(new Map());
+  const ringCircleRefs = useRef<Map<string, Konva.Circle>>(new Map());
 
   const setFreeformPtsSynced = useCallback((pts: number[]) => {
     freeformPtsRef.current = pts;
@@ -447,6 +462,64 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
+
+  // Phase 20: conflict pulse
+  const prevConflictedIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (REDUCED_MOTION) {
+      prevConflictedIdsRef.current = new Set(conflictedIds);
+      return;
+    }
+    const prev = prevConflictedIdsRef.current;
+    const newConflicts = conflictedIds
+      ? [...conflictedIds].filter(id => !prev.has(id))
+      : [];
+    for (const id of newConflicts) {
+      const node = markerCircleRefs.current.get(id);
+      if (!node) continue;
+      node.to({
+        scaleX: 1.15, scaleY: 1.15, duration: 0.4,
+        onFinish: () => node.to({
+          scaleX: 1, scaleY: 1, duration: 0.4,
+          onFinish: () => node.to({
+            scaleX: 1.15, scaleY: 1.15, duration: 0.4,
+            onFinish: () => node.to({ scaleX: 1, scaleY: 1, duration: 0.4 }),
+          }),
+        }),
+      });
+    }
+    prevConflictedIdsRef.current = new Set(conflictedIds);
+  }, [conflictedIds]);
+
+  // Phase 20: beneficial pulse
+  useEffect(() => {
+    if (!latestPlacing || REDUCED_MOTION) return;
+    const { id } = latestPlacing;
+    // Skip if this planting is in a conflict (conflict ring dominates)
+    if (conflictedIds?.has(id)) return;
+    // Check if new planting has any beneficial adjacency
+    if (!relationshipBetween) return;
+    const planting = Object.values(plantingsByBedIdRef.current).flat().find(p => p.id === id);
+    if (!planting) return;
+    const bed = bedsRef.current.find(b => b.id === planting.bedId);
+    if (!bed || !planting.companionSeedId) return;
+    const bedPlantings = plantingsByBedIdRef.current[planting.bedId] ?? [];
+    let hasBeneficial = false;
+    for (const other of bedPlantings) {
+      if (other.id === id || !other.companionSeedId) continue;
+      if (relationshipBetween(planting.companionSeedId, other.companionSeedId) === 'beneficial') {
+        hasBeneficial = true;
+        break;
+      }
+    }
+    if (!hasBeneficial) return;
+    const node = markerCircleRefs.current.get(id);
+    if (!node) return;
+    node.to({
+      scaleX: 1.12, scaleY: 1.12, duration: 0.4,
+      onFinish: () => node.to({ scaleX: 1, scaleY: 1, duration: 0.4 }),
+    });
+  }, [latestPlacing, conflictedIds, relationshipBetween]);
 
   const applyZoom = useCallback((newScale: number, cx: number, cy: number) => {
     const stage = stageRef.current;
@@ -1034,6 +1107,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             const isMoveOverlapping = isMoving && moveOverlap;
             // "Placing" state: this bed is the armed target
             const isPlacing = selected && armedSeed != null && !isMoving;
+            const isConflicted = conflictedBedIds?.has(bed.id) ?? false;
+            const occ = occupancyByBedId?.[bed.id];
+            const bedOver = occ?.over ?? false;
 
             if (bed.type === 'grid' && bed.grid) {
               const { x, y, cols, rows } = bed.grid;
@@ -1065,8 +1141,28 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                     fill={gridFill}
                     stroke={gridStroke}
                     strokeWidth={gridStrokeW} cornerRadius={2} />
+                  {isConflicted && (
+                    <Rect
+                      width={bw} height={bh}
+                      fill="rgba(200, 138, 42, 0.22)"
+                      stroke="#C88A2A"
+                      strokeWidth={1}
+                      cornerRadius={2}
+                      listening={false}
+                    />
+                  )}
                   {cellLines}
                   <Text text={bed.label || 'Bed'} fontSize={12} x={4} y={4} fill="#264a2e" fontFamily="Georgia, serif" />
+                  {bedOver && occ && (
+                    <Text
+                      text={`${Math.ceil(occ.consumed)}/${Math.floor(occ.capacity)} cells`}
+                      x={4} y={bh - 16}
+                      fontSize={9}
+                      fill="#8896A5"
+                      fontFamily="system-ui, sans-serif"
+                      listening={false}
+                    />
+                  )}
                 </Group>
               );
             }
@@ -1096,7 +1192,27 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                     fill={ffFill}
                     stroke={ffStroke}
                     strokeWidth={ffStrokeW} dash={[6, 4]} />
+                  {isConflicted && (
+                    <Line
+                      points={pts}
+                      closed
+                      fill="rgba(200, 138, 42, 0.22)"
+                      stroke="#C88A2A"
+                      strokeWidth={1}
+                      listening={false}
+                    />
+                  )}
                   <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
+                  {bedOver && occ && (
+                    <Text
+                      text={`${Math.ceil(occ.consumed)}/${Math.floor(occ.capacity)} sq ft`}
+                      x={labelX} y={labelY + 14}
+                      fontSize={9}
+                      fill="#8896A5"
+                      fontFamily="system-ui, sans-serif"
+                      listening={false}
+                    />
+                  )}
                 </Group>
               );
             }
@@ -1124,7 +1240,27 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
               return (
                 <Group key={planting.id}>
-                  <Circle x={cx} y={cy} radius={MARKER_RADIUS} fill={color} opacity={0.88} />
+                  <Circle
+                    ref={node => {
+                      if (node) markerCircleRefs.current.set(planting.id, node);
+                      else markerCircleRefs.current.delete(planting.id);
+                    }}
+                    x={cx} y={cy} radius={MARKER_RADIUS} fill={color} opacity={0.88}
+                  />
+                  {(conflictedIds?.has(planting.id)) && (
+                    <Circle
+                      ref={node => {
+                        if (node) ringCircleRefs.current.set(planting.id, node);
+                        else ringCircleRefs.current.delete(planting.id);
+                      }}
+                      x={cx} y={cy}
+                      radius={MARKER_RADIUS + 3}
+                      fill="transparent"
+                      stroke="#C88A2A"
+                      strokeWidth={2}
+                      listening={false}
+                    />
+                  )}
                   <Text
                     text={label}
                     x={cx - MARKER_RADIUS}

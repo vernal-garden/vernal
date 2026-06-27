@@ -18,9 +18,28 @@ interface Props {
   onDisarm: () => void;
   onClose: () => void;
   armedSeed: ArmedSeed | null;
+  bedCompanionIds?: string[];
+  relationshipBetween?: (a: string, b: string) => 'beneficial' | 'antagonistic' | null;
+  bedIsOver?: boolean;
 }
 
-export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, armedSeed }: Props) {
+function computePipStatus(
+  resultCompanionId: string | null | undefined,
+  bedCompanionIds: string[],
+  relationshipBetween: (a: string, b: string) => 'beneficial' | 'antagonistic' | null,
+): { green: boolean; amber: boolean } {
+  if (!resultCompanionId) return { green: false, amber: false };
+  let green = false, amber = false;
+  for (const bedId of bedCompanionIds) {
+    const rel = relationshipBetween(resultCompanionId, bedId);
+    if (rel === 'beneficial') green = true;
+    if (rel === 'antagonistic') amber = true;
+    if (green && amber) break;
+  }
+  return { green, amber };
+}
+
+export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, armedSeed, bedCompanionIds, relationshipBetween, bedIsOver }: Props) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<'catalogue' | 'personal' | null>(null);
@@ -161,30 +180,44 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
         {personal.length > 0 && (
           <>
             <GroupLabel>My Seeds</GroupLabel>
-            {personal.map(s => (
-              <ResultRow
-                key={`personal-${s.id}`}
-                name={s.commonName}
-                spacing={s.spacingInches}
-                selected={selectedId === s.id && selectedSource === 'personal'}
-                onSelect={() => handleSelect(s.id, 'personal', s.commonName)}
-              />
-            ))}
+            {personal.map(s => {
+              const pip = (bedCompanionIds && relationshipBetween && s.companionSeedId != null)
+                ? computePipStatus(s.companionSeedId, bedCompanionIds, relationshipBetween)
+                : { green: false, amber: false };
+              return (
+                <ResultRow
+                  key={`personal-${s.id}`}
+                  name={s.commonName}
+                  spacing={s.spacingInches}
+                  selected={selectedId === s.id && selectedSource === 'personal'}
+                  onSelect={() => handleSelect(s.id, 'personal', s.commonName)}
+                  pipGreen={pip.green}
+                  pipAmber={pip.amber}
+                />
+              );
+            })}
           </>
         )}
 
         {catalogue.length > 0 && (
           <>
             <GroupLabel>{personal.length > 0 ? 'Cambium Catalogue' : 'Catalogue'}</GroupLabel>
-            {catalogue.map(s => (
-              <ResultRow
-                key={`catalogue-${s.id}`}
-                name={s.commonName}
-                spacing={s.spacingInches}
-                selected={selectedId === s.id && selectedSource === 'catalogue'}
-                onSelect={() => handleSelect(s.id, 'catalogue', s.commonName)}
-              />
-            ))}
+            {catalogue.map(s => {
+              const pip = (bedCompanionIds && relationshipBetween && s.companionSeedId != null)
+                ? computePipStatus(s.companionSeedId, bedCompanionIds, relationshipBetween)
+                : { green: false, amber: false };
+              return (
+                <ResultRow
+                  key={`catalogue-${s.id}`}
+                  name={s.commonName}
+                  spacing={s.spacingInches}
+                  selected={selectedId === s.id && selectedSource === 'catalogue'}
+                  onSelect={() => handleSelect(s.id, 'catalogue', s.commonName)}
+                  pipGreen={pip.green}
+                  pipAmber={pip.amber}
+                />
+              );
+            })}
           </>
         )}
       </div>
@@ -201,6 +234,11 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
               <div style={{ marginTop: 8, fontSize: 12, color: '#6a8e6a', textAlign: 'center' }}>
                 Click on the bed to place
               </div>
+              {bedIsOver && (
+                <div style={{ marginTop: 6, fontSize: 12, color: '#8896A5', textAlign: 'center' }}>
+                  This bed is over its recommended capacity
+                </div>
+              )}
             </>
           )}
         </div>
@@ -222,27 +260,40 @@ function GroupLabel({ children }: { children: React.ReactNode }) {
 }
 
 function ResultRow({
-  name, spacing, selected, onSelect,
+  name, spacing, selected, onSelect, pipGreen, pipAmber,
 }: {
   name: string;
   spacing: number | null;
   selected: boolean;
   onSelect: () => void;
+  pipGreen?: boolean;
+  pipAmber?: boolean;
 }) {
   return (
     <button
       onClick={onSelect}
       style={{
-        display: 'block', width: '100%', textAlign: 'left',
+        display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
         padding: '8px 16px', border: 'none', cursor: 'pointer',
         background: selected ? '#e8f0e8' : 'transparent',
         borderLeft: selected ? '3px solid #2d6a4f' : '3px solid transparent',
       }}
     >
-      <div style={{ fontSize: 14, color: '#2c3e2c', fontWeight: selected ? 500 : 400 }}>{name}</div>
-      {spacing != null && (
-        <div style={{ fontSize: 12, color: '#9a8e7e', marginTop: 1 }}>{spacing} in. spacing</div>
-      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, color: '#2c3e2c', fontWeight: selected ? 500 : 400 }}>{name}</div>
+        {spacing != null && (
+          <div style={{ fontSize: 12, color: '#9a8e7e', marginTop: 1 }}>{spacing} in. spacing</div>
+        )}
+      </div>
+      {/* Fixed 22px pip slot — always rendered to prevent layout shift */}
+      <div style={{ width: 22, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
+        {pipGreen && (
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#53A044', flexShrink: 0 }} />
+        )}
+        {pipAmber && (
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#C88A2A', flexShrink: 0 }} />
+        )}
+      </div>
     </button>
   );
 }

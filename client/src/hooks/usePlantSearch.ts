@@ -6,6 +6,7 @@ export interface SeedResult {
   id: string;
   commonName: string;
   spacingInches: number | null;
+  companionSeedId?: string | null;
   source: 'catalogue' | 'personal';
 }
 
@@ -13,6 +14,7 @@ interface ApiSeed {
   id: string;
   commonName: string;
   spacingInches?: number | null;
+  cambiumSourceId?: string | null;
 }
 
 export function usePlantSearch(query: string) {
@@ -35,6 +37,7 @@ export function usePlantSearch(query: string) {
           id: s.id,
           commonName: s.commonName,
           spacingInches: s.spacingInches ?? null,
+          companionSeedId: s.id ?? null,
           source: 'catalogue' as const,
         })),
       );
@@ -48,6 +51,7 @@ export function usePlantSearch(query: string) {
             id: s.id,
             commonName: s.commonName,
             spacingInches: s.spacingInches ?? null,
+            companionSeedId: s.cambiumSourceId ?? null,
             source: 'personal' as const,
           })),
         );
