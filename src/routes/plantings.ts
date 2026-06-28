@@ -361,14 +361,18 @@ plantingsNestedRouter.post('/', async (req, res) => {
       pointY = p.y;
     }
 
-    const { rows } = await db.query<PlantingRow>(
+    const { rows: insertRows } = await db.query<{ id: string }>(
       `INSERT INTO plantings
          (bed_id, garden_id, season, seed_id, cambium_seed_id, quantity, planting_date,
           cell_x, cell_y, point_x, point_y)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING ${PLANTING_SELECT}`,
+       RETURNING id::text`,
       [bedId, gardenId, bed.season, seedId, cambiumSeedId, quantity, plantingDate,
        cellX, cellY, pointX, pointY],
+    );
+    const { rows } = await db.query<PlantingRow>(
+      `${PLANTING_GET_QUERY} WHERE p.id = $1`,
+      [insertRows[0].id],
     );
     res.status(201).json(formatPlanting(rows[0]));
   } catch (err) {
@@ -483,11 +487,13 @@ plantingsFlatRouter.patch('/:id', async (req, res) => {
     updates.push(`updated_at = NOW()`);
     values.push(plantingId);
 
-    const { rows } = await db.query<PlantingRow>(
-      `UPDATE plantings SET ${updates.join(', ')}
-       WHERE id = $${idx}
-       RETURNING ${PLANTING_SELECT}`,
+    await db.query(
+      `UPDATE plantings SET ${updates.join(', ')} WHERE id = $${idx}`,
       values,
+    );
+    const { rows } = await db.query<PlantingRow>(
+      `${PLANTING_GET_QUERY} WHERE p.id = $1`,
+      [plantingId],
     );
     res.json(formatPlanting(rows[0]));
   } catch (err) {

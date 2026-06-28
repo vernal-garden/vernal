@@ -3,8 +3,13 @@ import * as api from '../lib/api';
 
 export interface CompanionEntry {
   id: string;
-  slug: string;
   commonName: string;
+  relationship: 'beneficial' | 'antagonistic' | 'neutral';
+}
+
+// Shape returned by GET /api/catalogue/seeds/:id/companions
+interface ApiCompanionEntry {
+  seed: { id: string; commonName: string };
   relationship: 'beneficial' | 'antagonistic' | 'neutral';
 }
 
@@ -20,10 +25,15 @@ export function useCompanions(seedIds: Set<string>) {
     if (cacheRef.current.has(id) || fetchingRef.current.has(id)) return;
     fetchingRef.current.add(id);
     try {
-      const res = await api.get<{ data: CompanionEntry[] }>(
+      const res = await api.get<{ data: ApiCompanionEntry[] }>(
         `/api/catalogue/seeds/${encodeURIComponent(id)}/companions`,
       );
-      cacheRef.current.set(id, res?.data ?? []);
+      const entries: CompanionEntry[] = (res?.data ?? []).map(e => ({
+        id: e.seed.id,
+        commonName: e.seed.commonName,
+        relationship: e.relationship,
+      }));
+      cacheRef.current.set(id, entries);
       setCacheVersion(v => v + 1);
     } catch {
       // On error, store empty array to avoid retrying
