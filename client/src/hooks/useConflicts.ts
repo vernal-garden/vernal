@@ -55,7 +55,8 @@ export function deriveConflicts({
           const dx = a.point.x - b.point.x;
           const dy = a.point.y - b.point.y;
           const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist >= spacingPxA / 2 + spacingPxB / 2) continue;
+          const threshold = Math.max(spacingPxA / 2 + spacingPxB / 2, GRID_PX);
+          if (dist >= threshold) continue;
           if (relationshipBetween(a.companionSeedId, b.companionSeedId) === 'antagonistic') {
             conflictedIds.add(a.id);
             conflictedIds.add(b.id);
