@@ -1150,7 +1150,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                     />
                   )}
                   {cellLines}
-                  <Text text={bed.label || 'Bed'} fontSize={12} x={4} y={4} fill="#264a2e" fontFamily="Georgia, serif" />
                 </Group>
               );
             }
@@ -1160,11 +1159,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
               const pts = isMoving
                 ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
                 : bed.freeform.points;
-              let sumX = 0, sumY = 0;
-              for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
-              const labelX = sumX / (pts.length / 2);
-              const labelY = sumY / (pts.length / 2);
-
               const ffFill = isMoveOverlapping ? 'rgba(200,80,80,0.4)'
                 : isPlacing ? 'rgba(45,106,79,0.15)'
                 : 'rgba(255,243,205,0.7)';
@@ -1190,7 +1184,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                       listening={false}
                     />
                   )}
-                  <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
                 </Group>
               );
             }
@@ -1256,8 +1249,57 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           })}
         </Layer>
 
-        {/* Layer 5: overcrowding badge overlay (above markers) */}
+        {/* Layer 5: chrome overlay — bed labels + overcrowding badges (above markers) */}
         <Layer listening={false}>
+          {/* Bed name labels */}
+          {beds.map(bed => {
+            const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
+            const labelText = bed.label || 'Bed';
+            const chipPad = 3;
+            const chipW = Math.max(labelText.length * 7 + chipPad * 2, 28);
+            const chipH = 20;
+
+            if (bed.type === 'grid' && bed.grid) {
+              const { x, y } = bed.grid;
+              const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
+              const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
+              const chipX = renderX + 3;
+              const chipY = renderY + 3;
+              return (
+                <Group key={`lbl-${bed.id}`}>
+                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
+                    fill="rgba(250,247,242,0.92)" stroke="#d8ceba" strokeWidth={1}
+                    cornerRadius={3} />
+                  <Text text={labelText} x={chipX + chipPad} y={chipY + 4}
+                    fontSize={12} fill="#264a2e" fontFamily="Georgia, serif" />
+                </Group>
+              );
+            }
+
+            if (bed.type === 'freeform' && bed.freeform) {
+              const pts = isMoving
+                ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
+                : bed.freeform.points;
+              let sumX = 0, sumY = 0;
+              for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
+              const labelX = sumX / (pts.length / 2);
+              const labelY = sumY / (pts.length / 2);
+              const chipX = labelX - chipW / 2;
+              const chipY = labelY - chipH / 2;
+              return (
+                <Group key={`lbl-${bed.id}`}>
+                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
+                    fill="rgba(250,247,242,0.92)" stroke="#d8ceba" strokeWidth={1}
+                    cornerRadius={3} />
+                  <Text text={labelText} x={chipX + chipPad} y={chipY + 4}
+                    fontSize={12} fill="#5a3e00" fontFamily="Georgia, serif" />
+                </Group>
+              );
+            }
+
+            return null;
+          })}
+          {/* Overcrowding badges */}
           {beds.map(bed => {
             const occ = occupancyByBedId?.[bed.id];
             if (!occ?.over) return null;
