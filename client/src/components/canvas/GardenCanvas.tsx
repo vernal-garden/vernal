@@ -1108,8 +1108,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             // "Placing" state: this bed is the armed target
             const isPlacing = selected && armedSeed != null && !isMoving;
             const isConflicted = conflictedBedIds?.has(bed.id) ?? false;
-            const occ = occupancyByBedId?.[bed.id];
-            const bedOver = occ?.over ?? false;
 
             if (bed.type === 'grid' && bed.grid) {
               const { x, y, cols, rows } = bed.grid;
@@ -1153,16 +1151,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                   )}
                   {cellLines}
                   <Text text={bed.label || 'Bed'} fontSize={12} x={4} y={4} fill="#264a2e" fontFamily="Georgia, serif" />
-                  {bedOver && occ && (
-                    <Text
-                      text={`${Math.ceil(occ.consumed)}/${Math.floor(occ.capacity)} cells`}
-                      x={4} y={bh - 16}
-                      fontSize={9}
-                      fill="#8896A5"
-                      fontFamily="system-ui, sans-serif"
-                      listening={false}
-                    />
-                  )}
                 </Group>
               );
             }
@@ -1203,16 +1191,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                     />
                   )}
                   <Text text={bed.label || 'Bed'} fontSize={12} x={labelX} y={labelY} fill="#5a3e00" fontFamily="Georgia, serif" />
-                  {bedOver && occ && (
-                    <Text
-                      text={`${Math.ceil(occ.consumed)}/${Math.floor(occ.capacity)} sq ft`}
-                      x={labelX} y={labelY + 14}
-                      fontSize={9}
-                      fill="#8896A5"
-                      fontFamily="system-ui, sans-serif"
-                      listening={false}
-                    />
-                  )}
                 </Group>
               );
             }
@@ -1275,6 +1253,64 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                 </Group>
               );
             });
+          })}
+        </Layer>
+
+        {/* Layer 5: overcrowding badge overlay (above markers) */}
+        <Layer listening={false}>
+          {beds.map(bed => {
+            const occ = occupancyByBedId?.[bed.id];
+            if (!occ?.over) return null;
+            const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
+            const isSFGGrid = garden?.growingMethod === 'square_foot' && bed.type === 'grid';
+            const unit = isSFGGrid ? 'cells' : 'sq ft';
+            const badgeText = `${Math.ceil(occ.consumed)}/${Math.floor(occ.capacity)} ${unit}`;
+            const chipH = 14;
+            const chipPad = 4;
+            const chipW = Math.max(badgeText.length * 5.2 + chipPad * 2, 38);
+            const margin = 4;
+
+            if (bed.type === 'grid' && bed.grid) {
+              const { x, y, cols } = bed.grid;
+              const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
+              const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
+              const bw = cols * GRID_PX;
+              const chipX = renderX + bw - chipW - margin;
+              const chipY = renderY + margin;
+              return (
+                <Group key={bed.id}>
+                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
+                    fill="rgba(200,138,42,0.18)" stroke="#C88A2A" strokeWidth={0.5}
+                    cornerRadius={4} />
+                  <Text text={badgeText} x={chipX + chipPad} y={chipY + 3}
+                    fontSize={9} fill="#7a5c10" fontFamily="system-ui, sans-serif" />
+                </Group>
+              );
+            }
+
+            if (bed.type === 'freeform' && bed.freeform) {
+              const pts = isMoving
+                ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
+                : bed.freeform.points;
+              let maxX = -Infinity, minY = Infinity;
+              for (let i = 0; i < pts.length; i += 2) {
+                if (pts[i] > maxX) maxX = pts[i];
+                if (pts[i + 1] < minY) minY = pts[i + 1];
+              }
+              const chipX = maxX - chipW - margin;
+              const chipY = minY + margin;
+              return (
+                <Group key={bed.id}>
+                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
+                    fill="rgba(200,138,42,0.18)" stroke="#C88A2A" strokeWidth={0.5}
+                    cornerRadius={4} />
+                  <Text text={badgeText} x={chipX + chipPad} y={chipY + 3}
+                    fontSize={9} fill="#7a5c10" fontFamily="system-ui, sans-serif" />
+                </Group>
+              );
+            }
+
+            return null;
           })}
         </Layer>
 
