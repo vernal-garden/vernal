@@ -1251,7 +1251,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
         {/* Layer 5: chrome overlay — bed labels + overcrowding badges (above markers) */}
         <Layer listening={false}>
-          {/* Bed name labels + overcrowding badges, anchored above the top border */}
+          {/* Bed name labels + overcrowding badges, centered above the top border */}
           {beds.map(bed => {
             const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
             const labelText = bed.label || 'Bed';
@@ -1272,22 +1272,46 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             const bdgChipW = badgeText ? Math.max(badgeText.length * 5.2 + bdgPad * 2, 38) : 0;
             const bdgChipH = 14;
 
-            // Chips sit just above the top border
+            // Chips sit just above the top border; bottom of chip row = topEdge - aboveGap
             const aboveGap = 4;
+
+            // Compute label/badge x positions centered on anchorX, badge right of label.
+            // isNarrow: stack badge below label (both centered), rather than side-by-side.
+            const layoutChips = (anchorX: number, topEdge: number, refWidth: number) => {
+              const isNarrow = badgeText != null && (lblChipW + 4 + bdgChipW > refWidth);
+
+              let lblChipX: number, lblChipY: number;
+              let bdgChipX: number, bdgChipY: number;
+
+              if (!badgeText) {
+                lblChipX = anchorX - lblChipW / 2;
+                lblChipY = topEdge - lblChipH - aboveGap;
+                bdgChipX = 0; bdgChipY = 0;
+              } else if (isNarrow) {
+                // Stack: label on top row, badge on row below, both centered
+                lblChipX = anchorX - lblChipW / 2;
+                lblChipY = topEdge - lblChipH - bdgChipH - 2 - aboveGap;
+                bdgChipX = anchorX - bdgChipW / 2;
+                bdgChipY = topEdge - bdgChipH - aboveGap;
+              } else {
+                // Side-by-side: whole group centered on anchorX, badge right of label
+                const groupW = lblChipW + 4 + bdgChipW;
+                lblChipX = anchorX - groupW / 2;
+                lblChipY = topEdge - lblChipH - aboveGap;
+                bdgChipX = lblChipX + lblChipW + 4;
+                bdgChipY = topEdge - bdgChipH - aboveGap;
+              }
+
+              return { lblChipX, lblChipY, bdgChipX, bdgChipY, isNarrow };
+            };
 
             if (bed.type === 'grid' && bed.grid) {
               const { x, y, cols } = bed.grid;
               const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
               const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
               const bw = cols * GRID_PX;
-              const topEdge = renderY;
-
-              const lblChipX = renderX;
-              const lblChipY = topEdge - lblChipH - aboveGap;
-
-              const isNarrow = badgeText != null && (lblChipW + 4 + bdgChipW > bw);
-              const bdgChipX = isNarrow ? renderX : renderX + bw - bdgChipW;
-              const bdgChipY = isNarrow ? lblChipY - bdgChipH - 2 : lblChipY + (lblChipH - bdgChipH) / 2;
+              const anchorX = renderX + bw / 2;
+              const { lblChipX, lblChipY, bdgChipX, bdgChipY } = layoutChips(anchorX, renderY, bw);
 
               return (
                 <Group key={`lbl-${bed.id}`}>
@@ -1313,21 +1337,16 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
               const pts = isMoving
                 ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
                 : bed.freeform.points;
-              let minX = Infinity, maxX = -Infinity, minY = Infinity;
-              for (let i = 0; i < pts.length; i += 2) {
+              // Topmost vertex (min Y); use its x as the horizontal anchor
+              let topVertX = pts[0], topVertY = pts[1];
+              let minX = pts[0], maxX = pts[0];
+              for (let i = 2; i < pts.length; i += 2) {
+                if (pts[i + 1] < topVertY) { topVertY = pts[i + 1]; topVertX = pts[i]; }
                 if (pts[i] < minX) minX = pts[i];
                 if (pts[i] > maxX) maxX = pts[i];
-                if (pts[i + 1] < minY) minY = pts[i + 1];
               }
               const bboxW = maxX - minX;
-              const topEdge = minY;
-
-              const lblChipX = minX;
-              const lblChipY = topEdge - lblChipH - aboveGap;
-
-              const isNarrow = badgeText != null && (lblChipW + 4 + bdgChipW > bboxW);
-              const bdgChipX = isNarrow ? minX : maxX - bdgChipW;
-              const bdgChipY = isNarrow ? lblChipY - bdgChipH - 2 : lblChipY + (lblChipH - bdgChipH) / 2;
+              const { lblChipX, lblChipY, bdgChipX, bdgChipY } = layoutChips(topVertX, topVertY, bboxW);
 
               return (
                 <Group key={`lbl-${bed.id}`}>
