@@ -1251,81 +1251,60 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
         {/* Layer 5: chrome overlay — bed labels + overcrowding badges (above markers) */}
         <Layer listening={false}>
-          {/* Bed name labels */}
+          {/* Bed name labels + overcrowding badges, anchored above the top border */}
           {beds.map(bed => {
             const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
             const labelText = bed.label || 'Bed';
-            const chipPad = 3;
-            const chipW = Math.max(labelText.length * 7 + chipPad * 2, 28);
-            const chipH = 20;
-
-            if (bed.type === 'grid' && bed.grid) {
-              const { x, y } = bed.grid;
-              const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
-              const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
-              const chipX = renderX + 3;
-              const chipY = renderY + 3;
-              return (
-                <Group key={`lbl-${bed.id}`}>
-                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
-                    fill="rgba(250,247,242,0.92)" stroke="#d8ceba" strokeWidth={1}
-                    cornerRadius={3} />
-                  <Text text={labelText} x={chipX + chipPad} y={chipY + 4}
-                    fontSize={12} fill="#264a2e" fontFamily="Georgia, serif" />
-                </Group>
-              );
-            }
-
-            if (bed.type === 'freeform' && bed.freeform) {
-              const pts = isMoving
-                ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
-                : bed.freeform.points;
-              let sumX = 0, sumY = 0;
-              for (let i = 0; i < pts.length; i += 2) { sumX += pts[i]; sumY += pts[i + 1]; }
-              const labelX = sumX / (pts.length / 2);
-              const labelY = sumY / (pts.length / 2);
-              const chipX = labelX - chipW / 2;
-              const chipY = labelY - chipH / 2;
-              return (
-                <Group key={`lbl-${bed.id}`}>
-                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
-                    fill="rgba(250,247,242,0.92)" stroke="#d8ceba" strokeWidth={1}
-                    cornerRadius={3} />
-                  <Text text={labelText} x={chipX + chipPad} y={chipY + 4}
-                    fontSize={12} fill="#5a3e00" fontFamily="Georgia, serif" />
-                </Group>
-              );
-            }
-
-            return null;
-          })}
-          {/* Overcrowding badges */}
-          {beds.map(bed => {
             const occ = occupancyByBedId?.[bed.id];
-            if (!occ?.over) return null;
-            const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
+
+            // Label chip
+            const lblPad = 3;
+            const lblChipW = Math.max(labelText.length * 7 + lblPad * 2, 28);
+            const lblChipH = 20;
+
+            // Badge chip (only when over-capacity)
             const isSFGGrid = garden?.growingMethod === 'square_foot' && bed.type === 'grid';
             const unit = isSFGGrid ? 'cells' : 'sq ft';
-            const badgeText = `${Math.ceil(occ.consumed)}/${Math.floor(occ.capacity)} ${unit}`;
-            const chipH = 14;
-            const chipPad = 4;
-            const chipW = Math.max(badgeText.length * 5.2 + chipPad * 2, 38);
-            const margin = 4;
+            const badgeText = occ?.over
+              ? `${Math.ceil(occ.consumed)}/${Math.floor(occ.capacity)} ${unit}`
+              : null;
+            const bdgPad = 4;
+            const bdgChipW = badgeText ? Math.max(badgeText.length * 5.2 + bdgPad * 2, 38) : 0;
+            const bdgChipH = 14;
+
+            // Chips sit just above the top border
+            const aboveGap = 4;
 
             if (bed.type === 'grid' && bed.grid) {
               const { x, y, cols } = bed.grid;
               const renderX = isMoving ? x * GRID_PX + dragOffset!.x : x * GRID_PX;
               const renderY = isMoving ? y * GRID_PX + dragOffset!.y : y * GRID_PX;
               const bw = cols * GRID_PX;
-              const chipX = renderX + bw - chipW - margin;
-              const chipY = renderY + margin;
+              const topEdge = renderY;
+
+              const lblChipX = renderX;
+              const lblChipY = topEdge - lblChipH - aboveGap;
+
+              const isNarrow = badgeText != null && (lblChipW + 4 + bdgChipW > bw);
+              const bdgChipX = isNarrow ? renderX : renderX + bw - bdgChipW;
+              const bdgChipY = isNarrow ? lblChipY - bdgChipH - 2 : lblChipY + (lblChipH - bdgChipH) / 2;
+
               return (
-                <Group key={bed.id}>
-                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
-                    fill="rgba(200,138,42,0.18)" stroke="#C88A2A" strokeWidth={0.5}
-                    cornerRadius={4} />
-                  <Text text={badgeText} x={chipX + chipPad} y={chipY + 3}
-                    fontSize={9} fill="#7a5c10" fontFamily="system-ui, sans-serif" />
+                <Group key={`lbl-${bed.id}`}>
+                  <Rect x={lblChipX} y={lblChipY} width={lblChipW} height={lblChipH}
+                    fill="rgba(250,247,242,0.92)" stroke="#d8ceba" strokeWidth={1}
+                    cornerRadius={3} />
+                  <Text text={labelText} x={lblChipX + lblPad} y={lblChipY + 4}
+                    fontSize={12} fill="#264a2e" fontFamily="Georgia, serif" />
+                  {badgeText && (
+                    <>
+                      <Rect x={bdgChipX} y={bdgChipY} width={bdgChipW} height={bdgChipH}
+                        fill="rgba(200,138,42,0.18)" stroke="#C88A2A" strokeWidth={0.5}
+                        cornerRadius={4} />
+                      <Text text={badgeText} x={bdgChipX + bdgPad} y={bdgChipY + 3}
+                        fontSize={9} fill="#7a5c10" fontFamily="system-ui, sans-serif" />
+                    </>
+                  )}
                 </Group>
               );
             }
@@ -1334,20 +1313,38 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
               const pts = isMoving
                 ? bed.freeform.points.map((v, i) => i % 2 === 0 ? v + dragOffset!.x : v + dragOffset!.y)
                 : bed.freeform.points;
-              let maxX = -Infinity, minY = Infinity;
+              let minX = Infinity, maxX = -Infinity, minY = Infinity;
               for (let i = 0; i < pts.length; i += 2) {
+                if (pts[i] < minX) minX = pts[i];
                 if (pts[i] > maxX) maxX = pts[i];
                 if (pts[i + 1] < minY) minY = pts[i + 1];
               }
-              const chipX = maxX - chipW - margin;
-              const chipY = minY + margin;
+              const bboxW = maxX - minX;
+              const topEdge = minY;
+
+              const lblChipX = minX;
+              const lblChipY = topEdge - lblChipH - aboveGap;
+
+              const isNarrow = badgeText != null && (lblChipW + 4 + bdgChipW > bboxW);
+              const bdgChipX = isNarrow ? minX : maxX - bdgChipW;
+              const bdgChipY = isNarrow ? lblChipY - bdgChipH - 2 : lblChipY + (lblChipH - bdgChipH) / 2;
+
               return (
-                <Group key={bed.id}>
-                  <Rect x={chipX} y={chipY} width={chipW} height={chipH}
-                    fill="rgba(200,138,42,0.18)" stroke="#C88A2A" strokeWidth={0.5}
-                    cornerRadius={4} />
-                  <Text text={badgeText} x={chipX + chipPad} y={chipY + 3}
-                    fontSize={9} fill="#7a5c10" fontFamily="system-ui, sans-serif" />
+                <Group key={`lbl-${bed.id}`}>
+                  <Rect x={lblChipX} y={lblChipY} width={lblChipW} height={lblChipH}
+                    fill="rgba(250,247,242,0.92)" stroke="#d8ceba" strokeWidth={1}
+                    cornerRadius={3} />
+                  <Text text={labelText} x={lblChipX + lblPad} y={lblChipY + 4}
+                    fontSize={12} fill="#5a3e00" fontFamily="Georgia, serif" />
+                  {badgeText && (
+                    <>
+                      <Rect x={bdgChipX} y={bdgChipY} width={bdgChipW} height={bdgChipH}
+                        fill="rgba(200,138,42,0.18)" stroke="#C88A2A" strokeWidth={0.5}
+                        cornerRadius={4} />
+                      <Text text={badgeText} x={bdgChipX + bdgPad} y={bdgChipY + 3}
+                        fontSize={9} fill="#7a5c10" fontFamily="system-ui, sans-serif" />
+                    </>
+                  )}
                 </Group>
               );
             }
