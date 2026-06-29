@@ -52,16 +52,7 @@ interface PatchPlantingRow extends PlantingRow {
   grid_rows: number | null;
 }
 
-const PLANTING_SELECT = `
-  id::text, bed_id::text, garden_id::text, season,
-  seed_id::text, cambium_seed_id::text,
-  quantity, planting_date, cell_x, cell_y, point_x, point_y,
-  growth_stage_pct, harvest_ready, harvest_window_end,
-  indicator_dismissed_at, created_at, updated_at
-`;
-
 // Extended SELECT for GET handlers — includes companion resolution via JOINs.
-// POST/PATCH use PLANTING_SELECT (no JOINs) so these fields are absent there (null via ??) — acceptable.
 const PLANTING_GET_QUERY = `
   SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
     p.seed_id::text, p.cambium_seed_id::text,
