@@ -35,7 +35,7 @@ export default function HomePage() {
 
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
   const { garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed } = useGarden(resolvedId);
-  const { plantingsByBedId, placePlanting, deletePlanting, latestPlacing } = usePlantings(resolvedId);
+  const { plantingsByBedId, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint } = usePlantings(resolvedId);
 
   // Phase 20: companion / conflict / occupancy
   const companionSeedIdsSet = useMemo(() => {
@@ -186,8 +186,48 @@ export default function HomePage() {
   }, [createBed]);
 
   const handleUpdateBedGeometry = useCallback((bedId: string, payload: UpdateBedPayload) => {
+    // Remap freeform plantings' absolute points when the polygon changes (move or resize).
+    // Grid plantings use relative cells and follow automatically — skip them.
+    if ('freeform' in payload && payload.freeform) {
+      const plantings = plantingsByBedId[bedId] ?? [];
+      const withPoints = plantings.filter(p => p.point != null);
+      if (withPoints.length > 0) {
+        const oldBed = beds.find(b => b.id === bedId);
+        const oldPts = oldBed?.freeform?.points;
+        if (oldPts && oldPts.length >= 2) {
+          // Compute old bbox
+          let oldMinX = oldPts[0], oldMinY = oldPts[1], oldMaxX = oldPts[0], oldMaxY = oldPts[1];
+          for (let i = 2; i < oldPts.length; i += 2) {
+            if (oldPts[i] < oldMinX) oldMinX = oldPts[i];
+            if (oldPts[i] > oldMaxX) oldMaxX = oldPts[i];
+            if (oldPts[i + 1] < oldMinY) oldMinY = oldPts[i + 1];
+            if (oldPts[i + 1] > oldMaxY) oldMaxY = oldPts[i + 1];
+          }
+          const oldW = oldMaxX - oldMinX;
+          const oldH = oldMaxY - oldMinY;
+
+          // Compute new bbox from payload
+          const newPts = payload.freeform.points;
+          let newMinX = newPts[0], newMinY = newPts[1], newMaxX = newPts[0], newMaxY = newPts[1];
+          for (let i = 2; i < newPts.length; i += 2) {
+            if (newPts[i] < newMinX) newMinX = newPts[i];
+            if (newPts[i] > newMaxX) newMaxX = newPts[i];
+            if (newPts[i + 1] < newMinY) newMinY = newPts[i + 1];
+            if (newPts[i + 1] > newMaxY) newMaxY = newPts[i + 1];
+          }
+          const newW = newMaxX - newMinX;
+          const newH = newMaxY - newMinY;
+
+          for (const p of withPoints) {
+            const nx = Math.round(newMinX + (p.point!.x - oldMinX) * (oldW > 0 ? newW / oldW : 1));
+            const ny = Math.round(newMinY + (p.point!.y - oldMinY) * (oldH > 0 ? newH / oldH : 1));
+            updatePlantingPoint(p.id, bedId, { x: nx, y: ny });
+          }
+        }
+      }
+    }
     updateBed(bedId, payload);
-  }, [updateBed]);
+  }, [updateBed, plantingsByBedId, beds, updatePlantingPoint]);
 
   const handleOverlapWarning = useCallback((msg: string) => {
     setOverlapWarning(msg);

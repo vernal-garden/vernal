@@ -135,5 +135,27 @@ export function usePlantings(gardenId: string | null) {
     }
   }, [_removePlanting, syncPlantings]);
 
-  return { plantingsByBedId, loading, error, reload, placePlanting, deletePlanting, latestPlacing };
+  const updatePlantingPoint = useCallback(async (
+    plantingId: string,
+    bedId: string,
+    point: { x: number; y: number },
+  ): Promise<void> => {
+    const snapshot = plantingsRef.current;
+    // Optimistic update
+    const prev = plantingsRef.current;
+    syncPlantings({
+      ...prev,
+      [bedId]: (prev[bedId] ?? []).map(p =>
+        p.id === plantingId ? { ...p, point } : p,
+      ),
+    });
+    try {
+      await api.patch(`/api/plantings/${plantingId}`, { point });
+    } catch (e) {
+      syncPlantings(snapshot);
+      setError(e instanceof Error ? e.message : 'Failed to update planting position');
+    }
+  }, [syncPlantings]);
+
+  return { plantingsByBedId, loading, error, reload, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint };
 }
