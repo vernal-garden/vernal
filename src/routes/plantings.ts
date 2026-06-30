@@ -36,6 +36,7 @@ interface PlantingRow {
   updated_at: string;
   companion_seed_id?: string | null;
   spacing_inches?: string | null;
+  common_name?: string | null;
 }
 
 interface BedInfo {
@@ -60,7 +61,8 @@ const PLANTING_GET_QUERY = `
     p.growth_stage_pct, p.harvest_ready, p.harvest_window_end,
     p.indicator_dismissed_at, p.created_at, p.updated_at,
     COALESCE(p.cambium_seed_id, s.cambium_source_id)::text AS companion_seed_id,
-    COALESCE(cs.spacing_inches, s.spacing_inches) AS spacing_inches
+    COALESCE(cs.spacing_inches, s.spacing_inches) AS spacing_inches,
+    COALESCE(cs.common_name, s.common_name) AS common_name
   FROM plantings p
   LEFT JOIN seeds s          ON s.id  = p.seed_id
   LEFT JOIN cambium.seeds cs ON cs.id = p.cambium_seed_id
@@ -92,6 +94,7 @@ function formatPlanting(row: PlantingRow) {
     updatedAt: row.updated_at,
     companionSeedId: row.companion_seed_id ?? null,
     spacingInches: row.spacing_inches != null ? Number(row.spacing_inches) : null,
+    commonName: row.common_name ?? null,
   };
 }
 

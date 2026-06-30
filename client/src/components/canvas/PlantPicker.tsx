@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Bed, Garden } from '../../hooks/useGarden';
-import type { ArmedSeed } from '../../hooks/usePlantings';
+import type { ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { usePlantSearch } from '../../hooks/usePlantSearch';
+import { usePickerDefaults } from '../../hooks/usePickerDefaults';
 import { computeFit } from '../../lib/fit';
 import FitLine from './FitLine';
 import * as api from '../../lib/api';
@@ -18,6 +19,7 @@ interface Props {
   onDisarm: () => void;
   onClose: () => void;
   armedSeed: ArmedSeed | null;
+  plantingsByBedId: PlantingsByBedId;
   bedCompanionIds?: string[];
   relationshipBetween?: (a: string, b: string) => 'beneficial' | 'antagonistic' | null;
   bedIsOver?: boolean;
@@ -39,7 +41,7 @@ function computePipStatus(
   return { green, amber };
 }
 
-export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, armedSeed, bedCompanionIds, relationshipBetween, bedIsOver }: Props) {
+export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, armedSeed, plantingsByBedId, bedCompanionIds, relationshipBetween, bedIsOver }: Props) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<'catalogue' | 'personal' | null>(null);
@@ -47,6 +49,7 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
   const [detailLoading, setDetailLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const { catalogue, personal, loading } = usePlantSearch(query);
+  const { mySeeds, popular, recentlyUsed, loading: defaultsLoading } = usePickerDefaults(garden.id, plantingsByBedId);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -165,11 +168,65 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
 
       {/* Results list */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0' }}>
-        {query.length < 2 && (
-          <div style={{ padding: 16, color: '#9a8e7e', fontSize: 13, textAlign: 'center' }}>
-            Type at least 2 characters to search
-          </div>
-        )}
+        {query.length < 2 && (() => {
+          if (defaultsLoading) {
+            return <div style={{ padding: 16, color: '#9a8e7e', fontSize: 13, textAlign: 'center' }}>Loading…</div>;
+          }
+          const mySeedKeys = new Set(mySeeds.map(s => `${s.source}:${s.id}`));
+          const recentFiltered = recentlyUsed.filter(s => !mySeedKeys.has(`${s.source}:${s.id}`));
+          const recentKeys = new Set(recentlyUsed.map(s => `${s.source}:${s.id}`));
+          const popularFiltered = popular.filter(s => !recentKeys.has(`${s.source}:${s.id}`));
+          const hasAny = mySeeds.length > 0 || recentFiltered.length > 0 || popularFiltered.length > 0;
+          if (!hasAny) {
+            return <div style={{ padding: 16, color: '#9a8e7e', fontSize: 13, textAlign: 'center' }}>No plants yet</div>;
+          }
+          return (
+            <>
+              {mySeeds.length > 0 && (
+                <>
+                  <GroupLabel>My Seeds</GroupLabel>
+                  {mySeeds.map(s => (
+                    <ResultRow
+                      key={`personal-${s.id}`}
+                      name={s.commonName}
+                      spacing={s.spacingInches}
+                      selected={selectedId === s.id && selectedSource === 'personal'}
+                      onSelect={() => handleSelect(s.id, 'personal', s.commonName)}
+                    />
+                  ))}
+                </>
+              )}
+              {recentFiltered.length > 0 && (
+                <>
+                  <GroupLabel>Recently Used</GroupLabel>
+                  {recentFiltered.map(s => (
+                    <ResultRow
+                      key={`recent-${s.source}-${s.id}`}
+                      name={s.commonName}
+                      spacing={s.spacingInches}
+                      selected={selectedId === s.id && selectedSource === s.source}
+                      onSelect={() => handleSelect(s.id, s.source, s.commonName)}
+                    />
+                  ))}
+                </>
+              )}
+              {popularFiltered.length > 0 && (
+                <>
+                  <GroupLabel>Popular</GroupLabel>
+                  {popularFiltered.map(s => (
+                    <ResultRow
+                      key={`popular-${s.id}`}
+                      name={s.commonName}
+                      spacing={s.spacingInches}
+                      selected={selectedId === s.id && selectedSource === 'catalogue'}
+                      onSelect={() => handleSelect(s.id, 'catalogue', s.commonName)}
+                    />
+                  ))}
+                </>
+              )}
+            </>
+          );
+        })()}
         {query.length >= 2 && loading && (
           <div style={{ padding: 16, color: '#9a8e7e', fontSize: 13, textAlign: 'center' }}>Searching…</div>
         )}

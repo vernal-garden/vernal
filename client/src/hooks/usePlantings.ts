@@ -10,6 +10,7 @@ export interface Planting {
   cambiumSeedId: string | null;
   companionSeedId: string | null;
   spacingInches: number | null;
+  commonName?: string | null;
   quantity: number;
   plantingDate: string | null;
   cell: { x: number; y: number } | null;

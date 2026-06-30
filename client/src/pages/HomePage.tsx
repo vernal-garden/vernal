@@ -450,6 +450,7 @@ export default function HomePage() {
           onArm={setArmedSeed}
           onDisarm={handleDisarmSeed}
           onClose={handleClosePicker}
+          plantingsByBedId={plantingsByBedId}
           bedCompanionIds={bedCompanionIds}
           relationshipBetween={relationshipBetween}
           bedIsOver={selectedBedIsOver}
