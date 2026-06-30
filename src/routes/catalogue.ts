@@ -62,6 +62,7 @@ router.get('/seeds', async (req, res) => {
   try {
     const query = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : undefined;
     const family = typeof req.query.family === 'string' ? req.query.family : undefined;
+    const sort = req.query.sort === 'popular' ? ('popular' as const) : undefined;
 
     const rawLimit = parseInt(req.query.limit as string, 10);
     const rawOffset = parseInt(req.query.offset as string, 10);
@@ -73,6 +74,7 @@ router.get('/seeds', async (req, res) => {
       family,
       limit,
       offset,
+      sort,
     });
 
     res.json({ data, total, limit, offset });

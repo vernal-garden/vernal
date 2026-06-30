@@ -31,7 +31,7 @@ function rowToSeedSummary(row: Record<string, unknown>): SeedSummary {
 export async function searchSeeds(
   options: SeedSearchOptions,
 ): Promise<{ data: SeedSummary[]; total: number }> {
-  const { query, family, limit = 20, offset = 0 } = options;
+  const { query, family, limit = 20, offset = 0, sort } = options;
 
   const countParams: unknown[] = [];
   let countWhere = `WHERE moderation_status = 'active'`;
@@ -63,6 +63,8 @@ export async function searchSeeds(
     dataWhere += ` AND (common_name ILIKE $${dataParams.length} OR scientific_name ILIKE $${dataParams.length})`;
     dataParams.push(`${query}%`);
     orderBy = `ORDER BY (common_name ILIKE $${dataParams.length}) DESC, common_name ASC`;
+  } else if (sort === 'popular') {
+    orderBy = `ORDER BY aggregate_rating DESC NULLS LAST, rating_count DESC, common_name ASC`;
   } else {
     orderBy = `ORDER BY common_name ASC`;
   }

@@ -60,6 +60,21 @@ describe('searchSeeds', () => {
     const result = await searchSeeds({ query: 'flaggedtestxyz' });
     expect(result.data).toHaveLength(0);
   });
+
+  it('orders by aggregate_rating DESC NULLS LAST when sort=popular and no query', async () => {
+    const result = await searchSeeds({ sort: 'popular', limit: 50 });
+    expect(result.total).toBeGreaterThan(0);
+    expect(Array.isArray(result.data)).toBe(true);
+    // NULLS LAST: once a null rating appears, no non-null rating may follow
+    let encounteredNull = false;
+    for (const seed of result.data) {
+      if (seed.aggregateRating === null) {
+        encounteredNull = true;
+      } else {
+        expect(encounteredNull).toBe(false);
+      }
+    }
+  });
 });
 
 describe('listFamilies', () => {

@@ -42,4 +42,5 @@ export interface SeedSearchOptions {
   family?: string;
   limit?: number;
   offset?: number;
+  sort?: 'popular';
 }

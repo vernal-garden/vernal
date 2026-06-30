@@ -47,6 +47,19 @@ describe('GET /api/catalogue/seeds', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.length).toBeLessThanOrEqual(3);
   });
+
+  it('sort=popular returns 200 with seed list', async () => {
+    const res = await request(app).get('/api/catalogue/seeds?sort=popular&limit=5');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(typeof res.body.total).toBe('number');
+  });
+
+  it('unknown sort value is silently ignored (returns 200)', async () => {
+    const res = await request(app).get('/api/catalogue/seeds?sort=invalid');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+  });
 });
 
 describe('GET /api/catalogue/seeds/:id', () => {
