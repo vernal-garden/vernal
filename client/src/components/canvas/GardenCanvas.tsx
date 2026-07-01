@@ -417,6 +417,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' && !e.repeat) {
+        const el = document.activeElement as HTMLElement | null;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
         e.preventDefault();
         setSpaceHeld(true);
         if (moveRef.current) {
@@ -439,7 +441,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') setSpaceHeld(false);
+      if (e.code === 'Space') {
+        const el = document.activeElement as HTMLElement | null;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+        setSpaceHeld(false);
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
