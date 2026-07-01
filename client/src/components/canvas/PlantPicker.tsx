@@ -185,43 +185,64 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
               {mySeeds.length > 0 && (
                 <>
                   <GroupLabel>My Seeds</GroupLabel>
-                  {mySeeds.map(s => (
-                    <ResultRow
-                      key={`personal-${s.id}`}
-                      name={s.commonName}
-                      spacing={s.spacingInches}
-                      selected={selectedId === s.id && selectedSource === 'personal'}
-                      onSelect={() => handleSelect(s.id, 'personal', s.commonName)}
-                    />
-                  ))}
+                  {mySeeds.map(s => {
+                    const pip = (bedCompanionIds && relationshipBetween && s.companionSeedId != null)
+                      ? computePipStatus(s.companionSeedId, bedCompanionIds, relationshipBetween)
+                      : { green: false, amber: false };
+                    return (
+                      <ResultRow
+                        key={`personal-${s.id}`}
+                        name={s.commonName}
+                        spacing={s.spacingInches}
+                        selected={selectedId === s.id && selectedSource === 'personal'}
+                        onSelect={() => handleSelect(s.id, 'personal', s.commonName)}
+                        pipGreen={pip.green}
+                        pipAmber={pip.amber}
+                      />
+                    );
+                  })}
                 </>
               )}
               {recentFiltered.length > 0 && (
                 <>
                   <GroupLabel>Recently Used</GroupLabel>
-                  {recentFiltered.map(s => (
-                    <ResultRow
-                      key={`recent-${s.source}-${s.id}`}
-                      name={s.commonName}
-                      spacing={s.spacingInches}
-                      selected={selectedId === s.id && selectedSource === s.source}
-                      onSelect={() => handleSelect(s.id, s.source, s.commonName)}
-                    />
-                  ))}
+                  {recentFiltered.map(s => {
+                    const pip = (bedCompanionIds && relationshipBetween && s.companionSeedId != null)
+                      ? computePipStatus(s.companionSeedId, bedCompanionIds, relationshipBetween)
+                      : { green: false, amber: false };
+                    return (
+                      <ResultRow
+                        key={`recent-${s.source}-${s.id}`}
+                        name={s.commonName}
+                        spacing={s.spacingInches}
+                        selected={selectedId === s.id && selectedSource === s.source}
+                        onSelect={() => handleSelect(s.id, s.source, s.commonName)}
+                        pipGreen={pip.green}
+                        pipAmber={pip.amber}
+                      />
+                    );
+                  })}
                 </>
               )}
               {popularFiltered.length > 0 && (
                 <>
                   <GroupLabel>Popular</GroupLabel>
-                  {popularFiltered.map(s => (
-                    <ResultRow
-                      key={`popular-${s.id}`}
-                      name={s.commonName}
-                      spacing={s.spacingInches}
-                      selected={selectedId === s.id && selectedSource === 'catalogue'}
-                      onSelect={() => handleSelect(s.id, 'catalogue', s.commonName)}
-                    />
-                  ))}
+                  {popularFiltered.map(s => {
+                    const pip = (bedCompanionIds && relationshipBetween && s.companionSeedId != null)
+                      ? computePipStatus(s.companionSeedId, bedCompanionIds, relationshipBetween)
+                      : { green: false, amber: false };
+                    return (
+                      <ResultRow
+                        key={`popular-${s.id}`}
+                        name={s.commonName}
+                        spacing={s.spacingInches}
+                        selected={selectedId === s.id && selectedSource === 'catalogue'}
+                        onSelect={() => handleSelect(s.id, 'catalogue', s.commonName)}
+                        pipGreen={pip.green}
+                        pipAmber={pip.amber}
+                      />
+                    );
+                  })}
                 </>
               )}
             </>

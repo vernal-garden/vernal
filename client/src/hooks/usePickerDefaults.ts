@@ -8,12 +8,14 @@ export interface PickerSeedEntry {
   id: string;
   commonName: string;
   spacingInches: number | null;
+  companionSeedId: string | null;
 }
 
 interface ApiSeed {
   id: string;
   commonName: string;
   spacingInches?: number | null;
+  cambiumSourceId?: string | null;
 }
 
 export interface PickerDefaults {
@@ -42,6 +44,7 @@ export function usePickerDefaults(_gardenId: string | null, plantingsByBedId: Pl
               id: String(s.id),
               commonName: s.commonName,
               spacingInches: s.spacingInches ?? null,
+              companionSeedId: String(s.id),
             })));
           }
         })
@@ -58,6 +61,7 @@ export function usePickerDefaults(_gardenId: string | null, plantingsByBedId: Pl
                 id: String(s.id),
                 commonName: s.commonName,
                 spacingInches: s.spacingInches ?? null,
+                companionSeedId: s.cambiumSourceId ?? null,
               })));
             }
           })
@@ -94,6 +98,7 @@ export function usePickerDefaults(_gardenId: string | null, plantingsByBedId: Pl
         id,
         commonName: p.commonName ?? p._commonName ?? id,
         spacingInches: p.spacingInches ?? null,
+        companionSeedId: p.companionSeedId,
       });
     }
 
