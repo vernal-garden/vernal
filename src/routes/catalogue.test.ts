@@ -3,8 +3,8 @@ import request from 'supertest';
 import { Pool } from 'pg';
 import app from '../index';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
+// TEST_DATABASE_URL is validated by src/test/setup.ts before this file runs.
+const url = process.env.TEST_DATABASE_URL as string;
 
 const pool = new Pool({
   connectionString: url,
@@ -12,15 +12,34 @@ const pool = new Pool({
 });
 
 let tomatoId: number;
+const insertedIds: number[] = [];
 
 beforeAll(async () => {
   const res = await pool.query<{ id: number }>(
     "SELECT id FROM cambium.seeds WHERE common_name = 'Tomato' AND moderation_status = 'active'",
   );
+  if (res.rows.length === 0) {
+    throw new Error('Cambium seed data not found. Run: npm run seed:cambium');
+  }
   tomatoId = res.rows[0].id;
 });
 
-afterAll(() => pool.end());
+afterAll(async () => {
+  try {
+    if (insertedIds.length > 0) {
+      await pool.query(
+        `DELETE FROM cambium.companions
+         WHERE seed_id = ANY($1::int[]) OR companion_seed_id = ANY($1::int[])`,
+        [insertedIds],
+      );
+      await pool.query('DELETE FROM cambium.seeds WHERE id = ANY($1::int[])', [insertedIds]);
+    }
+    // Safety net: catch any leftovers regardless of ID tracking
+    await pool.query(`DELETE FROM cambium.seeds WHERE common_name LIKE '\\_\\_test\\_\\_%' ESCAPE '\\'`);
+  } finally {
+    await pool.end();
+  }
+});
 
 describe('GET /api/catalogue/seeds', () => {
   it('returns matching seeds for text query', async () => {
@@ -122,12 +141,14 @@ describe('GET /api/catalogue/seeds/:id/companions', () => {
   });
 
   it('returns 200 with empty data array for seed with no companions', async () => {
+    await pool.query(`DELETE FROM cambium.seeds WHERE common_name = '__test__cataloguetestnocompanionsxyz'`);
     const insertRes = await pool.query<{ id: number }>(
       `INSERT INTO cambium.seeds (common_name, moderation_status, source)
-       VALUES ('cataloguetestnocompanionsxyz', 'active', 'editorial')
+       VALUES ('__test__cataloguetestnocompanionsxyz', 'active', 'editorial')
        RETURNING id`,
     );
     const newId = insertRes.rows[0].id;
+    insertedIds.push(newId);
 
     const res = await request(app).get(`/api/catalogue/seeds/${newId}/companions`);
     expect(res.status).toBe(200);

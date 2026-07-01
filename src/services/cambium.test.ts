@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { searchSeeds, getSeedById, listFamilies, getCompanionsForSeed } from './cambium';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
+// TEST_DATABASE_URL is validated by src/test/setup.ts before this file runs.
+const url = process.env.TEST_DATABASE_URL as string;
 
 const pool = new Pool({
   connectionString: url,
@@ -14,6 +14,7 @@ const pool = new Pool({
 // The seed inserts 12 active seeds including 'Tomato'.
 
 let tomatoId: number;
+const insertedIds: number[] = [];
 
 beforeAll(async () => {
   const result = await pool.query<{ id: number }>(
@@ -25,7 +26,22 @@ beforeAll(async () => {
   tomatoId = result.rows[0].id;
 });
 
-afterAll(() => pool.end());
+afterAll(async () => {
+  try {
+    if (insertedIds.length > 0) {
+      await pool.query(
+        `DELETE FROM cambium.companions
+         WHERE seed_id = ANY($1::int[]) OR companion_seed_id = ANY($1::int[])`,
+        [insertedIds],
+      );
+      await pool.query('DELETE FROM cambium.seeds WHERE id = ANY($1::int[])', [insertedIds]);
+    }
+    // Safety net: catch any leftovers regardless of ID tracking
+    await pool.query(`DELETE FROM cambium.seeds WHERE common_name LIKE '\\_\\_test\\_\\_%' ESCAPE '\\'`);
+  } finally {
+    await pool.end();
+  }
+});
 
 describe('searchSeeds', () => {
   it('returns matching seeds for a text query', async () => {
@@ -52,12 +68,14 @@ describe('searchSeeds', () => {
   });
 
   it('excludes seeds with moderation_status != active', async () => {
-    await pool.query(
+    await pool.query(`DELETE FROM cambium.seeds WHERE common_name = '__test__flaggedtestxyz'`);
+    const res = await pool.query<{ id: number }>(
       `INSERT INTO cambium.seeds (common_name, moderation_status, source)
-       VALUES ('flaggedtestxyz', 'flagged', 'editorial')
-       ON CONFLICT DO NOTHING`,
+       VALUES ('__test__flaggedtestxyz', 'flagged', 'editorial')
+       RETURNING id`,
     );
-    const result = await searchSeeds({ query: 'flaggedtestxyz' });
+    insertedIds.push(res.rows[0].id);
+    const result = await searchSeeds({ query: '__test__flaggedtestxyz' });
     expect(result.data).toHaveLength(0);
   });
 
@@ -103,25 +121,16 @@ describe('getSeedById', () => {
   });
 
   it('excludes flagged seed from detail lookup', async () => {
+    await pool.query(`DELETE FROM cambium.seeds WHERE common_name = '__test__flaggeddetailtestxyz'`);
     const res = await pool.query<{ id: number }>(
       `INSERT INTO cambium.seeds (common_name, moderation_status, source)
-       VALUES ('flaggeddetailtestxyz', 'flagged', 'editorial')
-       ON CONFLICT DO NOTHING
+       VALUES ('__test__flaggeddetailtestxyz', 'flagged', 'editorial')
        RETURNING id`,
     );
-    if (res.rows.length === 0) {
-      // Already inserted — look up existing
-      const existing = await pool.query<{ id: number }>(
-        `SELECT id FROM cambium.seeds WHERE common_name = 'flaggeddetailtestxyz'`,
-      );
-      const flaggedId = existing.rows[0].id;
-      const seed = await getSeedById(flaggedId);
-      expect(seed).toBeNull();
-    } else {
-      const flaggedId = res.rows[0].id;
-      const seed = await getSeedById(flaggedId);
-      expect(seed).toBeNull();
-    }
+    const flaggedId = res.rows[0].id;
+    insertedIds.push(flaggedId);
+    const seed = await getSeedById(flaggedId);
+    expect(seed).toBeNull();
   });
 });
 
@@ -132,12 +141,14 @@ describe('getCompanionsForSeed', () => {
   });
 
   it('returns empty array for seed with no qualifying companions', async () => {
+    await pool.query(`DELETE FROM cambium.seeds WHERE common_name = '__test__lonelynocompanionstestxyz'`);
     const res = await pool.query<{ id: number }>(
       `INSERT INTO cambium.seeds (common_name, moderation_status, source)
-       VALUES ('lonelynocompanionstestxyz', 'active', 'editorial')
+       VALUES ('__test__lonelynocompanionstestxyz', 'active', 'editorial')
        RETURNING id`,
     );
     const newId = res.rows[0].id;
+    insertedIds.push(newId);
     const result = await getCompanionsForSeed(newId);
     expect(result).toEqual([]);
   });

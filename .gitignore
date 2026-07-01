@@ -36,3 +36,5 @@ docs/superpowers/
 .worktrees/
 .claude/
 verify-cambium.js
+
+CLAUDE.md
