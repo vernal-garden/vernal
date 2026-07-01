@@ -118,7 +118,7 @@ export default function HomePage() {
       if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
       if ((e.code === 'Delete' || e.code === 'Backspace') && selectedBed) {
         e.preventDefault();
-        if (selectedBed.plantingCount === 0) {
+        if ((plantingsByBedId[selectedBed.id]?.length ?? 0) === 0) {
           deleteBed(selectedBed.id);
           setSelectedBed(null);
         }
@@ -126,7 +126,7 @@ export default function HomePage() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedBed, deleteBed]);
+  }, [selectedBed, deleteBed, plantingsByBedId]);
 
   const handleGardenChange = useCallback((id: string) => {
     setActiveId(id);
@@ -433,6 +433,7 @@ export default function HomePage() {
       {selectedBed && !pickerOpen && (
         <BedDetailPanel
           bed={selectedBed}
+          plantingCount={plantingsByBedId[selectedBed.id]?.length ?? 0}
           onClose={handleCloseDetail}
           onRename={(label) => updateBed(selectedBed.id, { label })}
           onDelete={() => { deleteBed(selectedBed.id); setSelectedBed(null); }}
@@ -461,6 +462,7 @@ export default function HomePage() {
       {bedManagerOpen && resolvedId && (
         <BedManager
           beds={beds}
+          plantingsByBedId={plantingsByBedId}
           onClose={() => setBedManagerOpen(false)}
           onRename={(bedId, label) => updateBed(bedId, { label })}
           onDelete={(bedId) => deleteBed(bedId)}

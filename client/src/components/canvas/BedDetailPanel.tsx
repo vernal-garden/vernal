@@ -15,6 +15,7 @@ function shoelaceArea(points: number[]): number {
 
 interface Props {
   bed: Bed;
+  plantingCount: number;
   onClose: () => void;
   onRename: (label: string) => void;
   onDelete: () => void;
@@ -22,7 +23,7 @@ interface Props {
   onAddPlant: () => void;
 }
 
-export default function BedDetailPanel({ bed, onClose, onRename, onDelete, focusName, onAddPlant }: Props) {
+export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, onDelete, focusName, onAddPlant }: Props) {
   const [nameVal, setNameVal] = useState(bed.label);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -62,7 +63,7 @@ export default function BedDetailPanel({ bed, onClose, onRename, onDelete, focus
   };
 
   const handleDelete = () => {
-    if (bed.plantingCount > 0) { setConfirmDelete(true); return; }
+    if (plantingCount > 0) { setConfirmDelete(true); return; }
     onDelete();
   };
 
@@ -158,7 +159,7 @@ export default function BedDetailPanel({ bed, onClose, onRename, onDelete, focus
         ) : (
           <div style={{ marginTop: 'auto', background: '#fff8f8', border: '1px solid #e8c8c8', borderRadius: 8, padding: 14 }}>
             <div style={{ fontSize: 13, color: '#5a3030', marginBottom: 10 }}>
-              This bed has {bed.plantingCount} plant{bed.plantingCount !== 1 ? 's' : ''} — deleting removes them too.
+              This bed has {plantingCount} plant{plantingCount !== 1 ? 's' : ''} — deleting removes them too.
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => setConfirmDelete(false)} style={{ flex: 1, padding: '8px', borderRadius: 6, border: '1px solid #d8ceba', background: 'transparent', cursor: 'pointer', fontSize: 12 }}>
