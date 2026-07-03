@@ -171,7 +171,7 @@ export default function SeedCataloguePage() {
             type="search"
             value={rawQ}
             onChange={e => setRawQ(e.target.value)}
-            placeholder="Search by name or family\u2026"
+            placeholder="Search by name or family…"
             style={{
               width: '100%', boxSizing: 'border-box',
               padding: 'var(--sp-3) var(--sp-4)',
