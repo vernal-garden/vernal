@@ -23,6 +23,7 @@ interface Props {
   bedCompanionIds?: string[];
   relationshipBetween?: (a: string, b: string) => 'beneficial' | 'antagonistic' | null;
   bedIsOver?: boolean;
+  onAddNewSeed?: () => void;
 }
 
 function computePipStatus(
@@ -41,7 +42,7 @@ function computePipStatus(
   return { green, amber };
 }
 
-export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, armedSeed, plantingsByBedId, bedCompanionIds, relationshipBetween, bedIsOver }: Props) {
+export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, armedSeed, plantingsByBedId, bedCompanionIds, relationshipBetween, bedIsOver, onAddNewSeed }: Props) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedSource, setSelectedSource] = useState<'catalogue' | 'personal' | null>(null);
@@ -178,7 +179,23 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
           const popularFiltered = popular.filter(s => !recentKeys.has(`${s.source}:${s.id}`));
           const hasAny = mySeeds.length > 0 || recentFiltered.length > 0 || popularFiltered.length > 0;
           if (!hasAny) {
-            return <div style={{ padding: 16, color: '#9a8e7e', fontSize: 13, textAlign: 'center' }}>No plants yet</div>;
+            return (
+              <div style={{ padding: 16, textAlign: 'center' }}>
+                <div style={{ color: '#9a8e7e', fontSize: 13, marginBottom: 8 }}>No plants yet</div>
+                {onAddNewSeed && (
+                  <button
+                    onClick={onAddNewSeed}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: '#2d6a4f', fontSize: 13, fontFamily: 'inherit', padding: 0,
+                      textDecoration: 'underline',
+                    }}
+                  >
+                    + Add new seed
+                  </button>
+                )}
+              </div>
+            );
           }
           return (
             <>
@@ -252,7 +269,21 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
           <div style={{ padding: 16, color: '#9a8e7e', fontSize: 13, textAlign: 'center' }}>Searching…</div>
         )}
         {query.length >= 2 && !loading && catalogue.length === 0 && personal.length === 0 && (
-          <div style={{ padding: 16, color: '#9a8e7e', fontSize: 13, textAlign: 'center' }}>No plants found</div>
+          <div style={{ padding: 16, textAlign: 'center' }}>
+            <div style={{ color: '#9a8e7e', fontSize: 13, marginBottom: 8 }}>No plants found</div>
+            {onAddNewSeed && (
+              <button
+                onClick={onAddNewSeed}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: '#2d6a4f', fontSize: 13, fontFamily: 'inherit', padding: 0,
+                  textDecoration: 'underline',
+                }}
+              >
+                + Add new seed
+              </button>
+            )}
+          </div>
         )}
 
         {personal.length > 0 && (

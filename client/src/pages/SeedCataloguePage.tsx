@@ -1,5 +1,5 @@
 // client/src/pages/SeedCataloguePage.tsx
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import AppNav from '../components/AppNav';
@@ -9,55 +9,8 @@ import { useCatalogueBrowse } from '../hooks/useCatalogueBrowse';
 import { useFamilies } from '../hooks/useFamilies';
 import type { BrowseCard } from '../types/catalogue';
 import type { CatalogueSource } from '../hooks/useCatalogueBrowse';
-
-// ── "Available soon" placeholder wrapper ──────────────────────────────────────
-
-function PlaceholderBtn({ label, style }: { label: string; style?: React.CSSProperties }) {
-  const [shown, setShown] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => { if (timerRef.current !== null) clearTimeout(timerRef.current); };
-  }, []);
-
-  function handlePlaceholderClick() {
-    if (timerRef.current !== null) clearTimeout(timerRef.current);
-    setShown(true);
-    timerRef.current = setTimeout(() => setShown(false), 2200);
-  }
-
-  return (
-    <span style={{ position: 'relative', display: 'inline-block' }}>
-      <button
-        style={{
-          padding: '9px 18px',
-          background: 'var(--c-primary)',
-          color: 'var(--c-text-on-primary)',
-          border: 'none',
-          borderRadius: 'var(--r-md)',
-          fontFamily: 'var(--font-ui)',
-          fontSize: 14,
-          fontWeight: 600,
-          cursor: 'pointer',
-          ...style,
-        }}
-        onClick={handlePlaceholderClick}
-      >
-        {label}
-      </button>
-      {shown && (
-        <span style={{
-          position: 'absolute', bottom: 'calc(100% + 6px)', left: '50%', transform: 'translateX(-50%)',
-          background: 'var(--c-text)', color: 'var(--c-surface)', fontSize: 11,
-          padding: '3px 8px', borderRadius: 'var(--r-sm)', whiteSpace: 'nowrap', pointerEvents: 'none',
-          zIndex: 10,
-        }}>
-          Available soon
-        </span>
-      )}
-    </span>
-  );
-}
+import SeedForm from '../components/catalogue/SeedForm';
+import type { PersonalSeedDetail } from '../types/catalogue';
 
 // ── Chip button ───────────────────────────────────────────────────────────────
 
@@ -102,6 +55,7 @@ export default function SeedCataloguePage() {
     useCatalogueBrowse({ source: effectiveSource, q: rawQ, family });
 
   const { families } = useFamilies();
+  const [seedFormOpen, setSeedFormOpen] = useState(false);
 
   const handleCardClick = useCallback((card: BrowseCard) => {
     setOpenCard(card);
@@ -144,7 +98,22 @@ export default function SeedCataloguePage() {
           </div>
           {/* Add Seed — account: placeholder. Guest: navigate to register. */}
           {!isGuest ? (
-            <PlaceholderBtn label="+ Add Seed" />
+            <button
+              onClick={() => setSeedFormOpen(true)}
+              style={{
+                padding: '9px 18px',
+                background: 'var(--c-primary)',
+                color: 'var(--c-text-on-primary)',
+                border: 'none',
+                borderRadius: 'var(--r-md)',
+                fontFamily: 'var(--font-ui)',
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              + Add Seed
+            </button>
           ) : (
             <button
               onClick={() => navigate('/register', { state: { intent: 'create-account' } })}
@@ -247,7 +216,22 @@ export default function SeedCataloguePage() {
               Add seeds you grow, or browse what the Cambium community has shared.
             </p>
             <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', justifyContent: 'center' }}>
-              <PlaceholderBtn label="Add a seed" />
+              <button
+                onClick={() => setSeedFormOpen(true)}
+                style={{
+                  padding: '9px 18px',
+                  background: 'var(--c-primary)',
+                  color: 'var(--c-text-on-primary)',
+                  border: 'none',
+                  borderRadius: 'var(--r-md)',
+                  fontFamily: 'var(--font-ui)',
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Add a seed
+              </button>
               <button
                 onClick={() => setSource('cambium')}
                 style={{
@@ -314,6 +298,23 @@ export default function SeedCataloguePage() {
         <SeedDetailOverlay
           card={openCard}
           onClose={() => setOpenCard(null)}
+          onDetailUpdated={(seed) => {
+            setOpenCard(prev =>
+              prev ? { ...prev, commonName: seed.commonName, scientificName: seed.scientificName, plantFamily: seed.plantFamily } : prev
+            );
+          }}
+        />
+      )}
+
+      {seedFormOpen && (
+        <SeedForm
+          mode="add"
+          onClose={() => setSeedFormOpen(false)}
+          onSaved={(_seed: PersonalSeedDetail) => {
+            setSeedFormOpen(false);
+            refetch();
+            setSource('mine');
+          }}
         />
       )}
     </div>

@@ -11,6 +11,8 @@ import BedManager from '../components/canvas/BedManager';
 import CanvasToolbar from '../components/canvas/CanvasToolbar';
 import type { CanvasMode } from '../components/canvas/CanvasToolbar';
 import PlantPicker from '../components/canvas/PlantPicker';
+import SeedForm from '../components/catalogue/SeedForm';
+import type { PersonalSeedDetail } from '../types/catalogue';
 import { useCompanions } from '../hooks/useCompanions';
 import { useConflicts } from '../hooks/useConflicts';
 import { computeBedOccupancy } from '../lib/crowding';
@@ -32,6 +34,7 @@ export default function HomePage() {
   // Phase 19: plant picker + placement
   const [pickerOpen, setPickerOpen] = useState(false);
   const [armedSeed, setArmedSeed] = useState<ArmedSeed | null>(null);
+  const [newSeedFormOpen, setNewSeedFormOpen] = useState(false);
 
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
   const { garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed } = useGarden(resolvedId);
@@ -455,6 +458,23 @@ export default function HomePage() {
           bedCompanionIds={bedCompanionIds}
           relationshipBetween={relationshipBetween}
           bedIsOver={selectedBedIsOver}
+          onAddNewSeed={() => setNewSeedFormOpen(true)}
+        />
+      )}
+
+      {newSeedFormOpen && (
+        <SeedForm
+          mode="add"
+          onClose={() => setNewSeedFormOpen(false)}
+          onSaved={(seed: PersonalSeedDetail) => {
+            setNewSeedFormOpen(false);
+            setArmedSeed({
+              source: 'personal',
+              id: seed.id,
+              commonName: seed.commonName,
+              spacingInches: seed.spacingInches ?? 6,
+            });
+          }}
         />
       )}
 

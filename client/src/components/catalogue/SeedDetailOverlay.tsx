@@ -13,6 +13,9 @@ import IllustrationImage from './IllustrationImage';
 import StarRating from './StarRating';
 import DataGrid from './DataGrid';
 import type { DataGridEntry } from './DataGrid';
+import SeedForm from './SeedForm';
+import CorrectionModal from './CorrectionModal';
+import ContributeModal from './ContributeModal';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,32 +44,6 @@ function zoneRange(min: string | null, max: string | null): string | null {
   if (!min && !max) return null;
   if (min && max && min !== max) return `${min}–${max}`;
   return min ?? max;
-}
-
-// ── "Available soon" placeholder ──────────────────────────────────────────────
-
-function PlaceholderBtn({ label, style }: { label: string; style?: React.CSSProperties }) {
-  const [shown, setShown] = useState(false);
-  return (
-    <span style={{ position: 'relative', display: 'inline-block' }}>
-      <button
-        style={{ ...secondaryBtnStyle, ...style }}
-        onClick={() => { setShown(true); setTimeout(() => setShown(false), 2200); }}
-      >
-        {label}
-      </button>
-      {shown && (
-        <span style={{
-          position: 'absolute', bottom: 'calc(100% + 6px)', left: '50%', transform: 'translateX(-50%)',
-          background: 'var(--c-text)', color: 'var(--c-surface)', fontSize: 11,
-          padding: '3px 8px', borderRadius: 'var(--r-sm)', whiteSpace: 'nowrap', pointerEvents: 'none',
-          zIndex: 10,
-        }}>
-          Available soon
-        </span>
-      )}
-    </span>
-  );
 }
 
 // ── Button styles ─────────────────────────────────────────────────────────────
@@ -121,6 +98,7 @@ function buildDataEntries(d: CatalogueSeedDetail | PersonalSeedDetail): DataGrid
 interface Props {
   card: BrowseCard;
   onClose: () => void;
+  onDetailUpdated?: (seed: PersonalSeedDetail) => void;
 }
 
 type DetailStatus =
@@ -129,7 +107,7 @@ type DetailStatus =
   | { status: 'loaded-personal'; detail: PersonalSeedDetail }
   | { status: 'error'; message: string };
 
-export default function SeedDetailOverlay({ card, onClose }: Props) {
+export default function SeedDetailOverlay({ card, onClose, onDetailUpdated }: Props) {
   const { isGuest } = useAuth();
   const navigate = useNavigate();
   const closeBtnRef = useRef<HTMLButtonElement>(null);
@@ -257,6 +235,10 @@ export default function SeedDetailOverlay({ card, onClose }: Props) {
             onPromptAccount={promptAccount}
             onNavigateToGarden={() => navigate('/')}
             onNavigateToCanvas={(gardenId) => navigate(`/?garden=${gardenId}`)}
+            onDetailUpdated={(seed) => {
+              setDetailStatus({ status: 'loaded-personal', detail: seed });
+              onDetailUpdated?.(seed);
+            }}
           />
         )}
       </div>
@@ -275,6 +257,7 @@ interface CommunityDetailProps {
 
 function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden }: CommunityDetailProps) {
   const [importStatus, setImportStatus] = useState<'idle' | 'loading' | 'added' | 'duplicate' | 'error'>('idle');
+  const [correctionOpen, setCorrectionOpen] = useState(false);
 
   async function handleAddToCatalogue() {
     if (isGuest) { onPromptAccount(); return; }
@@ -383,8 +366,23 @@ function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden 
         >
           {importLabel}
         </button>
-        <PlaceholderBtn label="Suggest a correction" />
+        <button
+          style={secondaryBtnStyle}
+          onClick={() => {
+            if (isGuest) { onPromptAccount(); return; }
+            setCorrectionOpen(true);
+          }}
+        >
+          Suggest a correction
+        </button>
       </div>
+      {correctionOpen && (
+        <CorrectionModal
+          cambiumSeedId={detail.id}
+          seedName={detail.commonName}
+          onClose={() => setCorrectionOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -397,15 +395,19 @@ interface PersonalDetailProps {
   onPromptAccount: () => void;
   onNavigateToGarden: () => void;
   onNavigateToCanvas: (gardenId: string) => void;
+  onDetailUpdated: (seed: PersonalSeedDetail) => void;
 }
 
-function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, onNavigateToCanvas }: PersonalDetailProps) {
+function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, onNavigateToCanvas, onDetailUpdated }: PersonalDetailProps) {
   const [localRating, setLocalRating] = useState<number | null>(detail.userRating);
   const [localFav, setLocalFav] = useState(detail.isFavourite);
   const [notes, setNotes] = useState(detail.userNotes ?? '');
   const [notesSaved, setNotesSaved] = useState(false);
   const [patchError, setPatchError] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [contributeOpen, setContributeOpen] = useState(false);
+  const [contributionStatus, setContributionStatus] = useState(detail.contributionStatus);
 
   async function handleRating(rating: number | null) {
     if (isGuest) { onPromptAccount(); return; }
@@ -448,7 +450,8 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
   const isCambiumImport = !!detail.cambiumSourceId;
 
   const canContribute =
-    detail.origin === 'user_created' && detail.contributionStatus === 'private';
+    detail.origin === 'user_created' &&
+    (contributionStatus === 'private' || contributionStatus === 'rejected');
   const contributionStatusLabel: Record<string, string> = {
     pending: 'Contribution pending review',
     published: 'Contributed to Cambium',
@@ -585,14 +588,50 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
       {/* Action row */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--c-border-subtle)' }}>
         <button style={primaryBtnStyle} onClick={onNavigateToGarden}>Add to Garden</button>
-        <PlaceholderBtn label="Edit" />
-        {canContribute && <PlaceholderBtn label="Contribute" />}
-        {!canContribute && detail.origin === 'user_created' && contributionStatusLabel[detail.contributionStatus] !== undefined && (
+        <button
+          style={secondaryBtnStyle}
+          onClick={() => {
+            if (isGuest) { onPromptAccount(); return; }
+            setEditOpen(true);
+          }}
+        >
+          Edit
+        </button>
+        {canContribute && (
+          <button
+            style={secondaryBtnStyle}
+            onClick={() => {
+              if (isGuest) { onPromptAccount(); return; }
+              setContributeOpen(true);
+            }}
+          >
+            Contribute
+          </button>
+        )}
+        {!canContribute && detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (
           <span style={{ fontSize: 13, color: 'var(--c-text-3)', alignSelf: 'center', padding: '0 var(--sp-2)' }}>
-            {contributionStatusLabel[detail.contributionStatus]}
+            {contributionStatusLabel[contributionStatus]}
           </span>
         )}
       </div>
+      {editOpen && (
+        <SeedForm
+          mode="edit"
+          initialSeed={detail}
+          onClose={() => setEditOpen(false)}
+          onSaved={(saved) => {
+            setEditOpen(false);
+            onDetailUpdated(saved);
+          }}
+        />
+      )}
+      {contributeOpen && (
+        <ContributeModal
+          seed={detail}
+          onClose={() => setContributeOpen(false)}
+          onContributed={() => setContributionStatus('pending')}
+        />
+      )}
     </div>
   );
 }
