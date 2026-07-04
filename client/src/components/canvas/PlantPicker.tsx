@@ -329,6 +329,20 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
             })}
           </>
         )}
+        {onAddNewSeed && (
+          <div style={{ padding: '12px 16px', borderTop: '1px solid #e8e0d0', marginTop: 4 }}>
+            <button
+              onClick={onAddNewSeed}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: '#2d6a4f', fontSize: 13, fontFamily: 'inherit', padding: 0,
+                textDecoration: 'underline',
+              }}
+            >
+              + Add new seed
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Fit line + placement hint */}
