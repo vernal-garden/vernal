@@ -302,6 +302,7 @@ export default function SeedCataloguePage() {
             setOpenCard(prev =>
               prev ? { ...prev, commonName: seed.commonName, scientificName: seed.scientificName, plantFamily: seed.plantFamily } : prev
             );
+            refetch();
           }}
         />
       )}
