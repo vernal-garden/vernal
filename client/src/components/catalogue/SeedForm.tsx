@@ -326,7 +326,7 @@ function TagInput({ tags, onChange }: { tags: string[]; onChange: (t: string[]) 
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTag(); } }}
-          placeholder="Add tag\u2026"
+          placeholder={"Add tag\u2026"}
           style={{ ...inputStyle, flex: 1 }}
           maxLength={40}
         />
