@@ -619,9 +619,14 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
           mode="edit"
           initialSeed={detail}
           onClose={() => setEditOpen(false)}
-          onSaved={(saved) => {
+          onSaved={async () => {
             setEditOpen(false);
-            onDetailUpdated(saved);
+            try {
+              const fresh = await get<PersonalSeedDetail>(`/api/seeds/${detail.id}`);
+              if (fresh) onDetailUpdated(fresh);
+            } catch {
+              // re-fetch failed; overlay closes, user can reopen for fresh data
+            }
           }}
         />
       )}
