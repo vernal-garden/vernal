@@ -7,6 +7,11 @@ export interface GardenSummary {
   style: string;
   growingMethod: string;
   zone: string;
+  thumbnailUrl: string | null;
+  lastAccessedAt: string;
+  activePlantingCount: number;
+  harvestableCount: number;
+  hasCompanionWarnings: boolean;
 }
 
 export function useGardenList() {
