@@ -16,8 +16,16 @@ interface GardenRow {
   description: string | null;
   zone: string;
   zone_location_label: string | null;
+  thumbnail_url: string | null;
+  last_accessed_at: string;
+  harvestable_count: number;
+  has_companion_warnings: boolean;
   created_at: string;
   updated_at: string;
+}
+
+interface GardenListRow extends GardenRow {
+  active_planting_count: number;
 }
 
 interface BedRow {
@@ -40,6 +48,7 @@ interface BedRow {
 // Column lists kept as constants so any future schema change is one edit.
 const GARDEN_SELECT = `
   id::text, owner_id::text, name, style, growing_method, description, zone, zone_location_label,
+  thumbnail_url, last_accessed_at, harvestable_count, has_companion_warnings,
   created_at, updated_at
 `;
 
@@ -59,6 +68,10 @@ function formatGarden(row: GardenRow) {
     description: row.description,
     zone: row.zone,
     zoneLocationLabel: row.zone_location_label,
+    thumbnailUrl: row.thumbnail_url,
+    lastAccessedAt: row.last_accessed_at,
+    harvestableCount: row.harvestable_count,
+    hasCompanionWarnings: row.has_companion_warnings,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -146,14 +159,23 @@ router.get('/', async (req, res) => {
   try {
     const accountId = req.session!.account?.id ?? null;
     const sessionId = req.session!.id;
-    const result = await db.query<GardenRow>(
-      `SELECT ${GARDEN_SELECT}
+    const currentYear = new Date().getFullYear();
+    const result = await db.query<GardenListRow>(
+      `SELECT ${GARDEN_SELECT},
+        (SELECT COUNT(*)::int FROM plantings p
+         WHERE p.garden_id = gardens.id AND p.season = $3)
+         AS active_planting_count
        FROM gardens
        WHERE (owner_id = $1 OR guest_session_id = $2)
-       ORDER BY created_at ASC`,
-      [accountId, sessionId],
+       ORDER BY last_accessed_at DESC`,
+      [accountId, sessionId, currentYear],
     );
-    res.json({ data: result.rows.map(formatGarden) });
+    res.json({
+      data: result.rows.map(r => ({
+        ...formatGarden(r),
+        activePlantingCount: r.active_planting_count,
+      })),
+    });
   } catch (err) {
     console.error('GET /gardens error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -241,6 +263,9 @@ router.get('/:id', async (req, res) => {
     if (gardenResult.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
     }
+
+    // Fire-and-forget: bump last_accessed_at so the list re-sorts on next load
+    db.query('UPDATE gardens SET last_accessed_at = NOW() WHERE id = $1', [gardenId]).catch(() => {});
 
     let season: number;
     if (req.query.season !== undefined) {
