@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useGardenList } from '../hooks/useGardenList';
 import { useGarden } from '../hooks/useGarden';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../hooks/useGarden';
@@ -19,7 +20,8 @@ import { computeBedOccupancy } from '../lib/crowding';
 
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [searchParams] = useSearchParams();
+  const [activeId, setActiveId] = useState<string | null>(() => searchParams.get('garden'));
   const [selectedBed, setSelectedBed] = useState<Bed | null>(null);
   const [scale, setScale] = useState(1);
   const [mode, setMode] = useState<CanvasMode>('grid');

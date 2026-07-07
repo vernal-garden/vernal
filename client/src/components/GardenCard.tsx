@@ -29,6 +29,7 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(garden.name);
   const [renameLoading, setRenameLoading] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -50,9 +51,34 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
   useEffect(() => {
     if (renaming) {
       setRenameValue(garden.name);
+      setRenameError(null);
       setTimeout(() => renameInputRef.current?.select(), 0);
     }
   }, [renaming, garden.name]);
+
+  // Scroll-lock + Escape for rename modal
+  useEffect(() => {
+    if (!renaming) return;
+    document.body.style.overflow = 'hidden';
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setRenaming(false); }
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = '';
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [renaming]);
+
+  // Scroll-lock + Escape for delete modal
+  useEffect(() => {
+    if (!confirmingDelete) return;
+    document.body.style.overflow = 'hidden';
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setConfirmingDelete(false); }
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = '';
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [confirmingDelete]);
 
   function handleCardClick(e: React.MouseEvent) {
     // Don't navigate when interacting with the menu or its children
@@ -64,9 +90,12 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
     const trimmed = renameValue.trim();
     if (!trimmed || trimmed === garden.name) { setRenaming(false); return; }
     setRenameLoading(true);
+    setRenameError(null);
     try {
       await onRename(garden.id, trimmed);
       setRenaming(false);
+    } catch {
+      setRenameError('Failed to rename. Please try again.');
     } finally {
       setRenameLoading(false);
     }
@@ -88,7 +117,11 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
     <>
       {/* Card */}
       <div
+        role="button"
+        tabIndex={0}
+        aria-label={`Open ${garden.name}`}
         onClick={handleCardClick}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleCardClick(e as unknown as React.MouseEvent); } }}
         style={{
           background: 'var(--c-surface)',
           border: '1px solid var(--c-border-subtle)',
@@ -264,6 +297,9 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
           onClick={() => setRenaming(false)}
         >
           <div
+            role="dialog"
+            aria-modal={true}
+            aria-label="Rename garden"
             onClick={e => e.stopPropagation()}
             style={{ background: 'var(--c-surface)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-5)', width: 360, boxShadow: 'var(--shadow-lg)' }}
           >
@@ -281,6 +317,11 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
                 color: 'var(--c-text)', outline: 'none', boxSizing: 'border-box',
               }}
             />
+            {renameError && (
+              <p style={{ fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--c-danger)', margin: 'var(--sp-1) 0 0' }}>
+                {renameError}
+              </p>
+            )}
             <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end', marginTop: 'var(--sp-4)' }}>
               <button
                 onClick={() => setRenaming(false)}
@@ -307,6 +348,9 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
           onClick={() => setConfirmingDelete(false)}
         >
           <div
+            role="dialog"
+            aria-modal={true}
+            aria-label="Delete garden"
             onClick={e => e.stopPropagation()}
             style={{ background: 'var(--c-surface)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-5)', width: 400, boxShadow: 'var(--shadow-lg)' }}
           >

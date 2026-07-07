@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate, useNavigate } from 'react-router-dom';
+import { Navigate, useNavigate, useLocation } from 'react-router-dom';
 import * as api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -22,6 +22,8 @@ const METHOD_OPTIONS: { value: Exclude<Method, ''>; label: string; description: 
 export default function OnboardingPage() {
   const { isAccount, gardenCount, refetch } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const isNewGarden = (location.state as { newGarden?: boolean } | null)?.newGarden === true;
 
   const [step, setStep] = useState<1 | 2>(1);
   const [locationLabel, setLocationLabel] = useState('');
@@ -31,8 +33,8 @@ export default function OnboardingPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Guard: already onboarded
-  if (gardenCount !== null && gardenCount > 0) {
+  // Guard: already onboarded (skip when explicitly creating a new garden)
+  if (!isNewGarden && gardenCount !== null && gardenCount > 0) {
     return <Navigate to="/" replace />;
   }
 
@@ -45,7 +47,7 @@ export default function OnboardingPage() {
     setError('');
     try {
       const style = methodToStyle[method as Exclude<Method, ''>];
-      await api.post('/api/gardens', {
+      const created = await api.post<{ id: string }>('/api/gardens', {
         name: gardenName.trim(),
         style,
         zone: zone.trim(),
@@ -59,7 +61,11 @@ export default function OnboardingPage() {
         });
       }
       await refetch();
-      navigate('/', { replace: true });
+      if (isNewGarden && created?.id) {
+        navigate(`/?garden=${created.id}`, { replace: true });
+      } else {
+        navigate('/', { replace: true });
+      }
     } catch (err) {
       if (err instanceof api.ApiError) {
         const body = err.body as { error?: string } | null;
