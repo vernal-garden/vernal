@@ -127,7 +127,6 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
           border: '1px solid var(--c-border-subtle)',
           borderRadius: 'var(--r-lg)',
           boxShadow: 'var(--shadow-sm)',
-          overflow: 'hidden',
           cursor: 'pointer',
           display: 'flex',
           flexDirection: 'column',
@@ -155,6 +154,7 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
           background: garden.thumbnailUrl ? undefined : fallbackBg,
           position: 'relative',
           flexShrink: 0,
+          overflow: 'hidden',
         }}>
           {garden.thumbnailUrl ? (
             <img

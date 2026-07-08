@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { Navigate, useNavigate, useLocation, Link } from 'react-router-dom';
 import * as api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -31,6 +31,7 @@ export default function OnboardingPage() {
   const [gardenName, setGardenName] = useState('My Garden');
   const [method, setMethod] = useState<Method>('');
   const [error, setError] = useState('');
+  const [isGuestLimit, setIsGuestLimit] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Guard: already onboarded (skip when explicitly creating a new garden)
@@ -45,6 +46,7 @@ export default function OnboardingPage() {
     if (!method) return;
     setLoading(true);
     setError('');
+    setIsGuestLimit(false);
     try {
       const style = methodToStyle[method as Exclude<Method, ''>];
       const created = await api.post<{ id: string }>('/api/gardens', {
@@ -68,8 +70,13 @@ export default function OnboardingPage() {
       }
     } catch (err) {
       if (err instanceof api.ApiError) {
-        const body = err.body as { error?: string } | null;
-        setError(body?.error ?? 'Something went wrong');
+        const body = err.body as { error?: string; guest_limit?: boolean } | null;
+        if (body?.guest_limit === true) {
+          setIsGuestLimit(true);
+          setError('guest_limit');
+        } else {
+          setError(body?.error ?? 'Something went wrong');
+        }
       } else {
         setError('Something went wrong');
       }
@@ -177,7 +184,25 @@ export default function OnboardingPage() {
               />
             </div>
 
-            {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+            {error && (
+              <p className="mb-4 text-sm text-red-600">
+                {isGuestLimit ? (
+                  <>
+                    Guest sessions can have one garden.{' '}
+                    <Link
+                      to="/register"
+                      state={{ intent: 'create-account' }}
+                      style={{ textDecoration: 'underline' }}
+                    >
+                      Create a free account
+                    </Link>
+                    {' '}for more.
+                  </>
+                ) : (
+                  error
+                )}
+              </p>
+            )}
 
             <button
               type="button"
