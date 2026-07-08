@@ -34,8 +34,9 @@ export default function OnboardingPage() {
   const [isGuestLimit, setIsGuestLimit] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Guard: already onboarded (skip when explicitly creating a new garden)
-  if (!isNewGarden && gardenCount !== null && gardenCount > 0) {
+  // Guard: already onboarded (skip when explicitly creating a new garden,
+  // and skip when the guest-limit error is actively displayed)
+  if (!isNewGarden && !isGuestLimit && gardenCount !== null && gardenCount > 0) {
     return <Navigate to="/" replace />;
   }
 
@@ -44,6 +45,17 @@ export default function OnboardingPage() {
 
   async function completeOnboarding() {
     if (!method) return;
+
+    // Client-side guest limit pre-check.
+    // gardenCount is always non-null here (ProtectedRoute guarantees auth
+    // has resolved before this page renders). Showing the error here avoids
+    // entering the loading state and eliminates the unmount race.
+    if (!isAccount && gardenCount !== null && gardenCount >= 1) {
+      setIsGuestLimit(true);
+      setError('guest_limit');
+      return;
+    }
+
     setLoading(true);
     setError('');
     setIsGuestLimit(false);
