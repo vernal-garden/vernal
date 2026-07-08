@@ -11,6 +11,7 @@ import BedDetailPanel from '../components/canvas/BedDetailPanel';
 import BedManager from '../components/canvas/BedManager';
 import CanvasToolbar from '../components/canvas/CanvasToolbar';
 import type { CanvasMode } from '../components/canvas/CanvasToolbar';
+import { CanvasHomeButton } from '../components/canvas/CanvasHomeButton';
 import PlantPicker from '../components/canvas/PlantPicker';
 import SeedForm from '../components/catalogue/SeedForm';
 import type { PersonalSeedDetail } from '../types/catalogue';
@@ -412,6 +413,9 @@ export default function HomePage() {
           </div>
         </div>
       )}
+
+      {/* Home anchor */}
+      <CanvasHomeButton />
 
       {/* Toolbar */}
       {resolvedId && (
