@@ -50,7 +50,7 @@ interface Props {
   selectedBedId: string | null;
   onSelectBed: (bed: Bed | null) => void;
   onDoubleBed: (bed: Bed) => void;
-  onCreateBed: (payload: CreateBedPayload) => void;
+  onCreateBed: (payload: CreateBedPayload) => void | Promise<void>;
   onUpdateBedGeometry: (bedId: string, payload: UpdateBedPayload) => void;
   onScaleChange?: (scale: number) => void;
   onOverlapWarning?: (msg: string) => void;
@@ -315,6 +315,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   // Grid creation
   const gridDragRef = useRef<{ startCell: { cellX: number; cellY: number }; startWorld: { x: number; y: number }; curCell: { cellX: number; cellY: number }; moved: boolean } | null>(null);
   const [gridPreview, setGridPreview] = useState<{ x: number; y: number; cols: number; rows: number; overlap: boolean } | null>(null);
+  const gridPreviewRef = useRef<{ x: number; y: number; cols: number; rows: number; overlap: boolean } | null>(null);
+  const setGridPreviewSynced = useCallback((v: { x: number; y: number; cols: number; rows: number; overlap: boolean } | null) => {
+    gridPreviewRef.current = v;
+    setGridPreview(v);
+  }, []);
 
   // Freeform creation
   const [freeformPts, setFreeformPts] = useState<number[]>([]);
@@ -429,7 +434,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       if (e.code === 'Escape') {
         setFreeformPtsSynced([]);
         setCursorWorld(null);
-        setGridPreview(null);
+        setGridPreviewSynced(null);
         gridDragRef.current = null;
         moveRef.current = null;
         setDragOffsetSynced(null);
@@ -715,7 +720,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           g.x * GRID_PX, (g.y + g.rows) * GRID_PX,
         ];
         const overlap = bedOverlapsAny(gPoly, '', bedsRef.current);
-        setGridPreview({ ...g, overlap });
+        setGridPreviewSynced({ ...g, overlap });
       }
       return;
     }
@@ -773,8 +778,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       gridDragRef.current = null;
       if (wasMoved) {
         gridCreateDoneRef.current = true;
-        const preview = gridPreview;
-        setGridPreview(null);
+        const preview = gridPreviewRef.current;
+        setGridPreviewSynced(null);
         if (preview && !preview.overlap) {
           onCreateBed({ type: 'grid', label: `Bed ${bedsRef.current.length + 1}`, grid: { x: preview.x, y: preview.y, cols: preview.cols, rows: preview.rows } });
         } else if (preview?.overlap) {
@@ -782,7 +787,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         }
         return;
       }
-      setGridPreview(null);
+      setGridPreviewSynced(null);
       return;
     }
 
@@ -819,7 +824,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     moveRef.current = null;
     setDragOffsetSynced(null);
     setMoveOverlapSynced(false);
-  }, [gridPreview, onCreateBed, onUpdateBedGeometry, onOverlapWarning, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
+  }, [onCreateBed, onUpdateBedGeometry, onOverlapWarning, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (resizeDoneRef.current) { resizeDoneRef.current = false; return; }

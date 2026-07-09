@@ -187,9 +187,10 @@ export default function HomePage() {
     setArmedSeed(null);
   }, []);
 
-  const handleCreateBed = useCallback((payload: CreateBedPayload) => {
-    createBed(payload);
-  }, [createBed]);
+  const handleCreateBed = useCallback(async (payload: CreateBedPayload) => {
+    const result = await createBed(payload);
+    if (result) handleSelectBed(result);
+  }, [createBed, handleSelectBed]);
 
   const handleUpdateBedGeometry = useCallback((bedId: string, payload: UpdateBedPayload) => {
     // Remap freeform plantings' absolute points when the polygon changes (move or resize).
