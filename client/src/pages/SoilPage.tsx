@@ -352,7 +352,7 @@ function EntryForm({ beds, defaultBedId, gardenId, initial, onSaved, onCancel }:
       if (form.nitrogen)   payload['nitrogen']   = parseInt(form.nitrogen,   10);
       if (form.phosphorus) payload['phosphorus'] = parseInt(form.phosphorus, 10);
       if (form.potassium)  payload['potassium']  = parseInt(form.potassium,  10);
-      if (form.notes)      payload['notes']      = form.notes;
+      payload['notes'] = form.notes || null;
 
       if (isEdit) {
         await patch(`/api/soil-readings/${initial!.id}`, payload);
