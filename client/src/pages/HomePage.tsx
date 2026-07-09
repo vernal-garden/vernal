@@ -99,7 +99,7 @@ export default function HomePage() {
   useEffect(() => {
     if (!selectedBed) return;
     const fresh = beds.find(b => b.id === selectedBed.id);
-    if (!fresh) setSelectedBed(null);
+    if (!fresh) { console.log('[SYNC-EFFECT] deselecting — bed not found. selectedBed.id:', selectedBed.id, 'beds ids:', beds.map(b => b.id)); setSelectedBed(null); }
     else if (fresh !== selectedBed) setSelectedBed(fresh);
   }, [beds, selectedBed]);
 
@@ -188,6 +188,7 @@ export default function HomePage() {
   }, []);
 
   const handleCreateBed = useCallback(async (payload: CreateBedPayload) => {
+    console.log('[CREATE-BED] payload:', payload);
     const result = await createBed(payload);
     if (result) handleSelectBed(result);
   }, [createBed, handleSelectBed]);
