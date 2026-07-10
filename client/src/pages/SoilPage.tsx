@@ -6,6 +6,14 @@ import UpgradePrompt from '../components/UpgradePrompt';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+interface AmendmentLog {
+  id: string;
+  bedIds: string[];
+  applicationDate: string;
+  productName: string;
+  amendmentType: string;
+}
+
 interface Bed {
   id: string;
   label: string;
@@ -141,12 +149,24 @@ function PhSparkline({ readings }: { readings: SoilReading[] }) {
 
 function ReadingRow({
   reading,
+  amendments,
   onEdit,
 }: {
   reading: SoilReading;
+  amendments: AmendmentLog[];
   onEdit: (r: SoilReading) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [showAmendmentList, setShowAmendmentList] = useState(false);
+
+  // Amendments for this bed within 30 days BEFORE the test date
+  const testDate = new Date(reading.testDate);
+  const thirtyBefore = new Date(testDate);
+  thirtyBefore.setDate(thirtyBefore.getDate() - 30);
+  const priorAmendments = amendments.filter(a => {
+    const appDate = new Date(a.applicationDate);
+    return appDate >= thirtyBefore && appDate < testDate;
+  });
 
   return (
     <div
@@ -184,6 +204,29 @@ function ReadingRow({
               {reading.notes}
             </p>
           )}
+
+          {priorAmendments.length > 0 && (
+            <div style={{ marginBottom: 'var(--sp-2)' }}>
+              <button
+                onClick={e => { e.stopPropagation(); setShowAmendmentList(s => !s); }}
+                style={{
+                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                  fontSize: 12, fontFamily: 'var(--font-ui)',
+                  color: 'var(--c-primary)', textDecoration: 'underline',
+                }}
+              >
+                {priorAmendments.length} amendment{priorAmendments.length !== 1 ? 's' : ''} in the 30 days prior
+              </button>
+              {showAmendmentList && (
+                <ul style={{ margin: 'var(--sp-1) 0 0 var(--sp-4)', padding: 0, listStyle: 'disc', fontSize: 12, fontFamily: 'var(--font-ui)', color: 'var(--c-text-2)' }}>
+                  {priorAmendments.map(a => (
+                    <li key={a.id}>{a.applicationDate}: {a.productName} ({a.amendmentType.replace(/_/g, ' ')})</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           <button
             onClick={(e) => { e.stopPropagation(); onEdit(reading); }}
             style={{ ...cancelSt, fontSize: 12, padding: '4px 12px' }}
@@ -266,14 +309,19 @@ function AllBedsView({
 function PerBedView({
   bed,
   readings,
+  amendments,
   onBack,
   onEdit,
 }: {
   bed: Bed;
   readings: SoilReading[];
+  amendments: AmendmentLog[];
   onBack: () => void;
   onEdit: (r: SoilReading) => void;
 }) {
+  // Amendments for this specific bed
+  const bedAmendments = amendments.filter(a => a.bedIds.includes(bed.id));
+
   return (
     <div>
       <button onClick={onBack} style={{ ...cancelSt, fontSize: 12, marginBottom: 'var(--sp-4)' }}>
@@ -291,7 +339,7 @@ function PerBedView({
             No readings yet.
           </p>
         ) : (
-          readings.map(r => <ReadingRow key={r.id} reading={r} onEdit={onEdit} />)
+          readings.map(r => <ReadingRow key={r.id} reading={r} amendments={bedAmendments} onEdit={onEdit} />)
         )}
       </div>
     </div>
@@ -472,11 +520,12 @@ export default function SoilPage() {
   const { gardenId } = useParams<{ gardenId: string }>();
   const { account }  = useAuth();
 
-  const [garden,   setGarden]   = useState<GardenDetail | null>(null);
-  const [readings, setReadings] = useState<SoilReading[]>([]);
-  const [loading,  setLoading]  = useState(true);
-  const [view,     setView]     = useState<ViewState>({ kind: 'all-beds' });
-  const [form,     setForm]     = useState<FormState>({ open: false });
+  const [garden,     setGarden]     = useState<GardenDetail | null>(null);
+  const [readings,   setReadings]   = useState<SoilReading[]>([]);
+  const [amendments, setAmendments] = useState<AmendmentLog[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [view,       setView]       = useState<ViewState>({ kind: 'all-beds' });
+  const [form,       setForm]       = useState<FormState>({ open: false });
 
   const isSupporter = account?.subscriptionTier === 'supporter';
 
@@ -484,12 +533,14 @@ export default function SoilPage() {
     if (!gardenId) return;
     setLoading(true);
     try {
-      const [g, r] = await Promise.all([
+      const [g, r, a] = await Promise.all([
         get<GardenDetail>(`/api/gardens/${gardenId}`),
         get<{ data: SoilReading[] }>(`/api/gardens/${gardenId}/soil-readings`),
+        get<{ data: AmendmentLog[] }>(`/api/gardens/${gardenId}/amendments`).catch(() => ({ data: [] as AmendmentLog[] })),
       ]);
       setGarden(g ?? null);
       setReadings(r?.data ?? []);
+      setAmendments(a?.data ?? []);
     } finally {
       setLoading(false);
     }
@@ -555,6 +606,7 @@ export default function SoilPage() {
         <PerBedView
           bed={currentBed}
           readings={byBedId[currentBed.id] ?? []}
+          amendments={amendments}
           onBack={() => setView({ kind: 'all-beds' })}
           onEdit={(r) => setForm({ open: true, mode: 'edit', reading: r })}
         />
