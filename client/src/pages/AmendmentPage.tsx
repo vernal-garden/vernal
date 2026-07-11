@@ -560,11 +560,27 @@ export default function AmendmentPage() {
   const [loading,      setLoading]      = useState(true);
   const [form,         setForm]         = useState<FormState>({ open: false });
 
-  // Filter state (session-persisted in component state)
-  const [filterBedId,    setFilterBedId]    = useState<string>('all');
-  const [filterType,     setFilterType]     = useState<string>('all');
-  const [filterDateRange, setFilterDateRange] = useState<string>('all');
-  const [showAll,        setShowAll]        = useState(false);
+  const FILTER_KEY = `vernal-amendment-filters-${gardenId}`;
+
+  const [filterBedId, setFilterBedId] = useState<string>(() => {
+    try {
+      const s = sessionStorage.getItem(FILTER_KEY);
+      return (s ? JSON.parse(s).filterBedId : null) ?? 'all';
+    } catch { return 'all'; }
+  });
+  const [filterType, setFilterType] = useState<string>(() => {
+    try {
+      const s = sessionStorage.getItem(FILTER_KEY);
+      return (s ? JSON.parse(s).filterType : null) ?? 'all';
+    } catch { return 'all'; }
+  });
+  const [filterDateRange, setFilterDateRange] = useState<string>(() => {
+    try {
+      const s = sessionStorage.getItem(FILTER_KEY);
+      return (s ? JSON.parse(s).filterDateRange : null) ?? 'all';
+    } catch { return 'all'; }
+  });
+  const [showAll, setShowAll] = useState(false);
 
   const isSupporter = account?.subscriptionTier === 'supporter';
 
@@ -586,6 +602,15 @@ export default function AmendmentPage() {
   }, [gardenId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(
+        FILTER_KEY,
+        JSON.stringify({ filterBedId, filterType, filterDateRange }),
+      );
+    } catch { /* storage unavailable — fail silently */ }
+  }, [FILTER_KEY, filterBedId, filterType, filterDateRange]);
 
   if (!isSupporter) {
     return (
