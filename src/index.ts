@@ -13,6 +13,7 @@ import { amendmentsNestedRouter, amendmentsFlatRouter } from './routes/amendment
 import meRouter from './routes/me';
 import seedsRouter from './routes/seeds';
 import correctionsRouter from './routes/corrections';
+import weatherRouter from './routes/weather';
 import { sessionMiddleware } from './middleware/session';
 import { initPassport, passport } from './lib/oauth/index';
 
@@ -63,6 +64,7 @@ app.use('/api/amendments', amendmentsFlatRouter);
 app.use('/api/me', meRouter);
 app.use('/api/seeds', seedsRouter);
 app.use('/api/corrections', correctionsRouter);
+app.use('/api/weather', weatherRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
