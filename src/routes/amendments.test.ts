@@ -39,7 +39,7 @@ async function loginAgent(email: string, password = 'Password123!') {
 
 async function createGarden(agent: ReturnType<typeof request.agent>): Promise<string> {
   const res = await agent.post('/api/gardens').send({
-    name: 'Test Garden', style: 'grid', zone: '7b', growingMethod: 'organic',
+    name: 'Test Garden', style: 'grid', zone: '7b', growingMethod: 'in_ground',
   });
   return String(res.body.id);
 }

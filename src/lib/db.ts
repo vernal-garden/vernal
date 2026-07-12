@@ -3,14 +3,28 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL environment variable is required');
+// During tests (NODE_ENV=test, set automatically by Vitest) the app must
+// connect to TEST_DATABASE_URL, never DATABASE_URL — otherwise supertest
+// requests through `app` would read/write the real production database.
+const connectionString =
+  process.env.NODE_ENV === 'test' ? process.env.TEST_DATABASE_URL : process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error(
+    process.env.NODE_ENV === 'test'
+      ? 'TEST_DATABASE_URL environment variable is required'
+      : 'DATABASE_URL environment variable is required',
+  );
 }
 
 const config: PoolConfig = {
-  connectionString: process.env.DATABASE_URL,
-  // SSL is required for Neon; set DATABASE_SSL=false only for local dev without SSL
-  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  connectionString,
+  // SSL is required for Neon; test mode targets a local/throwaway Postgres
+  // (no SSL). DATABASE_SSL=false also disables it for local dev without SSL.
+  ssl:
+    process.env.NODE_ENV === 'test' || process.env.DATABASE_SSL === 'false'
+      ? false
+      : { rejectUnauthorized: false },
   max: 10,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,

@@ -2,19 +2,24 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { Pool } from 'pg';
 import app from '../index';
+import { ensureCambiumSeeded } from '../test/helpers';
 
 // TEST_DATABASE_URL is validated by src/test/setup.ts before this file runs.
 const url = process.env.TEST_DATABASE_URL as string;
 
 const pool = new Pool({
   connectionString: url,
-  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  ssl:
+    process.env.NODE_ENV === 'test' || process.env.DATABASE_SSL === 'false'
+      ? false
+      : { rejectUnauthorized: false },
 });
 
 let tomatoId: number;
 const insertedIds: number[] = [];
 
 beforeAll(async () => {
+  await ensureCambiumSeeded(pool);
   const res = await pool.query<{ id: number }>(
     "SELECT id FROM cambium.seeds WHERE common_name = 'Tomato' AND moderation_status = 'active'",
   );

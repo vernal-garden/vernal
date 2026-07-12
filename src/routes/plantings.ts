@@ -57,7 +57,7 @@ interface PatchPlantingRow extends PlantingRow {
 const PLANTING_GET_QUERY = `
   SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
     p.seed_id::text, p.cambium_seed_id::text,
-    p.quantity, p.planting_date, p.cell_x, p.cell_y, p.point_x, p.point_y,
+    p.quantity, p.planting_date::text, p.cell_x, p.cell_y, p.point_x, p.point_y,
     p.growth_stage_pct, p.harvest_ready, p.harvest_window_end,
     p.indicator_dismissed_at, p.created_at, p.updated_at,
     COALESCE(p.cambium_seed_id, s.cambium_source_id)::text AS companion_seed_id,
@@ -65,7 +65,7 @@ const PLANTING_GET_QUERY = `
     COALESCE(cs.common_name, s.common_name) AS common_name
   FROM plantings p
   LEFT JOIN seeds s          ON s.id  = p.seed_id
-  LEFT JOIN cambium.seeds cs ON cs.id = p.cambium_seed_id
+  LEFT JOIN cambium.seeds cs ON cs.id = COALESCE(p.cambium_seed_id, s.cambium_source_id)
 `;
 
 const GROWTH_KEYS = ['growthStagePct', 'harvestReady', 'harvestWindowEnd'];
@@ -388,7 +388,7 @@ plantingsFlatRouter.patch('/:id', async (req, res) => {
     const { rows: existing } = await db.query<PatchPlantingRow>(
       `SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
               p.seed_id::text, p.cambium_seed_id::text,
-              p.quantity, p.planting_date, p.cell_x, p.cell_y, p.point_x, p.point_y,
+              p.quantity, p.planting_date::text, p.cell_x, p.cell_y, p.point_x, p.point_y,
               p.growth_stage_pct, p.harvest_ready, p.harvest_window_end,
               p.indicator_dismissed_at, p.created_at, p.updated_at,
               b.type AS bed_type, b.grid_cols, b.grid_rows

@@ -17,6 +17,7 @@ import { encryptToBuffer } from '../lib/crypto';
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
 import { requireAuth } from '../middleware/auth';
+import { LOCATION_NOT_SET } from '../lib/constants';
 
 export const authRouter = Router();
 
@@ -163,9 +164,9 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
 
     const { rows } = await client.query<{ id: number }>(
       `INSERT INTO accounts (email, password_hash, zone, zone_location_label)
-       VALUES ($1, $2, 'unknown', 'Not set')
+       VALUES ($1, $2, 'unknown', $3)
        RETURNING id`,
-      [email.toLowerCase(), passwordHash],
+      [email.toLowerCase(), passwordHash, LOCATION_NOT_SET],
     );
     const accountId = rows[0].id;
 
@@ -397,8 +398,8 @@ async function resolveOAuthAccount(
       } else {
         const newAccount = await client.query<{ id: string }>(
           `INSERT INTO accounts (email, display_name, email_verified, zone, zone_location_label)
-           VALUES ($1, $2, true, 'unknown', 'Not set') RETURNING id`,
-          [email, displayName],
+           VALUES ($1, $2, true, 'unknown', $3) RETURNING id`,
+          [email, displayName, LOCATION_NOT_SET],
         );
         accountId = Number(newAccount.rows[0].id);
         isNew = true;
@@ -406,8 +407,8 @@ async function resolveOAuthAccount(
     } else {
       const newAccount = await client.query<{ id: string }>(
         `INSERT INTO accounts (display_name, email_verified, zone, zone_location_label)
-         VALUES ($1, false, 'unknown', 'Not set') RETURNING id`,
-        [displayName],
+         VALUES ($1, false, 'unknown', $2) RETURNING id`,
+        [displayName, LOCATION_NOT_SET],
       );
       accountId = Number(newAccount.rows[0].id);
       isNew = true;

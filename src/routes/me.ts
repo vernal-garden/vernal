@@ -32,7 +32,7 @@ interface AccountRow {
 
 const ACCOUNT_SELECT = `
   id::text, email, display_name, avatar_url, email_verified, zone,
-  zone_location_label, last_spring_frost_date, first_fall_frost_date,
+  zone_location_label, last_spring_frost_date::text, first_fall_frost_date::text,
   role, subscription_tier, preferences, deletion_scheduled_at,
   created_at, updated_at
 `;

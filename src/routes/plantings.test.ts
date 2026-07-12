@@ -66,6 +66,7 @@ beforeAll(async () => {
     name: 'Planting Test Garden',
     style: 'grid',
     zone: '7b',
+    growingMethod: 'in_ground',
   });
   gardenId = gardenRes.body.id;
 
@@ -168,7 +169,7 @@ describe('Test 4: POST with another user\'s seedId → 400', () => {
     // personalSeedId belongs to main user; other agent tries to use it
     const res = await otherAgent
       .post(`/api/gardens`)
-      .send({ name: 'Other Garden', style: 'grid', zone: '7b' })
+      .send({ name: 'Other Garden', style: 'grid', zone: '7b', growingMethod: 'in_ground' })
       .then(async (gardenRes: { body: { id: string } }) => {
         const othGardenId = gardenRes.body.id;
         const bedRes = await otherAgent
@@ -496,6 +497,7 @@ describe('Test 19: Bed deletion cascades plantings', () => {
       name: 'Cascade Test Garden',
       style: 'grid',
       zone: '7b',
+      growingMethod: 'in_ground',
     });
     cascadeGardenId = gardenRes.body.id;
 

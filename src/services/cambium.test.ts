@@ -1,22 +1,28 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { searchSeeds, getSeedById, listFamilies, getCompanionsForSeed } from './cambium';
+import { ensureCambiumSeeded } from '../test/helpers';
 
 // TEST_DATABASE_URL is validated by src/test/setup.ts before this file runs.
 const url = process.env.TEST_DATABASE_URL as string;
 
 const pool = new Pool({
   connectionString: url,
-  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  ssl:
+    process.env.NODE_ENV === 'test' || process.env.DATABASE_SSL === 'false'
+      ? false
+      : { rejectUnauthorized: false },
 });
 
-// Assumes npm run seed:cambium has been run against the test database.
-// The seed inserts 12 active seeds including 'Tomato'.
+// Seeds itself (idempotent) rather than assuming npm run seed:cambium output
+// survives — other suites truncate cambium.seeds as part of their own cleanup.
+// The starter set inserts 12 active seeds including 'Tomato'.
 
 let tomatoId: number;
 const insertedIds: number[] = [];
 
 beforeAll(async () => {
+  await ensureCambiumSeeded(pool);
   const result = await pool.query<{ id: number }>(
     "SELECT id FROM cambium.seeds WHERE common_name = 'Tomato' AND moderation_status = 'active'",
   );

@@ -1,3 +1,7 @@
+import dotenv from 'dotenv';
+
+dotenv.config();
+
 const testUrl = process.env.TEST_DATABASE_URL;
 const appUrl = process.env.DATABASE_URL;
 
