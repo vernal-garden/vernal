@@ -5,6 +5,7 @@ const NAV_LINKS = [
   { to: '/',          label: 'Gardens' },
   { to: '/catalogue', label: 'Seed Catalogue' },
   { to: '/guide',     label: 'Planting Guide' },
+  { to: '/weather',   label: 'Weather' },
   { to: '/account',   label: 'Account' },
 ] as const;
 

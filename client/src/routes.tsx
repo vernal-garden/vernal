@@ -13,6 +13,7 @@ import SeedCataloguePage from './pages/SeedCataloguePage';
 import PlantingGuidePage from './pages/PlantingGuidePage';
 import DataMetricsPage from './pages/DataMetricsPage';
 import SoilPage from './pages/SoilPage';
+import WeatherPage from './pages/WeatherPage';
 import AmendmentPage from './pages/AmendmentPage';
 import AccountPage from './pages/AccountPage';
 import NotFoundPage from './pages/NotFoundPage';
@@ -111,6 +112,14 @@ const router = createBrowserRouter([
     element: (
       <AccountRoute>
         <AmendmentPage />
+      </AccountRoute>
+    ),
+  },
+  {
+    path: '/weather',
+    element: (
+      <AccountRoute>
+        <WeatherPage />
       </AccountRoute>
     ),
   },

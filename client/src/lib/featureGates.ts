@@ -12,4 +12,8 @@ export const FEATURE_GATES: Record<string, FeatureGate> = {
     featureName: 'Amendment log',
     description: 'Record fertilizer and amendment applications per bed.',
   },
+  weather: {
+    featureName: 'Weather',
+    description: 'Local weather + your personal weather station, in your garden.',
+  },
 };

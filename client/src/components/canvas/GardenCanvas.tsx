@@ -643,7 +643,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       }
       const cell = worldToCell(w.x, w.y);
       gridDragRef.current = { startCell: cell, startWorld: w, curCell: cell, moved: false };
-      console.log('[MD-GRID] drag started at world:', wx, wy);
+      console.log('[MD-GRID] drag started at world:', w.x, w.y);
     } else {
       if (freeformPtsRef.current.length === 0) {
         const hitBed = hitTestBeds(w, bedsRef.current);
@@ -707,7 +707,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
 
     if (gridDragRef.current) {
-      console.log('[MM-GRID] dist:', Math.hypot(wx - gridDragRef.current.startX, wy - gridDragRef.current.startY), 'moved:', gridDragRef.current.moved);
+      console.log('[MM-GRID] dist:', Math.hypot(w.x - gridDragRef.current.startWorld.x, w.y - gridDragRef.current.startWorld.y), 'moved:', gridDragRef.current.moved);
       const { startCell, startWorld, moved } = gridDragRef.current;
       if (!moved && Math.hypot(w.x - startWorld.x, w.y - startWorld.y) > 4) {
         gridDragRef.current.moved = true;
@@ -754,7 +754,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
   }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     console.log('[MU] button:', e.evt.button, 'pointerType:', (e.evt as PointerEvent).pointerType);
     if (resizeRef.current) {
       const { bedId } = resizeRef.current;
@@ -782,7 +782,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       gridDragRef.current = null;
       if (wasMoved) {
         gridCreateDoneRef.current = true;
-        console.log('[MU-GRID] wasMoved:', gridDragRef.current.moved, 'preview:', gridPreviewRef?.current ?? 'NO_REF');
+        console.log('[MU-GRID] wasMoved:', wasMoved, 'preview:', gridPreviewRef?.current ?? 'NO_REF');
         const preview = gridPreviewRef.current;
         setGridPreviewSynced(null);
         if (preview && !preview.overlap) {
