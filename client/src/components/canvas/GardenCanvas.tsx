@@ -656,8 +656,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, panActive, spaceHeld]);
 
   const handleMouseMove = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
+    console.log('[MM] top');
     const stage = stageRef.current; if (!stage) return;
-    const p = stage.getPointerPosition(); if (!p) return;
+    const p = stage.getPointerPosition();
+    console.log('[MM] pointer:', p);
+    if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
 
     if (mode === 'freeform') setCursorWorld(w);
