@@ -961,6 +961,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     onSelectBed(hit ?? null);
   }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingRemovalSynced]);
 
+  const handleTap = useCallback((e: Konva.KonvaEventObject<Event>) => {
+    handleClick(e as unknown as Konva.KonvaEventObject<MouseEvent>);
+  }, [handleClick]);
+
   const handleDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = e.target.getStage(); if (!stage) return;
     const p = stage.getPointerPosition(); if (!p) return;
@@ -1118,6 +1122,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onClick={handleClick}
+        onTap={handleTap}
         onDblClick={handleDblClick}
       >
         {/* Layer 1: grid lines */}
