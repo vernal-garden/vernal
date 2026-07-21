@@ -593,7 +593,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [applyZoom]);
 
   const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
-    console.log('[MD] button:', e.evt.button, 'pointerType:', (e.evt as PointerEvent).pointerType, 'type:', e.evt.type);
     if (e.evt.button !== 0) return;
     const stage = stageRef.current; if (!stage) return;
     const isPanning = panActive || spaceHeld;
@@ -643,7 +642,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       }
       const cell = worldToCell(w.x, w.y);
       gridDragRef.current = { startCell: cell, startWorld: w, curCell: cell, moved: false };
-      console.log('[MD-GRID] drag started at world:', w.x, w.y);
     } else {
       if (freeformPtsRef.current.length === 0) {
         const hitBed = hitTestBeds(w, bedsRef.current);
@@ -656,11 +654,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, panActive, spaceHeld]);
 
   const handleMouseMove = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
-    console.log('[MM] top');
     const stage = stageRef.current; if (!stage) return;
-    const p = stage.getPointerPosition();
-    console.log('[MM] pointer:', p);
-    if (!p) return;
+    const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
 
     if (mode === 'freeform') setCursorWorld(w);
@@ -710,7 +705,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
 
     if (gridDragRef.current) {
-      console.log('[MM-GRID] dist:', Math.hypot(w.x - gridDragRef.current.startWorld.x, w.y - gridDragRef.current.startWorld.y), 'moved:', gridDragRef.current.moved);
       const { startCell, startWorld, moved } = gridDragRef.current;
       if (!moved && Math.hypot(w.x - startWorld.x, w.y - startWorld.y) > 4) {
         gridDragRef.current.moved = true;
@@ -757,8 +751,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
   }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
-  const handleMouseUp = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
-    console.log('[MU] button:', e.evt.button, 'pointerType:', (e.evt as PointerEvent).pointerType);
+  const handleMouseUp = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
     if (resizeRef.current) {
       const { bedId } = resizeRef.current;
       resizeRef.current = null;
@@ -785,7 +778,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       gridDragRef.current = null;
       if (wasMoved) {
         gridCreateDoneRef.current = true;
-        console.log('[MU-GRID] wasMoved:', wasMoved, 'preview:', gridPreviewRef?.current ?? 'NO_REF');
         const preview = gridPreviewRef.current;
         setGridPreviewSynced(null);
         if (preview && !preview.overlap) {
@@ -1100,7 +1092,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   })();
 
   return (
-    <div style={{ position: 'relative', width: size.w, height: size.h }}>
+    <div style={{ position: 'relative', width: size.w, height: size.h, touchAction: 'none' }}>
       <Stage
         ref={stageRef}
         width={size.w}
