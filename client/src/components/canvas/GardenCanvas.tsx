@@ -532,25 +532,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     });
   }, [latestPlacing, conflictedIds, relationshipBetween]);
 
-  useEffect(() => {
-    const container = stageRef.current?.container();
-    if (!container) return;
-    const log = (e: Event) => {
-      const pe = e as PointerEvent;
-      console.log('[NATIVE]', e.type, 'id:', pe.pointerId, 'x:', pe.clientX, 'y:', pe.clientY);
-    };
-    container.addEventListener('pointerdown', log);
-    container.addEventListener('pointermove', log);
-    container.addEventListener('pointerup', log);
-    container.addEventListener('pointercancel', log);
-    return () => {
-      container.removeEventListener('pointerdown', log);
-      container.removeEventListener('pointermove', log);
-      container.removeEventListener('pointerup', log);
-      container.removeEventListener('pointercancel', log);
-    };
-  }, []);
-
   const applyZoom = useCallback((newScale: number, cx: number, cy: number) => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -612,7 +593,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [applyZoom]);
 
   const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (e.evt.button !== 0) return;
+    if ('button' in e.evt && (e.evt as unknown as MouseEvent).button !== 0) return;
     const stage = stageRef.current; if (!stage) return;
     const isPanning = panActive || spaceHeld;
     if (isPanning) return;
@@ -673,7 +654,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, panActive, spaceHeld]);
 
   const handleMouseMove = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
-    console.log('[MM] top');
     const stage = stageRef.current; if (!stage) return;
     const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
@@ -771,7 +751,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
   }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
-  const handleMouseUp = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
+  const handleMouseUp = useCallback((_e?: Konva.KonvaEventObject<MouseEvent>) => {
     if (resizeRef.current) {
       const { bedId } = resizeRef.current;
       resizeRef.current = null;
@@ -845,6 +825,18 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     setDragOffsetSynced(null);
     setMoveOverlapSynced(false);
   }, [onCreateBed, onUpdateBedGeometry, onOverlapWarning, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
+
+  const handleTouchStart = useCallback((e: Konva.KonvaEventObject<TouchEvent>) => {
+    handleMouseDown(e as unknown as Konva.KonvaEventObject<MouseEvent>);
+  }, [handleMouseDown]);
+
+  const handleTouchMove = useCallback((e: Konva.KonvaEventObject<TouchEvent>) => {
+    handleMouseMove(e as unknown as Konva.KonvaEventObject<MouseEvent>);
+  }, [handleMouseMove]);
+
+  const handleTouchEnd = useCallback(() => {
+    handleMouseUp();
+  }, [handleMouseUp]);
 
   const handleClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     if (resizeDoneRef.current) { resizeDoneRef.current = false; return; }
@@ -1122,6 +1114,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
         onClick={handleClick}
         onDblClick={handleDblClick}
       >
