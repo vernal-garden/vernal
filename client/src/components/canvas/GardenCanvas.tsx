@@ -532,6 +532,25 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     });
   }, [latestPlacing, conflictedIds, relationshipBetween]);
 
+  useEffect(() => {
+    const container = stageRef.current?.container();
+    if (!container) return;
+    const log = (e: Event) => {
+      const pe = e as PointerEvent;
+      console.log('[NATIVE]', e.type, 'id:', pe.pointerId, 'x:', pe.clientX, 'y:', pe.clientY);
+    };
+    container.addEventListener('pointerdown', log);
+    container.addEventListener('pointermove', log);
+    container.addEventListener('pointerup', log);
+    container.addEventListener('pointercancel', log);
+    return () => {
+      container.removeEventListener('pointerdown', log);
+      container.removeEventListener('pointermove', log);
+      container.removeEventListener('pointerup', log);
+      container.removeEventListener('pointercancel', log);
+    };
+  }, []);
+
   const applyZoom = useCallback((newScale: number, cx: number, cy: number) => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -654,6 +673,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, panActive, spaceHeld]);
 
   const handleMouseMove = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
+    console.log('[MM] top');
     const stage = stageRef.current; if (!stage) return;
     const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
