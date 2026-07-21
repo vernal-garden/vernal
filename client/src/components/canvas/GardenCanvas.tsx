@@ -532,6 +532,14 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     });
   }, [latestPlacing, conflictedIds, relationshipBetween]);
 
+  // [ring-diag] observe conflictedIds prop as it reaches the canvas
+  useEffect(() => {
+    console.log('[ring-diag][canvas] conflictedIds prop', {
+      size: conflictedIds?.size ?? 0,
+      ids: conflictedIds ? [...conflictedIds] : null,
+    });
+  }, [conflictedIds]);
+
   const applyZoom = useCallback((newScale: number, cx: number, cy: number) => {
     const stage = stageRef.current;
     if (!stage) return;

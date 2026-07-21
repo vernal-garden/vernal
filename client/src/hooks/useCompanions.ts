@@ -35,6 +35,13 @@ export function useCompanions(seedIds: Set<string>) {
       }));
       cacheRef.current.set(id, entries);
       setCacheVersion(v => v + 1);
+      // [ring-diag] companion data loaded
+      console.log('[ring-diag][companions] loaded', {
+        seedId: id,
+        entryCount: entries.length,
+        antagonists: entries.filter(e => e.relationship === 'antagonistic').map(e => e.id),
+        cacheSize: cacheRef.current.size,
+      });
     } catch {
       // On error, store empty array to avoid retrying
       cacheRef.current.set(id, []);

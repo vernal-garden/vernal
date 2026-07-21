@@ -29,6 +29,20 @@ export function deriveConflicts({
         for (let j = i + 1; j < plantings.length; j++) {
           const a = plantings[i];
           const b = plantings[j];
+          // [ring-diag] grid pair inspection
+          {
+            const _dx = a.cell && b.cell ? Math.abs(a.cell.x - b.cell.x) : null;
+            const _dy = a.cell && b.cell ? Math.abs(a.cell.y - b.cell.y) : null;
+            const _rel = (a.companionSeedId && b.companionSeedId)
+              ? relationshipBetween(a.companionSeedId, b.companionSeedId) : 'no-seed-id';
+            console.log('[ring-diag][grid]', {
+              bed: bed.id, aId: a.id, bId: b.id,
+              aSeed: a.companionSeedId, bSeed: b.companionSeedId,
+              aCell: a.cell, bCell: b.cell,
+              dx: _dx, dy: _dy, adjacent: _dx != null && (_dx + _dy!) === 1,
+              rel: _rel,
+            });
+          }
           if (a.companionSeedId == null || b.companionSeedId == null) continue;
           if (a.cell == null || b.cell == null) continue;
           const dx = Math.abs(a.cell.x - b.cell.x);
@@ -47,6 +61,30 @@ export function deriveConflicts({
         for (let j = i + 1; j < plantings.length; j++) {
           const a = plantings[i];
           const b = plantings[j];
+          // [ring-diag] freeform pair inspection
+          {
+            let _dist: number | null = null;
+            let _threshold: number | null = null;
+            if (a.point && b.point && a.spacingInches != null && b.spacingInches != null) {
+              const _spA = a.spacingInches * (GRID_PX / 12);
+              const _spB = b.spacingInches * (GRID_PX / 12);
+              const _ddx = a.point.x - b.point.x;
+              const _ddy = a.point.y - b.point.y;
+              _dist = Math.sqrt(_ddx * _ddx + _ddy * _ddy);
+              _threshold = Math.max(_spA / 2 + _spB / 2, GRID_PX);
+            }
+            const _rel = (a.companionSeedId && b.companionSeedId)
+              ? relationshipBetween(a.companionSeedId, b.companionSeedId) : 'no-seed-id';
+            console.log('[ring-diag][freeform]', {
+              bed: bed.id, aId: a.id, bId: b.id,
+              aSeed: a.companionSeedId, bSeed: b.companionSeedId,
+              aPoint: a.point, bPoint: b.point,
+              aSpacing: a.spacingInches, bSpacing: b.spacingInches,
+              dist: _dist, threshold: _threshold,
+              adjacent: _dist != null && _threshold != null && _dist < _threshold,
+              rel: _rel,
+            });
+          }
           if (a.companionSeedId == null || b.companionSeedId == null) continue;
           if (a.spacingInches == null || b.spacingInches == null) continue;
           if (a.point == null || b.point == null) continue;
@@ -66,6 +104,13 @@ export function deriveConflicts({
       }
     }
   }
+
+  // [ring-diag] derivation result
+  console.log('[ring-diag][result]', {
+    conflictedIds: [...conflictedIds],
+    conflictedBedIds: [...conflictedBedIds],
+    bedCount: beds.length,
+  });
 
   return { conflictedIds, conflictedBedIds };
 }
