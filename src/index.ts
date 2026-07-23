@@ -14,6 +14,7 @@ import meRouter from './routes/me';
 import seedsRouter from './routes/seeds';
 import correctionsRouter from './routes/corrections';
 import weatherRouter from './routes/weather';
+import subscriptionRouter, { handleStripeWebhook } from './routes/subscription';
 import { sessionMiddleware } from './middleware/session';
 import { initPassport, passport } from './lib/oauth/index';
 
@@ -41,6 +42,11 @@ app.use(
   }),
 );
 
+// ── Stripe webhook ───────────────────────────────────────────────────────────
+// Must be mounted before express.json() — Stripe signature verification
+// requires the raw, unparsed request body.
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
+
 // ── Body parsing ─────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -65,6 +71,7 @@ app.use('/api/me', meRouter);
 app.use('/api/seeds', seedsRouter);
 app.use('/api/corrections', correctionsRouter);
 app.use('/api/weather', weatherRouter);
+app.use('/api/subscription', subscriptionRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
