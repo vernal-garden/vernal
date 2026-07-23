@@ -21,7 +21,8 @@ export type SessionState =
   | { kind: 'loading' }
   | { kind: 'guest'; expiresAt: string; daysRemaining: number; gardenCount: number }
   | { kind: 'account'; account: SessionAccount; pendingGuestData: PendingGuestData | null; gardenCount: number }
-  | { kind: 'expired'; recoverable: boolean };
+  | { kind: 'expired'; recoverable: boolean }
+  | { kind: 'unreachable' };
 
 export interface AuthContextValue {
   state: SessionState;
@@ -94,8 +95,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []); // bootstrapped ref is stable; no deps needed
 
   useEffect(() => {
-    resolveSession().catch(() => {
-      setState({ kind: 'expired', recoverable: false });
+    resolveSession().catch((err: unknown) => {
+      // fetch() rejects with a non-ApiError (e.g. TypeError) when the request
+      // never reached the server at all — that's a connectivity problem, not
+      // an actual expired/invalid session.
+      if (err instanceof api.ApiError) {
+        setState({ kind: 'expired', recoverable: false });
+      } else {
+        setState({ kind: 'unreachable' });
+      }
     });
   }, [resolveSession]);
 
