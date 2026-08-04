@@ -221,9 +221,9 @@ function FreeView() {
             }}
           >
             <p style={bodyTextSt}>
-              Vernal is open-core: garden planning, the seed catalogue, and planting guidance stay free for
-              everyone, always. Supporter subscriptions fund hosting and ongoing development — including
-              features like weather integration and soil tracking — without ads or selling your data.
+              Vernal is open-core. Garden planning, the seed catalogue, and planting guidance stay free for
+              everyone, always. Supporter subscriptions fund hosting and ongoing development, including
+              features like weather integration and soil tracking. No ads, and we never sell your data.
             </p>
           </div>
         )}
