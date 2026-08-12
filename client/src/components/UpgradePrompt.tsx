@@ -1,11 +1,26 @@
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { FEATURE_GATES } from '../lib/featureGates';
 
 interface Props {
   gateKey: string;
 }
 
+const primaryButtonSt: React.CSSProperties = {
+  padding: '10px 24px',
+  fontSize: 14,
+  fontFamily: 'var(--font-ui)',
+  fontWeight: 600,
+  border: 'none',
+  borderRadius: 'var(--r-md)',
+  background: 'var(--c-primary)',
+  color: 'var(--c-text-on-primary)',
+  cursor: 'pointer',
+};
+
 export default function UpgradePrompt({ gateKey }: Props) {
   const gate = FEATURE_GATES[gateKey];
+  const navigate = useNavigate();
   return (
     <div style={{
       maxWidth: 480, margin: '0 auto',
@@ -37,6 +52,9 @@ export default function UpgradePrompt({ gateKey }: Props) {
       }}>
         Upgrade to <strong style={{ color: 'var(--c-primary)' }}>Supporter</strong> to unlock this feature.
       </p>
+      <button type="button" onClick={() => navigate('/account')} style={{ ...primaryButtonSt, marginTop: 'var(--sp-4)' }}>
+        Learn more & upgrade
+      </button>
     </div>
   );
 }
