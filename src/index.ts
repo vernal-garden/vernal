@@ -1,8 +1,11 @@
+import './instrument';
 import express, { Application } from 'express';
+import * as Sentry from '@sentry/node';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
+import { logger } from './lib/logger';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import catalogueRouter from './routes/catalogue';
@@ -77,11 +80,24 @@ app.use('/api/admin', adminRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
+Sentry.setupExpressErrorHandler(app);
+
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  logger.error('Unhandled error', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 // ── Start ────────────────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
-    console.log(`[vernal] API running → http://localhost:${PORT}`);
-    console.log(`[vernal] Environment: ${process.env.NODE_ENV ?? 'development'}`);
+    logger.info(`API running → http://localhost:${PORT}`);
+    logger.info(`Environment: ${process.env.NODE_ENV ?? 'development'}`);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    logger.error('Unhandled promise rejection', reason instanceof Error ? reason : new Error(String(reason)));
+    Sentry.captureException(reason);
+    process.exit(1);
   });
 }
 
