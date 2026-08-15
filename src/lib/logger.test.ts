@@ -54,4 +54,59 @@ describe('logger', () => {
       expect(parsed.err).toBe('string reason');
     });
   });
+
+  describe('logger.info redaction', () => {
+    it('redacts a nested sensitive key', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      logger.info('profile updated', { user: { email: 'a@b.com' } });
+
+      const output = logSpy.mock.calls[0][0] as string;
+      expect(output).toContain('[REDACTED]');
+      expect(output).not.toContain('a@b.com');
+    });
+
+    it('redacts a sensitive key inside an array of objects', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      logger.info('bulk import', { users: [{ email: 'a@b.com' }, { email: 'c@d.com' }] });
+
+      const output = logSpy.mock.calls[0][0] as string;
+      expect(output).toContain('[REDACTED]');
+      expect(output).not.toContain('a@b.com');
+      expect(output).not.toContain('c@d.com');
+    });
+
+    it('leaves a non-sensitive nested value intact', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      logger.info('garden created', { garden: { name: 'Backyard' } });
+
+      const output = logSpy.mock.calls[0][0] as string;
+      expect(output).toContain('Backyard');
+    });
+
+    it('does not throw on a circular context object', () => {
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      type CircularContext = Record<string, unknown> & { self?: CircularContext };
+      const circular: CircularContext = { name: 'loop' };
+      circular.self = circular;
+
+      expect(() => logger.info('circular context', circular)).not.toThrow();
+      const output = logSpy.mock.calls[0][0] as string;
+      expect(output).toContain('[CIRCULAR]');
+    });
+  });
+
+  describe('logger.warn', () => {
+    it('writes to console.warn, not console.log', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      logger.warn('low disk space');
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(logSpy).not.toHaveBeenCalled();
+    });
+  });
 });

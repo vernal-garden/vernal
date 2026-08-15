@@ -3,12 +3,34 @@ type LogContext = Record<string, unknown>;
 
 const SENSITIVE_KEY_PATTERN = /email|password|token|secret/i;
 
-function redact(context: LogContext): LogContext {
-  const safe: LogContext = {};
-  for (const [key, value] of Object.entries(context)) {
-    safe[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[REDACTED]' : value;
+function isPlainObject(value: unknown): value is LogContext {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function redactValue(value: unknown, seen: WeakSet<object>): unknown {
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return '[CIRCULAR]';
+    seen.add(value);
+    return value.map((item) => redactValue(item, seen));
   }
-  return safe;
+
+  if (isPlainObject(value)) {
+    if (seen.has(value)) return '[CIRCULAR]';
+    seen.add(value);
+    const safe: LogContext = {};
+    for (const [key, v] of Object.entries(value)) {
+      safe[key] = SENSITIVE_KEY_PATTERN.test(key) ? '[REDACTED]' : redactValue(v, seen);
+    }
+    return safe;
+  }
+
+  return value;
+}
+
+function redact(context: LogContext): LogContext {
+  return redactValue(context, new WeakSet()) as LogContext;
 }
 
 function serializeError(error: unknown): LogContext {
@@ -24,7 +46,7 @@ function isProduction(): boolean {
 
 function write(level: LogLevel, message: string, context: LogContext = {}) {
   const safeContext = redact(context);
-  const sink = level === 'error' ? console.error : console.log;
+  const sink = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
 
   if (isProduction()) {
     sink(JSON.stringify({ ts: new Date().toISOString(), level, message, ...safeContext }));

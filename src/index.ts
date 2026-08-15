@@ -97,7 +97,7 @@ if (process.env.NODE_ENV !== 'test') {
   process.on('unhandledRejection', (reason) => {
     logger.error('Unhandled promise rejection', reason instanceof Error ? reason : new Error(String(reason)));
     Sentry.captureException(reason);
-    process.exit(1);
+    void Sentry.flush(2000).finally(() => process.exit(1));
   });
 }
 

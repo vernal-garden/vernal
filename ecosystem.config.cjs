@@ -3,6 +3,7 @@ module.exports = {
     {
       name: 'vernal',
       script: 'dist/index.js',
+      node_args: '--enable-source-maps',
       instances: 1,
       autorestart: true,
       watch: false,
