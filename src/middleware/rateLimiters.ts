@@ -9,6 +9,13 @@ import type { Request } from 'express';
 // client can rotate through its assigned block to dodge the limit entirely).
 const byIp = (req: Request) => ipKeyGenerator(req.ip ?? 'unknown');
 
+// Every request in the test suite originates from the same loopback IP, so a
+// per-IP login/reset cap that's meaningful against a real attacker (10 per 15
+// min) is exhausted almost immediately by unrelated test files that legitimately
+// log in many times. Skip these two limiters under test — production behavior
+// (the actual max/window below) is unchanged; only counting is bypassed.
+const skipInTest = () => process.env.NODE_ENV === 'test';
+
 // /api/auth/login, /api/auth/register, /api/auth/forgot-password
 export const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -16,6 +23,7 @@ export const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: byIp,
+  skip: skipInTest,
   message: { error: 'Too many requests — please try again later' },
 });
 
@@ -26,6 +34,7 @@ export const passwordResetLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: byIp,
+  skip: skipInTest,
   message: { error: 'Too many requests — please try again later' },
 });
 
