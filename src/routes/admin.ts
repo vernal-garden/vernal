@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
 import { requireAdmin } from '../middleware/auth';
+import { isNumericId } from '../lib/validation';
 
 const router = Router();
 router.use(requireAdmin);
@@ -82,11 +83,12 @@ router.get('/accounts', async (req, res) => {
 
 router.get('/accounts/:id', async (req, res) => {
   try {
-    const id = parseInt(req.params.id as string, 10);
-    if (Number.isNaN(id)) {
-      res.status(404).json({ error: 'Not found' });
+    const rawId = req.params.id as string;
+    if (!isNumericId(rawId)) {
+      res.status(400).json({ error: 'Invalid id' });
       return;
     }
+    const id = parseInt(rawId, 10);
 
     const [accountResult, gardenCountResult] = await Promise.all([
       db.query(

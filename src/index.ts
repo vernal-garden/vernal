@@ -38,11 +38,29 @@ const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
 // ── Security ─────────────────────────────────────────────────────────────────
-app.use(helmet());
+// This server returns JSON only — it never serves HTML, so there's nothing for
+// a CSP to allow. Deny every fetch directive; this also blocks XSS payloads
+// from doing anything useful if one ever gets reflected into an error body.
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        scriptSrc: ["'none'"],
+        styleSrc: ["'none'"],
+        imgSrc: ["'none'"],
+        connectSrc: ["'self'"],
+        frameSrc: ["'none'"],
+        objectSrc: ["'none'"],
+      },
+    },
+  }),
+);
 app.use(
   cors({
     origin: FRONTEND_URL,
     credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   }),
 );
 

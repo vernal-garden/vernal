@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { searchSeeds, listFamilies, getSeedById, getCompanionsForSeed } from '../services/cambium';
+import { isNumericId } from '../lib/validation';
 
 const router = Router();
 
@@ -9,6 +10,7 @@ const catalogueLimiter = rateLimit({
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip ?? 'unknown'),
   message: { error: 'Too many requests' },
 });
 
@@ -30,7 +32,7 @@ router.get('/families', async (_req, res) => {
 router.get('/seeds/:id/companions', async (req, res) => {
   const id = req.params.id as string;
 
-  if (!/^\d+$/.test(id)) {
+  if (!isNumericId(id)) {
     return res.status(400).json({ error: 'Invalid id' });
   }
 
@@ -88,7 +90,7 @@ router.get('/seeds', async (req, res) => {
 router.get('/seeds/:id', async (req, res) => {
   const id = req.params.id as string;
 
-  if (!/^\d+$/.test(id)) {
+  if (!isNumericId(id)) {
     return res.status(400).json({ error: 'Invalid id' });
   }
 

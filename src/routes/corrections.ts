@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
+import { isNumericId } from '../lib/validation';
 
 const router = Router();
 router.use(requireAuth);
@@ -22,7 +23,7 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'cambiumSeedId is required' });
   }
   const cambiumSeedIdStr = String(rawCambiumSeedId);
-  if (!/^\d+$/.test(cambiumSeedIdStr)) {
+  if (!isNumericId(cambiumSeedIdStr)) {
     return res.status(400).json({ error: 'cambiumSeedId must be a numeric id' });
   }
 
