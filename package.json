@@ -33,6 +33,7 @@
     "express": "^5.0.0",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.0.0",
+    "lru-cache": "^11.5.2",
     "nodemailer": "^8.0.10",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
