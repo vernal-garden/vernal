@@ -1,10 +1,27 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 
 export default defineConfig({
   plugins: [
     react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      manifest: false, // we provide our own via index.html link tag
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/api/],
+        runtimeCaching: [
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith('/api'),
+            handler: 'NetworkOnly',
+          },
+        ],
+      },
+      devOptions: { enabled: false },
+    }),
     // sentryVitePlugin must be LAST in the plugins array.
     // org/project are hardcoded, not read from process.env — vite.config.ts
     // sees only the shell environment, and the deploy script never sources
