@@ -106,7 +106,10 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 // ── Start ────────────────────────────────────────────────────────────────────
-if (process.env.NODE_ENV !== 'test') {
+// E2E_LISTEN is the one exception to "never listen under NODE_ENV=test": the
+// Playwright suite needs a real bound server (unlike Vitest/supertest, which
+// import `app` in-process) while still getting test-mode DB/rate-limit behavior.
+if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
   app.listen(PORT, () => {
     logger.info(`API running → http://localhost:${PORT}`);
     logger.info(`Environment: ${process.env.NODE_ENV ?? 'development'}`);

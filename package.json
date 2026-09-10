@@ -22,7 +22,13 @@
     "clean:test-seeds": "tsx scripts/clean-test-seeds.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "pretest:e2e": "npm run build && npm --prefix client run build:test",
+    "test:e2e": "dotenv -e .env.test -- playwright test",
+    "pretest:e2e:headed": "npm run build && npm --prefix client run build:test",
+    "test:e2e:headed": "dotenv -e .env.test -- playwright test --headed",
+    "pretest:e2e:ui": "npm run build && npm --prefix client run build:test",
+    "test:e2e:ui": "dotenv -e .env.test -- playwright test --ui"
   },
   "dependencies": {
     "@sentry/node": "^10.70.0",
@@ -43,6 +49,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@playwright/test": "^1.62.1",
     "@types/bcrypt": "^6.0.0",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.0",
@@ -56,6 +63,7 @@
     "@types/uuid": "^10.0.0",
     "@vitest/coverage-v8": "^2.0.0",
     "concurrently": "^9.1.2",
+    "dotenv-cli": "^11.0.0",
     "eslint": "^9.0.0",
     "eslint-config-prettier": "^9.0.0",
     "nodemon": "^3.0.0",

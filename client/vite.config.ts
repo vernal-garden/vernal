@@ -41,6 +41,17 @@ export default defineConfig({
       '/api': 'http://localhost:3005',
     },
   },
+  // Mirrors the dev proxy so `vite preview` (used by the Playwright E2E suite)
+  // can serve the built SPA and forward /api the same way Nginx does in production.
+  // Deliberately NOT 3000/3005 (the normal dev ports) — a dev backend or an
+  // unrelated project's server left running on those ports would otherwise get
+  // silently reused by Playwright's webServer instead of the E2E-dedicated one.
+  preview: {
+    port: 4173,
+    proxy: {
+      '/api': 'http://localhost:3105',
+    },
+  },
   build: {
     outDir: 'dist',
     sourcemap: 'hidden',
