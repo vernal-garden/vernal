@@ -5,7 +5,9 @@ import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
+import cron from 'node-cron';
 import { logger } from './lib/logger';
+import { runNightlyJob } from './jobs/nightly';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import catalogueRouter from './routes/catalogue';
@@ -114,6 +116,12 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
     logger.info(`API running → http://localhost:${PORT}`);
     logger.info(`Environment: ${process.env.NODE_ENV ?? 'development'}`);
   });
+
+  cron.schedule('0 3 * * *', () => {
+    console.log('[nightly] job starting');
+    runNightlyJob().catch((err) => console.error('[nightly] job error:', err));
+  });
+  console.log('[vernal] Nightly job scheduled at 03:00 UTC');
 
   process.on('unhandledRejection', (reason) => {
     logger.error('Unhandled promise rejection', reason instanceof Error ? reason : new Error(String(reason)));
