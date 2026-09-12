@@ -9,6 +9,7 @@ export interface SessionAccount {
   role: 'user' | 'admin';
   subscriptionTier: 'free' | 'supporter';
   deletionScheduledAt: string | null;
+  supporterPromptShown: boolean;
 }
 
 export interface PendingGuestData {
@@ -33,6 +34,7 @@ export interface AuthContextValue {
   daysRemaining: number | null;
   gardenCount: number | null;
   refetch: () => Promise<void>;
+  markSupporterPromptShown: () => Promise<void>;
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -63,10 +65,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Authenticated account ─ fetch gardens for requireOnboarding guard
     if (data['authenticated'] === true) {
-      const gardens = await api.get<{ data: unknown[] }>('/api/gardens');
+      const [gardens, me] = await Promise.all([
+        api.get<{ data: unknown[] }>('/api/gardens'),
+        api.get<{ data: { supporterPromptShown: boolean } }>('/api/me'),
+      ]);
       setState({
         kind: 'account',
-        account: { ...(data['account'] as SessionAccount), id: String((data['account'] as SessionAccount).id) },
+        account: {
+          ...(data['account'] as SessionAccount),
+          id: String((data['account'] as SessionAccount).id),
+          supporterPromptShown: me?.data.supporterPromptShown ?? false,
+        },
         pendingGuestData: (data['pendingGuestData'] as PendingGuestData | null) ?? null,
         gardenCount: gardens?.data.length ?? 0,
       });
@@ -93,6 +102,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Degenerate: bootstrap ran but still no session — show expired UI
     setState({ kind: 'expired', recoverable: false });
   }, []); // bootstrapped ref is stable; no deps needed
+
+  const markSupporterPromptShown = useCallback(async (): Promise<void> => {
+    try {
+      await api.post('/api/me/supporter-prompt/shown');
+      setState(prev =>
+        prev.kind === 'account'
+          ? { ...prev, account: { ...prev.account, supporterPromptShown: true } }
+          : prev,
+      );
+    } catch {
+      // Best-effort — a network blip should not break the placement flow.
+    }
+  }, []);
 
   useEffect(() => {
     resolveSession().catch((err: unknown) => {
@@ -138,6 +160,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         daysRemaining,
         gardenCount,
         refetch: resolveSession,
+        markSupporterPromptShown,
       }}
     >
       {children}

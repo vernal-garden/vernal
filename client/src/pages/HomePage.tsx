@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { useGardenList } from '../hooks/useGardenList';
 import { useGarden } from '../hooks/useGarden';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../hooks/useGarden';
@@ -18,9 +19,12 @@ import type { PersonalSeedDetail } from '../types/catalogue';
 import { useCompanions } from '../hooks/useCompanions';
 import { useConflicts } from '../hooks/useConflicts';
 import { computeBedOccupancy } from '../lib/crowding';
+import SupporterPromptModal from '../components/SupporterPromptModal';
 
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
+  const { account, markSupporterPromptShown } = useAuth();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [activeId, setActiveId] = useState<string | null>(() => searchParams.get('garden'));
   const [selectedBed, setSelectedBed] = useState<Bed | null>(null);
@@ -38,6 +42,9 @@ export default function HomePage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [armedSeed, setArmedSeed] = useState<ArmedSeed | null>(null);
   const [newSeedFormOpen, setNewSeedFormOpen] = useState(false);
+
+  // Phase 35: Supporter prompt
+  const [supporterPromptOpen, setSupporterPromptOpen] = useState(false);
 
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
   const { garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed } = useGarden(resolvedId);
@@ -286,8 +293,16 @@ export default function HomePage() {
       ...(point ? { point } : {}),
       ...(seed.source === 'catalogue' ? { cambiumSeedId: seed.id } : { seedId: seed.id }),
     };
-    await placePlanting(bedId, payload, seed.commonName);
-  }, [armedSeed, placePlanting]);
+    const placed = await placePlanting(bedId, payload, seed.commonName);
+    if (
+      placed &&
+      date &&
+      account?.subscriptionTier === 'free' &&
+      !account?.supporterPromptShown
+    ) {
+      setSupporterPromptOpen(true);
+    }
+  }, [armedSeed, placePlanting, account]);
 
   const handleConfirmRemoval = useCallback(async (planting: Planting) => {
     await deletePlanting(planting.id, planting.bedId);
@@ -496,6 +511,19 @@ export default function HomePage() {
           onFocusBed={handleFocusBed}
         />
       )}
+
+      <SupporterPromptModal
+        open={supporterPromptOpen}
+        onClose={() => {
+          markSupporterPromptShown();
+          setSupporterPromptOpen(false);
+        }}
+        onLearnMore={() => {
+          markSupporterPromptShown();
+          setSupporterPromptOpen(false);
+          navigate('/account');
+        }}
+      />
     </div>
   );
 }
