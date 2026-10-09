@@ -90,8 +90,8 @@ export function usePlantings(gardenId: string | null) {
       plantingDate?: string;
     },
     commonName?: string,
-  ): Promise<void> => {
-    if (!gardenId) return;
+  ): Promise<boolean> => {
+    if (!gardenId) return false;
     const tempId = `temp-${Date.now()}`;
     const optimistic: Planting = {
       id: tempId,
@@ -119,9 +119,11 @@ export function usePlantings(gardenId: string | null) {
       _addPlanting({ ...result, _commonName: commonName });
       seqRef.current += 1;
       setLatestPlacing({ id: result.id, seq: seqRef.current });
+      return true;
     } catch (e) {
       _removePlanting(tempId, bedId);
       setError(e instanceof Error ? e.message : 'Failed to place planting');
+      return false;
     }
   }, [gardenId, _addPlanting, _removePlanting]);
 

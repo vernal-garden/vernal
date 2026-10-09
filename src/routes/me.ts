@@ -26,6 +26,7 @@ interface AccountRow {
   subscription_tier: string;
   preferences: Record<string, unknown>;
   deletion_scheduled_at: string | null;
+  supporter_prompt_shown: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -33,7 +34,7 @@ interface AccountRow {
 const ACCOUNT_SELECT = `
   id::text, email, display_name, avatar_url, email_verified, zone,
   zone_location_label, last_spring_frost_date::text, first_fall_frost_date::text,
-  role, subscription_tier, preferences, deletion_scheduled_at,
+  role, subscription_tier, preferences, deletion_scheduled_at, supporter_prompt_shown,
   created_at, updated_at
 `;
 
@@ -52,6 +53,7 @@ function formatAccount(row: AccountRow) {
     subscriptionTier: row.subscription_tier,
     preferences: row.preferences ?? {},
     deletionScheduledAt: row.deletion_scheduled_at,
+    supporterPromptShown: row.supporter_prompt_shown,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -328,6 +330,23 @@ router.post('/cancel-deletion', async (req, res) => {
     res.json({ data: { deletionScheduledAt: null } });
   } catch (err) {
     console.error('POST /me/cancel-deletion error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/me/supporter-prompt/shown
+// Marks the one-time Supporter prompt as shown. One-way — idempotent, no unset endpoint.
+router.post('/supporter-prompt/shown', async (req, res) => {
+  const accountId = req.session!.account!.id;
+
+  try {
+    await db.query(
+      'UPDATE accounts SET supporter_prompt_shown = true, updated_at = NOW() WHERE id = $1',
+      [accountId],
+    );
+    res.json({ data: { supporterPromptShown: true } });
+  } catch (err) {
+    console.error('POST /me/supporter-prompt/shown error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -1,12 +1,14 @@
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, type RouteObject } from 'react-router-dom';
 import ProtectedRoute from './components/ProtectedRoute';
 import GuestRoute from './components/GuestRoute';
 import AccountRoute from './components/AccountRoute';
+import RouteErrorBoundary from './components/RouteErrorBoundary';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import OnboardingPage from './pages/OnboardingPage';
 import SessionExpiredPage from './pages/SessionExpiredPage';
+import ConnectionProblemPage from './pages/ConnectionProblemPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
 import MyGardensPage from './pages/MyGardensPage';
 import SeedCataloguePage from './pages/SeedCataloguePage';
@@ -18,7 +20,7 @@ import AmendmentPage from './pages/AmendmentPage';
 import AccountPage from './pages/AccountPage';
 import NotFoundPage from './pages/NotFoundPage';
 
-const router = createBrowserRouter([
+const routes: RouteObject[] = [
   {
     path: '/',
     element: (
@@ -54,6 +56,10 @@ const router = createBrowserRouter([
   {
     path: '/session-expired',
     element: <SessionExpiredPage />,
+  },
+  {
+    path: '/connection-problem',
+    element: <ConnectionProblemPage />,
   },
   {
     path: '/reset-password',
@@ -127,6 +133,8 @@ const router = createBrowserRouter([
     path: '*',
     element: <NotFoundPage />,
   },
-]);
+];
+
+const router = createBrowserRouter(routes.map((route) => ({ ...route, errorElement: <RouteErrorBoundary /> })));
 
 export default router;

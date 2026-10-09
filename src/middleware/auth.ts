@@ -32,8 +32,15 @@ export function requireSession(req: Request, res: Response, next: NextFunction):
 // Blocks requests from accounts not on the 'supporter' subscription tier.
 // Chain after requireAuth — assumes req.session.account exists.
 export function requireSupporter(req: Request, res: Response, next: NextFunction): void {
-  if (!req.session || req.session.isGuest || req.session.account?.subscriptionTier !== 'supporter') {
-    res.status(402).json({ upgrade_required: true });
+  if (!req.session || req.session.isGuest || !req.session.account) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  if (req.session.account.subscriptionTier !== 'supporter') {
+    res.status(402).json({
+      error: 'Supporter subscription required',
+      upgrade_required: true,
+    });
     return;
   }
   next();

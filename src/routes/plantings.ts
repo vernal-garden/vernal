@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
 import { requireSession } from '../middleware/auth';
+import { writeLimiter } from '../middleware/rateLimiters';
+import { isNumericId } from '../lib/validation';
 import type { SessionData } from '../types';
 
 // ── Three routers, all with mergeParams ──────────────────────────────────────
@@ -166,16 +168,12 @@ function isValidDate(v: unknown): boolean {
   return v === null || (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v));
 }
 
-function isValidId(v: string): boolean {
-  return /^\d+$/.test(v);
-}
-
 // ── gardenPlantingsRouter: GET /api/gardens/:gardenId/plantings ───────────────
 
 gardenPlantingsRouter.get('/', async (req, res) => {
   const { gardenId } = req.params as Record<string, string>;
 
-  if (!isValidId(gardenId)) {
+  if (!isNumericId(gardenId)) {
     return res.status(400).json({ error: 'Invalid id' });
   }
 
@@ -210,8 +208,8 @@ gardenPlantingsRouter.get('/', async (req, res) => {
 plantingsNestedRouter.get('/', async (req, res) => {
   const { gardenId, bedId } = req.params as Record<string, string>;
 
-  if (!isValidId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
-  if (!isValidId(bedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const gardenFound = await ownGarden(gardenId, req.session!);
@@ -235,13 +233,13 @@ plantingsNestedRouter.get('/', async (req, res) => {
 
 // ── plantingsNestedRouter: POST /api/gardens/:gardenId/beds/:bedId/plantings ─
 
-plantingsNestedRouter.post('/', async (req, res) => {
+plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const { gardenId, bedId } = req.params as Record<string, string>;
 
-  if (!isValidId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
-  if (!isValidId(bedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const gardenFound = await ownGarden(gardenId, req.session!);
@@ -377,12 +375,12 @@ plantingsNestedRouter.post('/', async (req, res) => {
 
 // ── plantingsFlatRouter: PATCH /api/plantings/:id ────────────────────────────
 
-plantingsFlatRouter.patch('/:id', async (req, res) => {
+plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const plantingId = req.params.id as string;
 
-  if (!isValidId(plantingId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(plantingId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const { rows: existing } = await db.query<PatchPlantingRow>(
@@ -498,12 +496,12 @@ plantingsFlatRouter.patch('/:id', async (req, res) => {
 
 // ── plantingsFlatRouter: DELETE /api/plantings/:id ───────────────────────────
 
-plantingsFlatRouter.delete('/:id', async (req, res) => {
+plantingsFlatRouter.delete('/:id', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const plantingId = req.params.id as string;
 
-  if (!isValidId(plantingId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(plantingId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const { rows } = await db.query(

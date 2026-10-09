@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
+import { isNumericId } from '../lib/validation';
 
 export const amendmentsNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/amendments
 export const amendmentsFlatRouter   = Router({ mergeParams: true }); // /api/amendments/:id
@@ -16,7 +17,6 @@ const AMENDMENT_TYPES = [
 ] as const;
 type AmendmentType = typeof AMENDMENT_TYPES[number];
 
-const DIGITS_RE = /^\d+$/;
 const DATE_RE   = /^\d{4}-\d{2}-\d{2}$/;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ amendmentsNestedRouter.get('/', async (req: Request, res: Response): Promise<voi
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
-  if (!DIGITS_RE.test(gardenId)) {
+  if (!isNumericId(gardenId)) {
     res.status(404).json({ error: 'Garden not found' });
     return;
   }
@@ -117,7 +117,7 @@ amendmentsNestedRouter.post('/', async (req: Request, res: Response): Promise<vo
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
-  if (!DIGITS_RE.test(gardenId)) {
+  if (!isNumericId(gardenId)) {
     res.status(404).json({ error: 'Garden not found' });
     return;
   }
@@ -132,7 +132,7 @@ amendmentsNestedRouter.post('/', async (req: Request, res: Response): Promise<vo
     res.status(400).json({ error: 'bedIds must be a non-empty array' });
     return;
   }
-  if ((bedIds as unknown[]).some((id) => !DIGITS_RE.test(String(id)))) {
+  if ((bedIds as unknown[]).some((id) => !isNumericId(String(id)))) {
     res.status(400).json({ error: 'bedIds must contain positive integers' });
     return;
   }
@@ -223,7 +223,7 @@ amendmentsFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<
   const accountId   = req.session!.account!.id;
   const amendmentId = req.params.id as string;
 
-  if (!DIGITS_RE.test(amendmentId)) {
+  if (!isNumericId(amendmentId)) {
     res.status(404).json({ error: 'Amendment not found' });
     return;
   }
@@ -251,7 +251,7 @@ amendmentsFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<
       res.status(400).json({ error: 'bedIds must be a non-empty array' });
       return;
     }
-    if ((bedIds as unknown[]).some((id) => !DIGITS_RE.test(String(id)))) {
+    if ((bedIds as unknown[]).some((id) => !isNumericId(String(id)))) {
       res.status(400).json({ error: 'bedIds must contain positive integers' });
       return;
     }
@@ -351,7 +351,7 @@ amendmentsFlatRouter.delete('/:id', async (req: Request, res: Response): Promise
   const accountId   = req.session!.account!.id;
   const amendmentId = req.params.id as string;
 
-  if (!DIGITS_RE.test(amendmentId)) {
+  if (!isNumericId(amendmentId)) {
     res.status(404).json({ error: 'Amendment not found' });
     return;
   }

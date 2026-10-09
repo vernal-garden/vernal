@@ -1,0 +1,137 @@
+name: Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '24', cache: 'npm' }
+      - run: npm ci
+      - run: npm --prefix client ci
+      - run: npm run type-check
+      - run: npm --prefix client run type-check
+      - run: npm run lint
+
+  e2e:
+    needs: checks
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vernal_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '24', cache: 'npm' }
+      - run: npm ci
+      - run: npm --prefix client ci
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vernal_test
+          DATABASE_SSL: 'false'
+        run: npm run migrate
+      - name: Vitest unit + integration tests
+        env:
+          NODE_ENV: test
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vernal_test
+          SESSION_SECRET: test-session-secret-at-least-32-chars-long
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
+          GOOGLE_CLIENT_ID: ci-dummy-client-id
+          GOOGLE_CLIENT_SECRET: ci-dummy-client-secret
+          ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          APP_URL: http://localhost:4173
+        run: npm test
+      - name: Build server and client
+        run: |
+          npm run build
+          npm --prefix client run build:test
+      - run: npx playwright install --with-deps chromium
+      - name: Playwright E2E tests
+        env:
+          NODE_ENV: test
+          E2E_LISTEN: 'true'
+          # Dedicated, non-standard ports — avoids collision with anything a
+          # runner image might already have bound to the normal dev ports.
+          PORT: 3105
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vernal_test
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vernal_test
+          BASE_URL: http://localhost:4173
+          FRONTEND_URL: http://localhost:4173
+          SESSION_SECRET: test-session-secret-at-least-32-chars-long
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_TEST_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_TEST_WEBHOOK_SECRET }}
+          STRIPE_PRICE_MONTHLY: ${{ secrets.STRIPE_TEST_PRICE_MONTHLY }}
+          STRIPE_PRICE_ANNUAL: ${{ secrets.STRIPE_TEST_PRICE_ANNUAL }}
+          STRIPE_PRICE_LIFETIME: ${{ secrets.STRIPE_TEST_PRICE_LIFETIME }}
+          STRIPE_SUCCESS_URL: http://localhost:4173/account?subscribed=true
+          STRIPE_CANCEL_URL: http://localhost:4173/account
+          GOOGLE_CLIENT_ID: ci-dummy-client-id
+          GOOGLE_CLIENT_SECRET: ci-dummy-client-secret
+          ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          APP_URL: http://localhost:4173
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  deploy:
+    name: Deploy to DigitalOcean
+    needs: [checks, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd /var/www/vernal
+            git fetch origin && git reset --hard ${{ github.sha }}
+            npm ci
+            npm run build
+            cd /var/www/vernal/client
+            npm ci
+            npm run build
+            cd /var/www/vernal
+            pm2 reload vernal --update-env
+            sleep 5
+            pm2 jlist | node -e '
+            const list = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const p = list.find(x => x.name === "vernal");
+            if (!p) { console.error("FAIL: vernal not in pm2 list"); process.exit(1); }
+            if (p.pm2_env.status !== "online") { console.error("FAIL: status " + p.pm2_env.status); process.exit(1); }
+            const upSec = (Date.now() - p.pm2_env.pm_uptime) / 1000;
+            if (upSec > 60) { console.error("FAIL: uptime " + upSec + "s — reload did not restart the process"); process.exit(1); }
+            console.log("OK: vernal online, uptime " + Math.round(upSec) + "s");
+            '
+            curl -fsS --max-time 10 http://localhost:3000/health
+            echo "Deploy complete: $(date)"

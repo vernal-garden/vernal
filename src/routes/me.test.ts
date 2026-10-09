@@ -70,6 +70,12 @@ describe('GET /api/me', () => {
     const res = await request(app).get('/api/me');
     expect(res.status).toBe(401);
   });
+
+  it('includes supporterPromptShown: false on a fresh account', async () => {
+    const res = await agent.get('/api/me');
+    expect(res.status).toBe(200);
+    expect(res.body.data.supporterPromptShown).toBe(false);
+  });
 });
 
 // ── Test 2: PATCH / — displayName validation ──────────────────────────────────
@@ -393,6 +399,41 @@ describe('POST /api/me/cancel-deletion', () => {
     const res = await agent.post('/api/me/cancel-deletion');
     expect(res.status).toBe(200);
     expect(res.body.data.deletionScheduledAt).toBeNull();
+  });
+});
+
+// ── Test 12.5: POST /supporter-prompt/shown ──────────────────────────────────
+
+describe('POST /api/me/supporter-prompt/shown', () => {
+  let agent: ReturnType<typeof request.agent>;
+  let accountId: number;
+
+  beforeAll(async () => {
+    accountId = await createUser('me-supporter-prompt@example.com');
+    agent = await loginAgent('me-supporter-prompt@example.com');
+  });
+
+  it('sets supporter_prompt_shown to true', async () => {
+    const res = await agent.post('/api/me/supporter-prompt/shown');
+    expect(res.status).toBe(200);
+    expect(res.body.data.supporterPromptShown).toBe(true);
+
+    const { rows } = await pool.query<{ supporter_prompt_shown: boolean }>(
+      'SELECT supporter_prompt_shown FROM accounts WHERE id = $1',
+      [accountId],
+    );
+    expect(rows[0].supporter_prompt_shown).toBe(true);
+  });
+
+  it('is idempotent — calling again still returns 200 with true', async () => {
+    const res = await agent.post('/api/me/supporter-prompt/shown');
+    expect(res.status).toBe(200);
+    expect(res.body.data.supporterPromptShown).toBe(true);
+  });
+
+  it('returns 401 with no session', async () => {
+    const res = await request(app).post('/api/me/supporter-prompt/shown');
+    expect(res.status).toBe(401);
   });
 });
 

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
+import { isNumericId } from '../lib/validation';
 
 const router = Router();
 router.use(requireAuth);
@@ -435,7 +436,7 @@ router.post('/add-from-cambium', async (req, res) => {
     return res.status(400).json({ error: 'cambiumSeedId is required' });
   }
   const cambiumSeedIdStr = String(rawId);
-  if (!/^\d+$/.test(cambiumSeedIdStr)) {
+  if (!isNumericId(cambiumSeedIdStr)) {
     return res.status(400).json({ error: 'cambiumSeedId must be a numeric id' });
   }
 
@@ -510,7 +511,7 @@ router.get('/:id', async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = req.params.id as string;
 
-  if (!/^\d+$/.test(seedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const seedResult = await db.query<SeedRow>(
@@ -569,7 +570,7 @@ router.patch('/:id', async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = req.params.id as string;
 
-  if (!/^\d+$/.test(seedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
 
   const body = req.body as Record<string, unknown>;
 
@@ -832,7 +833,7 @@ router.delete('/:id', async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = req.params.id as string;
 
-  if (!/^\d+$/.test(seedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const existing = await db.query(
@@ -868,7 +869,7 @@ router.post('/:id/contribute', async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = req.params.id as string;
 
-  if (!/^\d+$/.test(seedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const seedResult = await db.query<SeedRow>(

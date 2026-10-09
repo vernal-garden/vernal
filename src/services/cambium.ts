@@ -6,7 +6,7 @@ import type {
   SeedSearchOptions,
 } from '../types/cambium';
 
-const COMPANION_CONFIDENCE_THRESHOLD = 40;
+export const COMPANION_CONFIDENCE_THRESHOLD = 40;
 
 // ---------------------------------------------------------------------------
 // Row mappers

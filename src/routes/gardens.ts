@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
 import { requireSession } from '../middleware/auth';
+import { writeLimiter } from '../middleware/rateLimiters';
+import { isNumericId } from '../lib/validation';
 
 const router = Router();
 router.use(requireSession);
@@ -183,7 +185,7 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/gardens
-router.post('/', async (req, res) => {
+router.post('/', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const { name, style, zone, description, zoneLocationLabel, growingMethod } = req.body as Record<string, unknown>;
@@ -251,7 +253,7 @@ router.get('/:id', async (req, res) => {
   const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
-  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const gardenResult = await db.query<GardenRow>(
@@ -296,12 +298,12 @@ router.get('/:id', async (req, res) => {
 });
 
 // PATCH /api/gardens/:id
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
-  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const existing = await db.query(
@@ -381,12 +383,12 @@ router.patch('/:id', async (req, res) => {
 });
 
 // DELETE /api/gardens/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.id as string;
 
-  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const result = await db.query(
@@ -411,7 +413,7 @@ router.get('/:gardenId/beds', async (req, res) => {
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
 
-  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(
@@ -447,12 +449,12 @@ router.get('/:gardenId/beds', async (req, res) => {
 });
 
 // POST /api/gardens/:gardenId/beds
-router.post('/:gardenId/beds', async (req, res) => {
+router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
 
-  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(
@@ -527,14 +529,14 @@ router.post('/:gardenId/beds', async (req, res) => {
 });
 
 // PATCH /api/gardens/:gardenId/beds/:bedId
-router.patch('/:gardenId/beds/:bedId', async (req, res) => {
+router.patch('/:gardenId/beds/:bedId', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;
 
-  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
-  if (!/^\d+$/.test(bedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(
@@ -667,14 +669,14 @@ router.patch('/:gardenId/beds/:bedId', async (req, res) => {
 });
 
 // DELETE /api/gardens/:gardenId/beds/:bedId
-router.delete('/:gardenId/beds/:bedId', async (req, res) => {
+router.delete('/:gardenId/beds/:bedId', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
   const gardenId = req.params.gardenId as string;
   const bedId = req.params.bedId as string;
 
-  if (!/^\d+$/.test(gardenId)) return res.status(400).json({ error: 'Invalid id' });
-  if (!/^\d+$/.test(bedId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+  if (!isNumericId(bedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
     const garden = await db.query(

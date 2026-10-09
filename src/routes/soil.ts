@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
+import { isNumericId } from '../lib/validation';
 
 export const soilNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/soil-readings
 export const soilFlatRouter   = Router({ mergeParams: true }); // /api/soil-readings/:id
@@ -43,7 +44,6 @@ function formatReading(row: SoilRow) {
 
 // ── Validators ────────────────────────────────────────────────────────────────
 
-const DIGITS_RE = /^\d+$/;
 const DATE_RE   = /^\d{4}-\d{2}-\d{2}$/;
 
 // ── GET /api/gardens/:gardenId/soil-readings ──────────────────────────────────
@@ -52,7 +52,7 @@ soilNestedRouter.get('/', async (req: Request, res: Response): Promise<void> => 
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
-  if (!DIGITS_RE.test(gardenId)) {
+  if (!isNumericId(gardenId)) {
     res.status(404).json({ error: 'Garden not found' });
     return;
   }
@@ -90,7 +90,7 @@ soilNestedRouter.post('/', async (req: Request, res: Response): Promise<void> =>
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
-  if (!DIGITS_RE.test(gardenId)) {
+  if (!isNumericId(gardenId)) {
     res.status(404).json({ error: 'Garden not found' });
     return;
   }
@@ -98,7 +98,7 @@ soilNestedRouter.post('/', async (req: Request, res: Response): Promise<void> =>
   const { bedId, testDate, ph, nitrogen, phosphorus, potassium, notes } =
     req.body as Record<string, unknown>;
 
-  if (!bedId || !DIGITS_RE.test(String(bedId))) {
+  if (!bedId || !isNumericId(String(bedId))) {
     res.status(400).json({ error: 'bedId is required and must be a positive integer' });
     return;
   }
@@ -165,7 +165,7 @@ soilFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<void> 
   const accountId = req.session!.account!.id;
   const readingId = req.params.id as string;
 
-  if (!DIGITS_RE.test(readingId)) {
+  if (!isNumericId(readingId)) {
     res.status(404).json({ error: 'Reading not found' });
     return;
   }
@@ -186,7 +186,7 @@ soilFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<void> 
       return;
     }
   }
-  if (bedId !== undefined && !DIGITS_RE.test(String(bedId))) {
+  if (bedId !== undefined && !isNumericId(String(bedId))) {
     res.status(400).json({ error: 'bedId must be a positive integer' });
     return;
   }
@@ -260,7 +260,7 @@ soilFlatRouter.delete('/:id', async (req: Request, res: Response): Promise<void>
   const accountId = req.session!.account!.id;
   const readingId = req.params.id as string;
 
-  if (!DIGITS_RE.test(readingId)) {
+  if (!isNumericId(readingId)) {
     res.status(404).json({ error: 'Reading not found' });
     return;
   }

@@ -17,6 +17,7 @@ import { encryptToBuffer } from '../lib/crypto';
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
 import { requireAuth } from '../middleware/auth';
+import { authLimiter, passwordResetLimiter } from '../middleware/rateLimiters';
 import { LOCATION_NOT_SET } from '../lib/constants';
 
 export const authRouter = Router();
@@ -110,7 +111,7 @@ const OAUTH_NONCE_COOKIE = '_vernal_oauth_nonce';
 const SUPPORTED_PROVIDERS = new Set(['google']);
 
 // POST /api/auth/register
-authRouter.post('/register', async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/register', authLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body as { email?: string; password?: string };
 
   if (!email || !password) {
@@ -194,7 +195,7 @@ authRouter.post('/register', async (req: Request, res: Response): Promise<void> 
 });
 
 // POST /api/auth/login
-authRouter.post('/login', async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/login', authLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body as { email?: string; password?: string };
 
   if (!email || !password) {
@@ -263,7 +264,7 @@ authRouter.post('/login', async (req: Request, res: Response): Promise<void> => 
 });
 
 // POST /api/auth/forgot-password
-authRouter.post('/forgot-password', async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email } = req.body as { email?: string };
 
   if (!email) {
@@ -303,7 +304,7 @@ authRouter.post('/forgot-password', async (req: Request, res: Response): Promise
 });
 
 // POST /api/auth/reset-password
-authRouter.post('/reset-password', async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, res: Response): Promise<void> => {
   const { token, password } = req.body as { token?: string; password?: string };
 
   if (!token || !password) {

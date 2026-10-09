@@ -32,8 +32,24 @@ const config: PoolConfig = {
 
 export const db = new Pool(config);
 
-// Verify connection at startup — fail fast rather than surface confusing errors later
-db.query('SELECT 1').catch((err: Error) => {
-  console.error('[db] Connection failed:', err.message);
-  process.exit(1);
-});
+// Verify connection at startup — fail fast rather than surface confusing errors later.
+// Retries with a short delay: Neon's serverless compute auto-suspends when idle and
+// can take longer than one connection attempt to wake back up.
+async function verifyConnection(attempts = 3, delayMs = 2_000): Promise<void> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await db.query('SELECT 1');
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt === attempts) {
+        console.error(`[db] Connection failed after ${attempts} attempts:`, message);
+        process.exit(1);
+      }
+      console.warn(`[db] Connection attempt ${attempt}/${attempts} failed (${message}), retrying...`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+void verifyConnection();

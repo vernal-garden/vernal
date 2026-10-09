@@ -7,12 +7,12 @@ import { getTtlMs } from '../lib/weather/ttl';
 import { fetchTempestCurrent } from '../lib/weather/providers/tempest';
 import { geocode, fetchOpenMeteoCurrent, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
 import type { NormalizedReading } from '../lib/weather/types';
+import { isNumericId } from '../lib/validation';
 
 const weatherRouter = Router();
 weatherRouter.use(requireAuth, requireSupporter);
 
 const IMPLEMENTED_CONNECTION_PROVIDERS = new Set(['pws_tempest']);
-const DIGITS_RE = /^\d+$/;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -163,7 +163,7 @@ weatherRouter.delete('/connections/:id', async (req: Request, res: Response): Pr
   const accountId = req.session!.account!.id;
   const id = req.params.id as string;
 
-  if (!DIGITS_RE.test(id)) {
+  if (!isNumericId(id)) {
     res.status(404).json({ error: 'Connection not found' });
     return;
   }
