@@ -46,6 +46,7 @@ jobs:
       - name: Run migrations
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vernal_test
+          DATABASE_SSL: 'false'
         run: npm run migrate
       - name: Vitest unit + integration tests
         env:
