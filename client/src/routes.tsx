@@ -18,6 +18,7 @@ import SoilPage from './pages/SoilPage';
 import WeatherPage from './pages/WeatherPage';
 import AmendmentPage from './pages/AmendmentPage';
 import AccountPage from './pages/AccountPage';
+import EmailConfirmPage from './pages/EmailConfirmPage';
 import NotFoundPage from './pages/NotFoundPage';
 
 const routes: RouteObject[] = [
@@ -102,6 +103,14 @@ const routes: RouteObject[] = [
     element: (
       <AccountRoute>
         <AccountPage />
+      </AccountRoute>
+    ),
+  },
+  {
+    path: '/account/email/confirm',
+    element: (
+      <AccountRoute>
+        <EmailConfirmPage />
       </AccountRoute>
     ),
   },

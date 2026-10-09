@@ -1,8 +1,29 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { Pool } from 'pg';
 import app from '../index';
+import * as mailer from '../lib/mailer';
+
+vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
+const sendMailMock = vi.mocked(mailer.sendMail);
+
+function extractToken(html: string): string {
+  const match = html.match(/token=([a-f0-9]+)/);
+  if (!match) throw new Error('No token found in mailer call');
+  return match[1];
+}
+
+async function createOAuthUser(email: string): Promise<number> {
+  const { rows } = await pool.query<{ id: number }>(
+    `INSERT INTO accounts (email, password_hash, zone, zone_location_label, email_verified)
+     VALUES ($1, NULL, '7b', 'Test City', true)
+     RETURNING id`,
+    [email],
+  );
+  return rows[0].id;
+}
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -75,6 +96,12 @@ describe('GET /api/me', () => {
     const res = await agent.get('/api/me');
     expect(res.status).toBe(200);
     expect(res.body.data.supporterPromptShown).toBe(false);
+  });
+
+  it('includes pendingEmail: null on a fresh account', async () => {
+    const res = await agent.get('/api/me');
+    expect(res.status).toBe(200);
+    expect(res.body.data.pendingEmail).toBeNull();
   });
 });
 
@@ -470,5 +497,216 @@ describe('All /api/me routes require a session', () => {
 
   it('POST /cancel-deletion returns 401', async () => {
     expect((await unauthed().post('/api/me/cancel-deletion')).status).toBe(401);
+  });
+});
+
+// ── Tests 14-24: Email change flow ───────────────────────────────────────────
+
+describe('PATCH /api/me/email', () => {
+  let agent: ReturnType<typeof request.agent>;
+  let accountId: number;
+
+  beforeAll(async () => {
+    accountId = await createUser('me-email-change@example.com');
+    agent = await loginAgent('me-email-change@example.com');
+  });
+
+  it('sets pending_email, sends a confirmation email, and returns pendingEmail (test 14)', async () => {
+    sendMailMock.mockClear();
+    const res = await agent
+      .patch('/api/me/email')
+      .send({ newEmail: 'new-address@example.com' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.pendingEmail).toBe('new-address@example.com');
+
+    const { rows } = await pool.query<{ pending_email: string | null }>(
+      'SELECT pending_email FROM accounts WHERE id = $1',
+      [accountId],
+    );
+    expect(rows[0].pending_email).toBe('new-address@example.com');
+
+    expect(sendMailMock).toHaveBeenCalledTimes(1);
+    expect(sendMailMock.mock.calls[0][0].to).toBe('new-address@example.com');
+  });
+
+  it('rejects the same email as the current one with 400 (test 15)', async () => {
+    const res = await agent
+      .patch('/api/me/email')
+      .send({ newEmail: 'me-email-change@example.com' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an email already in use with 409 (test 16)', async () => {
+    await createUser('me-email-taken@example.com');
+    const res = await agent.patch('/api/me/email').send({ newEmail: 'me-email-taken@example.com' });
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects email change for OAuth accounts with 400 (test 17)', async () => {
+    const oauthId = await createOAuthUser('me-email-oauth@example.com');
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await pool.query(
+      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at) VALUES ($1, $2, $3, now())`,
+      [token, expiresAt, oauthId],
+    );
+    const secret = process.env.SESSION_SECRET!;
+    const sig = crypto.createHmac('sha256', secret).update(token).digest('hex');
+    const signedToken = `${token}.${sig}`;
+
+    const res = await request(app)
+      .patch('/api/me/email')
+      .set('Cookie', `_vernal_sid=${encodeURIComponent(signedToken)}`)
+      .send({ newEmail: 'wont-work@example.com' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/oauth/i);
+  });
+
+  it('replaces an existing unused token on a second request (test 18)', async () => {
+    const first = await pool.query<{ id: number; token_hash: string }>(
+      'SELECT id, token_hash FROM email_change_tokens WHERE account_id = $1 AND used_at IS NULL',
+      [accountId],
+    );
+    expect(first.rows).toHaveLength(1);
+
+    const res = await agent
+      .patch('/api/me/email')
+      .send({ newEmail: 'second-address@example.com' });
+    expect(res.status).toBe(200);
+
+    const second = await pool.query<{ id: number; token_hash: string }>(
+      'SELECT id, token_hash FROM email_change_tokens WHERE account_id = $1 AND used_at IS NULL',
+      [accountId],
+    );
+    expect(second.rows).toHaveLength(1);
+    expect(second.rows[0].id).not.toBe(first.rows[0].id);
+    expect(second.rows[0].token_hash).not.toBe(first.rows[0].token_hash);
+  });
+});
+
+describe('DELETE /api/me/email', () => {
+  let agent: ReturnType<typeof request.agent>;
+  let accountId: number;
+
+  beforeAll(async () => {
+    accountId = await createUser('me-email-cancel@example.com');
+    agent = await loginAgent('me-email-cancel@example.com');
+    await agent.patch('/api/me/email').send({ newEmail: 'cancel-target@example.com' });
+  });
+
+  it('clears pending_email and deletes the unused token (test 19)', async () => {
+    const res = await agent.delete('/api/me/email');
+    expect(res.status).toBe(200);
+    expect(res.body.data.pendingEmail).toBeNull();
+
+    const { rows } = await pool.query<{ pending_email: string | null }>(
+      'SELECT pending_email FROM accounts WHERE id = $1',
+      [accountId],
+    );
+    expect(rows[0].pending_email).toBeNull();
+
+    const tokens = await pool.query(
+      'SELECT id FROM email_change_tokens WHERE account_id = $1 AND used_at IS NULL',
+      [accountId],
+    );
+    expect(tokens.rows).toHaveLength(0);
+  });
+});
+
+describe('GET /api/me/email/confirm', () => {
+  let agent: ReturnType<typeof request.agent>;
+
+  beforeAll(async () => {
+    await createUser('me-email-confirm@example.com');
+    agent = await loginAgent('me-email-confirm@example.com');
+  });
+
+  it('confirms a valid token: updates email, marks token used, clears pending_email (test 20)', async () => {
+    sendMailMock.mockClear();
+    const patchRes = await agent
+      .patch('/api/me/email')
+      .send({ newEmail: 'confirmed-address@example.com' });
+    expect(patchRes.status).toBe(200);
+    const rawToken = extractToken(sendMailMock.mock.calls[0][0].html);
+
+    const res = await agent.get(`/api/me/email/confirm?token=${rawToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.email).toBe('confirmed-address@example.com');
+
+    const meRes = await agent.get('/api/me');
+    expect(meRes.body.data.email).toBe('confirmed-address@example.com');
+    expect(meRes.body.data.pendingEmail).toBeNull();
+
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    const { rows } = await pool.query<{ used_at: Date | null }>(
+      'SELECT used_at FROM email_change_tokens WHERE token_hash = $1',
+      [tokenHash],
+    );
+    expect(rows[0].used_at).not.toBeNull();
+  });
+
+  it('rejects an expired token with 400 (test 21)', async () => {
+    const accountId = await createUser('me-email-expired@example.com');
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    await pool.query(
+      `INSERT INTO email_change_tokens (account_id, token_hash, new_email, expires_at)
+       VALUES ($1, $2, 'expired-target@example.com', NOW() - INTERVAL '1 hour')`,
+      [accountId, tokenHash],
+    );
+
+    const res = await agent.get(`/api/me/email/confirm?token=${rawToken}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an already-used token with 400 (test 22)', async () => {
+    const accountId = await createUser('me-email-used@example.com');
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+    await pool.query(
+      `INSERT INTO email_change_tokens (account_id, token_hash, new_email, expires_at, used_at)
+       VALUES ($1, $2, 'used-target@example.com', NOW() + INTERVAL '1 hour', NOW())`,
+      [accountId, tokenHash],
+    );
+
+    const res = await agent.get(`/api/me/email/confirm?token=${rawToken}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects with 409 when the new email was taken before confirmation (test 23)', async () => {
+    const raceAgentEmail = 'me-email-race@example.com';
+    const raceAccountId = await createUser(raceAgentEmail);
+    const raceAgent = await loginAgent(raceAgentEmail);
+
+    const patchRes = await raceAgent
+      .patch('/api/me/email')
+      .send({ newEmail: 'raced-address@example.com' });
+    expect(patchRes.status).toBe(200);
+    const rawToken = extractToken(
+      sendMailMock.mock.calls[sendMailMock.mock.calls.length - 1][0].html,
+    );
+
+    // Simulate another account taking the target address before confirmation.
+    const otherAccountId = await createUser('me-email-race-other@example.com');
+    await pool.query('UPDATE accounts SET email = $1 WHERE id = $2', [
+      'raced-address@example.com',
+      otherAccountId,
+    ]);
+
+    const res = await raceAgent.get(`/api/me/email/confirm?token=${rawToken}`);
+    expect(res.status).toBe(409);
+
+    // The original account's email must remain unchanged.
+    const { rows } = await pool.query<{ email: string }>(
+      'SELECT email FROM accounts WHERE id = $1',
+      [raceAccountId],
+    );
+    expect(rows[0].email).toBe(raceAgentEmail);
+  });
+
+  it('returns 400 when token is missing', async () => {
+    const res = await agent.get('/api/me/email/confirm');
+    expect(res.status).toBe(400);
   });
 });
