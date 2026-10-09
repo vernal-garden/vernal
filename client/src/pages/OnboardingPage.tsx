@@ -19,6 +19,19 @@ const METHOD_OPTIONS: { value: Exclude<Method, ''>; label: string; description: 
   { value: 'in_ground',   label: 'In-ground',   description: 'Traditional rows or free-form planting in the soil' },
 ];
 
+// Returning visitors land here too ('/' redirects to '/onboarding' without a
+// garden), so give signed-out visitors a way to reach sign-in from either step.
+function SignInPrompt() {
+  return (
+    <p className="mt-4 text-center text-sm text-gray-500">
+      Already have an account?{' '}
+      <Link to="/login" className="text-[#4f7c3f] underline">
+        Sign in
+      </Link>
+    </p>
+  );
+}
+
 export default function OnboardingPage() {
   const { isAccount, gardenCount, refetch } = useAuth();
   const navigate = useNavigate();
@@ -158,6 +171,7 @@ export default function OnboardingPage() {
             >
               Continue
             </button>
+            {!isAccount && <SignInPrompt />}
           </>
         )}
 
@@ -224,6 +238,7 @@ export default function OnboardingPage() {
             >
               {loading ? 'Setting up…' : 'Start planning'}
             </button>
+            {!isAccount && <SignInPrompt />}
           </>
         )}
 

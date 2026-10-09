@@ -117,6 +117,7 @@ jobs:
             cd /var/www/vernal
             git fetch origin && git reset --hard ${{ github.sha }}
             npm ci
+            npm run migrate
             npm run build
             cd /var/www/vernal/client
             npm ci
