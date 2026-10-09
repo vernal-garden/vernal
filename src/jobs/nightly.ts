@@ -1,4 +1,5 @@
 import { db } from '../lib/db';
+import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
 
 // The only writer of plantings.growth_stage_pct, growth_stage,
 // displayed_growth_stage, harvest_ready, and harvest_window_end — routes
@@ -53,17 +54,21 @@ export async function refreshGardenBadges(): Promise<{ affected: number }> {
           ON p2.garden_id = p1.garden_id
           AND p1.id < p2.id
           AND p2.cambium_seed_id IS NOT NULL
-        JOIN cambium.companion_pairs cp
-          ON cp.seed_id_a = LEAST(p1.cambium_seed_id, p2.cambium_seed_id)
-          AND cp.seed_id_b = GREATEST(p1.cambium_seed_id, p2.cambium_seed_id)
-          AND cp.relationship = 'harmful'
+        JOIN cambium.companions c
+          ON (
+            (c.seed_id = p1.cambium_seed_id AND c.companion_seed_id = p2.cambium_seed_id)
+            OR
+            (c.seed_id = p2.cambium_seed_id AND c.companion_seed_id = p1.cambium_seed_id)
+          )
+          AND c.relationship = 'antagonistic'
+          AND c.confidence >= $1
         WHERE p1.garden_id = g.id
           AND p1.cambium_seed_id IS NOT NULL
           AND p1.season = EXTRACT(YEAR FROM CURRENT_DATE)::int
           AND p2.season = p1.season
       ),
       updated_at = NOW()
-  `);
+  `, [COMPANION_CONFIDENCE_THRESHOLD]);
   return { affected: result.rowCount ?? 0 };
 }
 

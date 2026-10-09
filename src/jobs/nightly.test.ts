@@ -20,7 +20,7 @@ async function resetDb() {
   await pool.query(
     'TRUNCATE accounts, guest_sessions, gardens, beds, plantings, seeds, password_reset_tokens, job_runs RESTART IDENTITY CASCADE',
   );
-  await pool.query('TRUNCATE cambium.seeds, cambium.companion_pairs RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE cambium.seeds, cambium.companions RESTART IDENTITY CASCADE');
 }
 
 let emailCounter = 0;
@@ -277,37 +277,65 @@ describe('refreshGardenBadges', () => {
     expect(byId[gardenB]).toBe(1);
   });
 
-  it('flags has_companion_warnings only for gardens with a harmful companion pair', async () => {
+  it('flags has_companion_warnings only for antagonistic pairs at or above the confidence threshold', async () => {
     const ownerId = await createAccount();
-    const seedA = await createCambiumSeed();
-    const seedB = await createCambiumSeed();
-    const otherSeed = await createCambiumSeed();
-    const [idA, idB] = [seedA, seedB].sort((a, b) => a - b);
-    await pool.query(
-      `INSERT INTO cambium.companion_pairs (seed_id_a, seed_id_b, relationship)
-       VALUES ($1, $2, 'harmful')`,
-      [idA, idB],
-    );
 
-    const gardenWarn = await createGarden(ownerId);
-    const bedWarn = await createBed(gardenWarn);
-    await createPlanting(bedWarn, gardenWarn, { cambiumSeedId: seedA });
-    await createPlanting(bedWarn, gardenWarn, { cambiumSeedId: seedB });
+    async function insertCompanion(
+      seedId: number,
+      companionSeedId: number,
+      relationship: 'beneficial' | 'antagonistic' | 'neutral',
+      confidence: number,
+    ) {
+      await pool.query(
+        `INSERT INTO cambium.companions (seed_id, companion_seed_id, relationship, confidence)
+         VALUES ($1, $2, $3, $4)`,
+        [seedId, companionSeedId, relationship, confidence],
+      );
+    }
 
-    const gardenClean = await createGarden(ownerId);
-    const bedClean = await createBed(gardenClean);
-    await createPlanting(bedClean, gardenClean, { cambiumSeedId: seedA });
-    await createPlanting(bedClean, gardenClean, { cambiumSeedId: otherSeed });
+    async function gardenWith(first: number, second: number): Promise<number> {
+      const gardenId = await createGarden(ownerId);
+      const bedId = await createBed(gardenId);
+      await createPlanting(bedId, gardenId, { cambiumSeedId: first });
+      await createPlanting(bedId, gardenId, { cambiumSeedId: second });
+      return gardenId;
+    }
+
+    // Forward: row stored as (p1 seed -> p2 seed), at exactly the threshold.
+    const fwdA = await createCambiumSeed();
+    const fwdB = await createCambiumSeed();
+    await insertCompanion(fwdA, fwdB, 'antagonistic', 40);
+    const gardenForward = await gardenWith(fwdA, fwdB);
+
+    // Reverse: row stored as (p2 seed -> p1 seed).
+    const revA = await createCambiumSeed();
+    const revB = await createCambiumSeed();
+    await insertCompanion(revB, revA, 'antagonistic', 80);
+    const gardenReverse = await gardenWith(revA, revB);
+
+    // Antagonistic but below threshold.
+    const lowA = await createCambiumSeed();
+    const lowB = await createCambiumSeed();
+    await insertCompanion(lowA, lowB, 'antagonistic', 39);
+    const gardenLowConfidence = await gardenWith(lowA, lowB);
+
+    // Beneficial at high confidence.
+    const benA = await createCambiumSeed();
+    const benB = await createCambiumSeed();
+    await insertCompanion(benA, benB, 'beneficial', 90);
+    const gardenBeneficial = await gardenWith(benA, benB);
 
     await refreshGardenBadges();
 
     const { rows } = await pool.query<{ id: number; has_companion_warnings: boolean }>(
       `SELECT id, has_companion_warnings FROM gardens WHERE id = ANY($1::int[])`,
-      [[gardenWarn, gardenClean]],
+      [[gardenForward, gardenReverse, gardenLowConfidence, gardenBeneficial]],
     );
     const byId = Object.fromEntries(rows.map((r) => [r.id, r.has_companion_warnings]));
-    expect(byId[gardenWarn]).toBe(true);
-    expect(byId[gardenClean]).toBe(false);
+    expect(byId[gardenForward]).toBe(true);
+    expect(byId[gardenReverse]).toBe(true);
+    expect(byId[gardenLowConfidence]).toBe(false);
+    expect(byId[gardenBeneficial]).toBe(false);
   });
 });
 
