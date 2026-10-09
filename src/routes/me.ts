@@ -1,13 +1,16 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
 import { clearSessionCookie } from '../lib/sessions';
+import { sendMail } from '../lib/mailer';
 
 const router = Router();
 router.use(requireAuth);
 
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS ?? '12', 10);
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Fields that may never be updated via PATCH /api/me
 const REJECTED_PATCH_FIELDS = new Set(['onboardingCompletedAt', 'email', 'role', 'subscriptionTier']);
@@ -15,6 +18,7 @@ const REJECTED_PATCH_FIELDS = new Set(['onboardingCompletedAt', 'email', 'role',
 interface AccountRow {
   id: string;
   email: string | null;
+  pending_email: string | null;
   display_name: string | null;
   avatar_url: string | null;
   email_verified: boolean;
@@ -27,21 +31,23 @@ interface AccountRow {
   preferences: Record<string, unknown>;
   deletion_scheduled_at: string | null;
   supporter_prompt_shown: boolean;
+  is_password_account: boolean;
   created_at: string;
   updated_at: string;
 }
 
 const ACCOUNT_SELECT = `
-  id::text, email, display_name, avatar_url, email_verified, zone,
+  id::text, email, pending_email, display_name, avatar_url, email_verified, zone,
   zone_location_label, last_spring_frost_date::text, first_fall_frost_date::text,
   role, subscription_tier, preferences, deletion_scheduled_at, supporter_prompt_shown,
-  created_at, updated_at
+  (password_hash IS NOT NULL) AS is_password_account, created_at, updated_at
 `;
 
 function formatAccount(row: AccountRow) {
   return {
     id: row.id,
     email: row.email,
+    pendingEmail: row.pending_email,
     displayName: row.display_name,
     avatarUrl: row.avatar_url,
     emailVerified: row.email_verified,
@@ -54,9 +60,14 @@ function formatAccount(row: AccountRow) {
     preferences: row.preferences ?? {},
     deletionScheduledAt: row.deletion_scheduled_at,
     supporterPromptShown: row.supporter_prompt_shown,
+    isPasswordAccount: row.is_password_account,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function hashToken(rawToken: string): string {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
 }
 
 // GET /api/me
@@ -276,6 +287,175 @@ router.patch('/password', async (req, res) => {
     res.json({ data: { message: 'Password updated' } });
   } catch (err) {
     console.error('PATCH /me/password error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PATCH /api/me/email
+// Starts an email change: stores a hashed confirmation token and emails the
+// raw token to the new address. The account's email column is untouched
+// until GET /email/confirm succeeds.
+router.patch('/email', async (req, res) => {
+  const { newEmail } = req.body as { newEmail?: unknown };
+  const accountId = req.session!.account!.id;
+
+  if (typeof newEmail !== 'string' || !EMAIL_RE.test(newEmail)) {
+    return res.status(400).json({ error: 'Invalid email address.' });
+  }
+  const normalizedEmail = newEmail.toLowerCase();
+
+  try {
+    const { rows } = await db.query<{ email: string; password_hash: string | null }>(
+      'SELECT email, password_hash FROM accounts WHERE id = $1',
+      [accountId],
+    );
+    if (rows.length === 0) {
+      clearSessionCookie(res);
+      return res.status(401).json({ error: 'Account not found' });
+    }
+
+    if (!rows[0].password_hash) {
+      return res
+        .status(400)
+        .json({ error: 'Email change is not available for accounts using OAuth sign-in.' });
+    }
+
+    if (normalizedEmail === rows[0].email.toLowerCase()) {
+      return res.status(400).json({ error: 'New email is the same as your current email.' });
+    }
+
+    const { rows: conflicting } = await db.query(
+      'SELECT id FROM accounts WHERE (email = $1 OR pending_email = $1) AND id <> $2',
+      [normalizedEmail, accountId],
+    );
+    if (conflicting.length > 0) {
+      return res.status(409).json({ error: 'That email address is already in use.' });
+    }
+
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = hashToken(rawToken);
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'DELETE FROM email_change_tokens WHERE account_id = $1 AND used_at IS NULL',
+        [accountId],
+      );
+      await client.query(
+        `INSERT INTO email_change_tokens (account_id, token_hash, new_email, expires_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours')`,
+        [accountId, tokenHash, normalizedEmail],
+      );
+      await client.query(
+        'UPDATE accounts SET pending_email = $1, updated_at = NOW() WHERE id = $2',
+        [normalizedEmail, accountId],
+      );
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
+
+    const confirmUrl = `${process.env.FRONTEND_URL}/account/email/confirm?token=${rawToken}`;
+    await sendMail({
+      to: normalizedEmail,
+      subject: 'Confirm your new email address',
+      text: `Someone requested a change to the email address on your Vernal account.\n\nClick the link below to confirm. It expires in 24 hours.\n\n${confirmUrl}\n\nIf you did not request this, you can safely ignore this email.`,
+      html: `<p>Someone requested a change to the email address on your Vernal account.</p><p>Click the link below to confirm. It expires in 24 hours.</p><p><a href="${confirmUrl}">${confirmUrl}</a></p><p>If you did not request this, you can safely ignore this email.</p>`,
+    });
+
+    res.json({ data: { pendingEmail: normalizedEmail } });
+  } catch (err) {
+    console.error('PATCH /me/email error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/me/email
+// Cancels an in-flight email change.
+router.delete('/email', async (req, res) => {
+  const accountId = req.session!.account!.id;
+
+  try {
+    await db.query(
+      'UPDATE accounts SET pending_email = NULL, updated_at = NOW() WHERE id = $1',
+      [accountId],
+    );
+    await db.query(
+      'DELETE FROM email_change_tokens WHERE account_id = $1 AND used_at IS NULL',
+      [accountId],
+    );
+    res.json({ data: { pendingEmail: null } });
+  } catch (err) {
+    console.error('DELETE /me/email error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/me/email/confirm
+// Completes an email change. The token must belong to the currently
+// authenticated account — this prevents a leaked/shared confirmation link
+// from being redeemed onto a different, attacker-controlled account.
+router.get('/email/confirm', async (req, res) => {
+  const token = req.query.token as string | undefined;
+  const accountId = req.session!.account!.id;
+
+  if (!token) {
+    return res.status(400).json({ error: 'Token is required.' });
+  }
+
+  const invalidError = { error: 'This confirmation link is invalid or has expired.' };
+
+  try {
+    const tokenHash = hashToken(token);
+    const { rows } = await db.query<{
+      id: number;
+      account_id: number;
+      new_email: string;
+    }>(
+      `SELECT id, account_id, new_email FROM email_change_tokens
+       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()`,
+      [tokenHash],
+    );
+
+    if (rows.length === 0 || rows[0].account_id !== accountId) {
+      return res.status(400).json(invalidError);
+    }
+    const matchedToken = rows[0];
+
+    const { rows: conflicting } = await db.query(
+      'SELECT id FROM accounts WHERE email = $1 AND id <> $2',
+      [matchedToken.new_email, accountId],
+    );
+    if (conflicting.length > 0) {
+      return res.status(409).json({ error: 'That email address was taken before you could confirm.' });
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        'UPDATE accounts SET email = $1, pending_email = NULL, updated_at = NOW() WHERE id = $2',
+        [matchedToken.new_email, accountId],
+      );
+      await client.query(
+        'UPDATE email_change_tokens SET used_at = NOW() WHERE id = $1',
+        [matchedToken.id],
+      );
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
+
+    res.json({ data: { email: matchedToken.new_email } });
+  } catch (err) {
+    console.error('GET /me/email/confirm error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

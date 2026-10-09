@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import * as api from '../lib/api';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -45,9 +45,11 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<SessionState>({ kind: 'loading' });
-  const bootstrapped = useRef(false);
 
-  const resolveSession = useCallback(async (): Promise<void> => {
+  // allowBootstrap is per-call (not a once-per-page-load ref) so that refetch()
+  // after sign-out can mint a fresh guest session; the recursive call passes
+  // false so a bootstrap that still yields no session can't loop.
+  const resolveSession = useCallback(async (allowBootstrap = true): Promise<void> => {
     const body = await api.get<{ data: Record<string, unknown> }>('/api/auth/session');
     const data = body!.data;
 
@@ -91,17 +93,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // No session (true first visit) — bootstrap once, then re-resolve
-    if (!bootstrapped.current) {
-      bootstrapped.current = true;
+    // No session (first visit or just signed out) — bootstrap, then re-resolve
+    if (allowBootstrap) {
       await api.post('/api/auth/guest');
-      await resolveSession();
+      await resolveSession(false);
       return;
     }
 
     // Degenerate: bootstrap ran but still no session — show expired UI
     setState({ kind: 'expired', recoverable: false });
-  }, []); // bootstrapped ref is stable; no deps needed
+  }, []);
 
   const markSupporterPromptShown = useCallback(async (): Promise<void> => {
     try {
@@ -115,6 +116,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Best-effort — a network blip should not break the placement flow.
     }
   }, []);
+
+  const refetch = useCallback(() => resolveSession(), [resolveSession]);
 
   useEffect(() => {
     resolveSession().catch((err: unknown) => {
@@ -159,7 +162,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         pendingGuestData,
         daysRemaining,
         gardenCount,
-        refetch: resolveSession,
+        refetch,
         markSupporterPromptShown,
       }}
     >
