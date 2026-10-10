@@ -22,6 +22,7 @@ import weatherRouter from './routes/weather';
 import subscriptionRouter, { handleStripeWebhook } from './routes/subscription';
 import adminRouter from './routes/admin';
 import { sessionMiddleware } from './middleware/session';
+import { requestMetricsMiddleware } from './lib/requestMetrics';
 import { initPassport, passport } from './lib/oauth/index';
 
 dotenv.config();
@@ -65,6 +66,10 @@ app.use(
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   }),
 );
+
+// Request timing for the admin System page — ahead of the Stripe webhook so
+// every /api route is covered.
+app.use(requestMetricsMiddleware);
 
 // ── Stripe webhook ───────────────────────────────────────────────────────────
 // Must be mounted before express.json() — Stripe signature verification
