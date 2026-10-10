@@ -7,6 +7,7 @@ vi.mock('./r2', () => ({
   uploadToR2: vi.fn(),
   getPresignedDownloadUrl: vi.fn(),
   deleteFromR2: vi.fn(),
+  exportsBucket: vi.fn(() => 'test-exports'),
 }));
 
 // Minimal stand-in for archiver's ZipArchive: records entry names and writes a
@@ -32,11 +33,12 @@ vi.mock('archiver', () => {
   return { ZipArchive };
 });
 
-import { uploadToR2, getPresignedDownloadUrl } from './r2';
+import { uploadToR2, getPresignedDownloadUrl, exportsBucket } from './r2';
 import { collectExportData, processExportJob } from './exportWorker';
 
 const uploadMock = vi.mocked(uploadToR2);
 const presignMock = vi.mocked(getPresignedDownloadUrl);
+const exportsBucketMock = vi.mocked(exportsBucket);
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -258,6 +260,7 @@ describe('processExportJob', () => {
     appendedNames.length = 0;
     uploadMock.mockReset().mockResolvedValue('https://cdn.example.com/export.zip');
     presignMock.mockReset().mockResolvedValue('https://signed.example.com/export.zip');
+    exportsBucketMock.mockReset().mockReturnValue('test-exports');
   });
 
   it('builds the ZIP, uploads it and marks the job complete', async () => {
@@ -269,8 +272,13 @@ describe('processExportJob', () => {
       `exports/${accountId}/${jobId}.zip`,
       expect.any(Buffer),
       'application/zip',
+      'test-exports',
     );
-    expect(presignMock).toHaveBeenCalledWith(`exports/${accountId}/${jobId}.zip`, 604800);
+    expect(presignMock).toHaveBeenCalledWith(
+      `exports/${accountId}/${jobId}.zip`,
+      604800,
+      'test-exports',
+    );
 
     const { rows } = await pool.query(
       `SELECT status, download_url, completed_at,
@@ -291,6 +299,22 @@ describe('processExportJob', () => {
 
     await expect(processExportJob(jobId)).resolves.toBeUndefined();
 
+    const { rows } = await pool.query(
+      'SELECT status, download_url FROM data_export_jobs WHERE id = $1',
+      [jobId],
+    );
+    expect(rows[0]).toEqual({ status: 'failed', download_url: null });
+  });
+
+  it('marks the job failed without uploading when the exports bucket is not configured', async () => {
+    exportsBucketMock.mockImplementation(() => {
+      throw new Error('R2_EXPORTS_BUCKET_NAME is not set.');
+    });
+    const jobId = await createJob();
+
+    await expect(processExportJob(jobId)).resolves.toBeUndefined();
+
+    expect(uploadMock).not.toHaveBeenCalled();
     const { rows } = await pool.query(
       'SELECT status, download_url FROM data_export_jobs WHERE id = $1',
       [jobId],

@@ -22,7 +22,13 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { uploadToR2, getPresignedUploadUrl, getPresignedDownloadUrl, deleteFromR2 } from './r2';
+import {
+  uploadToR2,
+  getPresignedUploadUrl,
+  getPresignedDownloadUrl,
+  deleteFromR2,
+  exportsBucket,
+} from './r2';
 
 const R2_ENV = {
   R2_ACCOUNT_ID: 'test-account',
@@ -30,6 +36,7 @@ const R2_ENV = {
   R2_SECRET_ACCESS_KEY: 'test-secret',
   R2_BUCKET_NAME: 'test-bucket',
   R2_PUBLIC_BASE_URL: 'https://cdn.example.com/',
+  R2_EXPORTS_BUCKET_NAME: 'test-exports',
 };
 
 describe('r2', () => {
@@ -99,5 +106,52 @@ describe('r2', () => {
       /R2 not configured.*R2_BUCKET_NAME/,
     );
     expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it('uploadToR2 sends PutObjectCommand to the given bucket', async () => {
+    await uploadToR2('exports/1/2.zip', Buffer.from('x'), 'application/zip', 'test-exports');
+
+    const cmd = sendMock.mock.calls[0][0];
+    expect(cmd).toBeInstanceOf(PutObjectCommand);
+    expect(cmd.input).toMatchObject({
+      Bucket: 'test-exports',
+      Key: 'exports/1/2.zip',
+      ContentType: 'application/zip',
+    });
+  });
+
+  it('getPresignedDownloadUrl signs a GetObjectCommand for the given bucket', async () => {
+    await getPresignedDownloadUrl('exports/1/2.zip', 604800, 'test-exports');
+
+    const [, cmd, opts] = getSignedUrlMock.mock.calls[0];
+    expect(cmd).toBeInstanceOf(GetObjectCommand);
+    expect(cmd.input).toEqual({ Bucket: 'test-exports', Key: 'exports/1/2.zip' });
+    expect(opts).toEqual({ expiresIn: 604800 });
+  });
+
+  it('deleteFromR2 sends DeleteObjectCommand for the given bucket', async () => {
+    await deleteFromR2('exports/1/2.zip', 'test-exports');
+
+    const cmd = sendMock.mock.calls[0][0];
+    expect(cmd).toBeInstanceOf(DeleteObjectCommand);
+    expect(cmd.input).toEqual({ Bucket: 'test-exports', Key: 'exports/1/2.zip' });
+  });
+
+  describe('exportsBucket', () => {
+    it('returns R2_EXPORTS_BUCKET_NAME', () => {
+      expect(exportsBucket()).toBe('test-exports');
+    });
+
+    it('throws when R2_EXPORTS_BUCKET_NAME is missing', () => {
+      delete process.env.R2_EXPORTS_BUCKET_NAME;
+      expect(() => exportsBucket()).toThrow('R2_EXPORTS_BUCKET_NAME is not set.');
+    });
+
+    it('throws when R2_EXPORTS_BUCKET_NAME equals the public R2_BUCKET_NAME', () => {
+      process.env.R2_EXPORTS_BUCKET_NAME = 'test-bucket';
+      expect(() => exportsBucket()).toThrow(
+        'R2_EXPORTS_BUCKET_NAME must be a private bucket, not the public R2_BUCKET_NAME.',
+      );
+    });
   });
 });

@@ -533,6 +533,27 @@ router.post('/supporter-prompt/shown', async (req, res) => {
   }
 });
 
+// A pending/processing export older than this is assumed dead (server restart
+// mid-job, or a crash before processExportJob ran) and is marked failed.
+const EXPORT_STALE_MINUTES = 15;
+
+async function failStaleExportJobs(
+  q: { query: typeof db.query },
+  accountId: number,
+): Promise<void> {
+  const { rows } = await q.query<{ id: number }>(
+    `UPDATE data_export_jobs SET status = 'failed'
+     WHERE account_id = $1
+       AND status IN ('pending', 'processing')
+       AND requested_at < now() - make_interval(mins => $2)
+     RETURNING id`,
+    [accountId, EXPORT_STALE_MINUTES],
+  );
+  for (const { id } of rows) {
+    logger.warn('Marked stale export job failed', { jobId: id, accountId });
+  }
+}
+
 // POST /api/me/export
 // Starts a data export. Returns the existing download while an unexpired
 // export exists; otherwise queues a job and processes it in the background.
@@ -546,6 +567,7 @@ router.post('/export', async (req, res) => {
       await client.query('BEGIN');
       // Serialises concurrent requests from the same account so only one job is queued.
       await client.query('SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+      await failStaleExportJobs(client, accountId);
 
       const { rows: active } = await client.query(
         `SELECT 1 FROM data_export_jobs
@@ -554,7 +576,7 @@ router.post('/export', async (req, res) => {
         [accountId],
       );
       if (active.length > 0) {
-        await client.query('ROLLBACK');
+        await client.query('COMMIT');
         return res.status(409).json({ error: 'An export is already in progress.' });
       }
 
@@ -566,7 +588,7 @@ router.post('/export', async (req, res) => {
         [accountId],
       );
       if (ready.length > 0) {
-        await client.query('ROLLBACK');
+        await client.query('COMMIT');
         return res.status(200).json({
           data: {
             status: 'complete',
@@ -605,6 +627,7 @@ router.get('/export', async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
+    await failStaleExportJobs(db, accountId);
     const { rows } = await db.query<{
       id: number;
       status: string;

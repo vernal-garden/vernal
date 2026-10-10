@@ -3,7 +3,7 @@ import { ZipArchive } from 'archiver';
 import { types as pgTypes, CustomTypesConfig } from 'pg';
 import { db } from './db';
 import { logger } from './logger';
-import { uploadToR2, getPresignedDownloadUrl } from './r2';
+import { uploadToR2, getPresignedDownloadUrl, exportsBucket } from './r2';
 
 export const EXPORT_DOWNLOAD_TTL_SECONDS = 604800; // 7 days
 
@@ -226,9 +226,11 @@ export async function processExportJob(jobId: number): Promise<void> {
     const data = await collectExportData(accountId);
     const zip = await buildZip(data);
 
+    // Exports go to the private bucket; uploadToR2's public URL is meaningless there.
+    const bucket = exportsBucket();
     const key = exportKey(accountId, jobId);
-    await uploadToR2(key, zip, 'application/zip');
-    const downloadUrl = await getPresignedDownloadUrl(key, EXPORT_DOWNLOAD_TTL_SECONDS);
+    await uploadToR2(key, zip, 'application/zip', bucket);
+    const downloadUrl = await getPresignedDownloadUrl(key, EXPORT_DOWNLOAD_TTL_SECONDS, bucket);
 
     await db.query(
       `UPDATE data_export_jobs

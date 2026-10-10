@@ -844,6 +844,62 @@ describe('/api/me/export', () => {
     expect(res.body.data.downloadUrl).toBeNull();
   });
 
+  async function jobStatus(id: number): Promise<string> {
+    const { rows } = await pool.query<{ status: string }>(
+      'SELECT status FROM data_export_jobs WHERE id = $1',
+      [id],
+    );
+    return rows[0].status;
+  }
+
+  it.each(['processing', 'pending'])(
+    'POST fails a %s job older than 15 minutes and queues a new one',
+    async (status) => {
+      const staleId = await insertJob(status, { requestedMinutesAgo: 16 });
+
+      const res = await agent.post('/api/me/export');
+      expect(res.status).toBe(202);
+      expect(res.body.data.jobId).not.toBe(staleId);
+
+      expect(await jobStatus(staleId)).toBe('failed');
+      expect(await jobStatus(res.body.data.jobId)).toBe('pending');
+    },
+  );
+
+  it('POST still returns 409 for a processing job younger than 15 minutes', async () => {
+    const jobId = await insertJob('processing', { requestedMinutesAgo: 14 });
+
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(409);
+    expect(await jobStatus(jobId)).toBe('processing');
+  });
+
+  it('GET reports a stale processing job as failed', async () => {
+    const jobId = await insertJob('processing', { requestedMinutesAgo: 16 });
+
+    const res = await agent.get('/api/me/export');
+    expect(res.status).toBe(200);
+    expect(res.body.data.jobId).toBe(jobId);
+    expect(res.body.data.status).toBe('failed');
+  });
+
+  it("does not touch another account's stale job", async () => {
+    const otherId = await createUser('me-export-other@example.com');
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO data_export_jobs (account_id, status, requested_at)
+       VALUES ($1, 'processing', NOW() - INTERVAL '16 minutes')
+       RETURNING id`,
+      [otherId],
+    );
+    const otherJobId = rows[0].id;
+
+    expect((await agent.get('/api/me/export')).status).toBe(404);
+    expect((await agent.post('/api/me/export')).status).toBe(202);
+    expect(await jobStatus(otherJobId)).toBe('processing');
+
+    await pool.query('DELETE FROM accounts WHERE id = $1', [otherId]);
+  });
+
   it('requires an account session', async () => {
     const guest = request.agent(app);
     await guest.post('/api/auth/guest');

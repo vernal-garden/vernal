@@ -5,9 +5,10 @@ vi.mock('../lib/r2', () => ({
   uploadToR2: vi.fn(),
   getPresignedDownloadUrl: vi.fn(),
   deleteFromR2: vi.fn(),
+  exportsBucket: vi.fn(() => 'test-exports'),
 }));
 
-import { deleteFromR2 } from '../lib/r2';
+import { deleteFromR2, exportsBucket } from '../lib/r2';
 import {
   deriveGrowth,
   refreshGardenBadges,
@@ -19,6 +20,7 @@ import {
 } from './nightly';
 
 const deleteFromR2Mock = vi.mocked(deleteFromR2);
+const exportsBucketMock = vi.mocked(exportsBucket);
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -435,6 +437,7 @@ describe('purgeExpiredExports', () => {
   beforeEach(async () => {
     await resetDb();
     deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
+    exportsBucketMock.mockReset().mockReturnValue('test-exports');
   });
 
   it('deletes expired export ZIPs from R2 and removes their rows, keeping unexpired ones', async () => {
@@ -452,11 +455,35 @@ describe('purgeExpiredExports', () => {
 
     expect(affected).toBe(1);
     expect(deleteFromR2Mock).toHaveBeenCalledTimes(1);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(`exports/${accountId}/${expiredId}.zip`);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(
+      `exports/${accountId}/${expiredId}.zip`,
+      'test-exports',
+    );
     const { rows: remaining } = await pool.query<{ id: number }>(
       'SELECT id FROM data_export_jobs ORDER BY id',
     );
     expect(remaining.map((r) => r.id)).toEqual([freshId]);
+  });
+
+  it('rejects and keeps the expired row when the exports bucket is not configured', async () => {
+    exportsBucketMock.mockImplementation(() => {
+      throw new Error('R2_EXPORTS_BUCKET_NAME is not set.');
+    });
+    const accountId = await createAccount();
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO data_export_jobs (account_id, status, download_url, expires_at)
+       VALUES ($1, 'complete', 'https://signed.example.com/old', NOW() - INTERVAL '1 day')
+       RETURNING id`,
+      [accountId],
+    );
+
+    await expect(purgeExpiredExports()).rejects.toThrow('R2_EXPORTS_BUCKET_NAME is not set.');
+
+    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+    const { rows: remaining } = await pool.query<{ id: number }>(
+      'SELECT id FROM data_export_jobs ORDER BY id',
+    );
+    expect(remaining.map((r) => r.id)).toEqual([rows[0].id]);
   });
 });
 

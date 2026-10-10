@@ -1,6 +1,6 @@
 import { db } from '../lib/db';
 import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
-import { deleteFromR2 } from '../lib/r2';
+import { deleteFromR2, exportsBucket } from '../lib/r2';
 import { logger } from '../lib/logger';
 import { exportKey } from '../lib/exportWorker';
 
@@ -109,8 +109,9 @@ export async function checkSubscriptionDowngrades(): Promise<{ affected: number 
   return { affected: result.rowCount ?? 0 };
 }
 
-// Deletes expired export ZIPs from R2, then their job rows. A failed object
-// delete is logged and does not keep the row.
+// Deletes expired export ZIPs from the private exports bucket, then their job
+// rows. A failed object delete is logged and does not keep the row. If the
+// exports bucket is misconfigured this throws before any row is deleted.
 export async function purgeExpiredExports(): Promise<{ affected: number }> {
   const { rows } = await db.query<{ id: number; account_id: number }>(
     `SELECT id, account_id FROM data_export_jobs
@@ -118,10 +119,11 @@ export async function purgeExpiredExports(): Promise<{ affected: number }> {
   );
   if (rows.length === 0) return { affected: 0 };
 
+  const bucket = exportsBucket();
   for (const row of rows) {
     const key = exportKey(row.account_id, row.id);
     try {
-      await deleteFromR2(key);
+      await deleteFromR2(key, bucket);
     } catch (err) {
       logger.warn('Could not delete expired export from R2', {
         jobId: row.id,
