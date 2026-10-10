@@ -1,13 +1,24 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { Pool } from 'pg';
+
+vi.mock('../lib/r2', () => ({
+  uploadToR2: vi.fn(),
+  getPresignedDownloadUrl: vi.fn(),
+  deleteFromR2: vi.fn(),
+}));
+
+import { deleteFromR2 } from '../lib/r2';
 import {
   deriveGrowth,
   refreshGardenBadges,
   purgeExpiredGuests,
   purgeScheduledAccounts,
   checkSubscriptionDowngrades,
+  purgeExpiredExports,
   runNightlyJob,
 } from './nightly';
+
+const deleteFromR2Mock = vi.mocked(deleteFromR2);
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -417,6 +428,35 @@ describe('checkSubscriptionDowngrades', () => {
     expect(byId[lifetimeId].subscription_tier).toBe('supporter');
     expect(byId[lifetimeId].stripe_subscription_id).toBe('sub_lifetime_test');
     expect(byId[lifetimeId].subscription_interval).toBe('lifetime');
+  });
+});
+
+describe('purgeExpiredExports', () => {
+  beforeEach(async () => {
+    await resetDb();
+    deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('deletes expired export ZIPs from R2 and removes their rows, keeping unexpired ones', async () => {
+    const accountId = await createAccount();
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO data_export_jobs (account_id, status, download_url, expires_at)
+       VALUES ($1, 'complete', 'https://signed.example.com/old', NOW() - INTERVAL '1 day'),
+              ($1, 'complete', 'https://signed.example.com/new', NOW() + INTERVAL '3 days')
+       RETURNING id`,
+      [accountId],
+    );
+    const [expiredId, freshId] = rows.map((r) => r.id);
+
+    const { affected } = await purgeExpiredExports();
+
+    expect(affected).toBe(1);
+    expect(deleteFromR2Mock).toHaveBeenCalledTimes(1);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(`exports/${accountId}/${expiredId}.zip`);
+    const { rows: remaining } = await pool.query<{ id: number }>(
+      'SELECT id FROM data_export_jobs ORDER BY id',
+    );
+    expect(remaining.map((r) => r.id)).toEqual([freshId]);
   });
 });
 
