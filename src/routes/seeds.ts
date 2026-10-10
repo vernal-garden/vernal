@@ -2,9 +2,11 @@ import { Router } from 'express';
 import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
 import { isNumericId } from '../lib/validation';
+import seedPhotosRouter, { deletePhotoObject } from './seedPhotos';
 
 const router = Router();
 router.use(requireAuth);
+router.use('/:id/photos', seedPhotosRouter);
 
 // ── Validation constants ──────────────────────────────────────────────────────
 
@@ -855,7 +857,14 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
+    const photoKeys = await db.query<{ r2_key: string }>(
+      'SELECT r2_key FROM seed_photos WHERE seed_id = $1',
+      [seedId],
+    );
+
     await db.query('DELETE FROM seeds WHERE id = $1', [seedId]);
+    // The cascade removes the seed_photos rows; this removes the files.
+    for (const { r2_key } of photoKeys.rows) deletePhotoObject(r2_key);
     res.status(204).send();
   } catch (err) {
     console.error('DELETE /seeds/:id error:', err);
@@ -889,7 +898,18 @@ router.post('/:id/contribute', async (req, res) => {
       return res.status(400).json({ error: 'Seed contribution is already pending or approved' });
     }
 
-    const snapshot = { ...formatSeed(seed), includePhotos: !!(req.body as Record<string, unknown>).includePhotos };
+    const wantsPhotos = (req.body as Record<string, unknown> | undefined)?.includePhotos === true;
+    const photos = wantsPhotos
+      ? (await db.query<{ id: string; url: string }>(
+          `SELECT id::text, storage_url AS url FROM seed_photos
+           WHERE seed_id = $1
+           ORDER BY created_at ASC, id ASC`,
+          [seedId],
+        )).rows
+      : [];
+    const snapshot = photos.length > 0
+      ? { ...formatSeed(seed), includePhotos: true, photos }
+      : { ...formatSeed(seed), includePhotos: false };
 
     const client = await db.connect();
     try {

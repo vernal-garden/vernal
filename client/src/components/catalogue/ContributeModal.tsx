@@ -5,6 +5,7 @@ import type { PersonalSeedDetail } from '../../types/catalogue';
 
 interface Props {
   seed: PersonalSeedDetail;
+  photoCount: number;
   onClose: () => void;
   onContributed: () => void;
 }
@@ -19,8 +20,9 @@ function PreviewRow({ label, value }: { label: string; value: string | number | 
   );
 }
 
-export default function ContributeModal({ seed, onClose, onContributed }: Props) {
+export default function ContributeModal({ seed, photoCount, onClose, onContributed }: Props) {
   const [status, setStatus] = useState<'idle' | 'saving' | 'error'>('idle');
+  const [includePhotos, setIncludePhotos] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
@@ -39,7 +41,7 @@ export default function ContributeModal({ seed, onClose, onContributed }: Props)
     setStatus('saving');
     setErrorMsg('');
     try {
-      await post(`/api/seeds/${seed.id}/contribute`, { includePhotos: false });
+      await post(`/api/seeds/${seed.id}/contribute`, { includePhotos: photoCount > 0 && includePhotos });
       onContributed();
       onClose();
     } catch (err: unknown) {
@@ -96,6 +98,46 @@ export default function ContributeModal({ seed, onClose, onContributed }: Props)
             <PreviewRow label="Tags" value={seed.tags.join(', ')} />
           )}
         </div>
+
+        {photoCount > 0 && (
+          <div style={{ marginBottom: 'var(--sp-4)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-3)' }}>
+              <span id="contribute-photos-label" style={{ fontSize: 14, color: 'var(--c-text)' }}>
+                Your photos are optional — include them?
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={includePhotos}
+                aria-labelledby="contribute-photos-label"
+                onClick={() => setIncludePhotos(v => !v)}
+                style={{
+                  flexShrink: 0, minWidth: 44, minHeight: 44, padding: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                }}
+              >
+                <span style={{
+                  position: 'relative', width: 40, height: 24, borderRadius: 'var(--r-full)',
+                  background: includePhotos ? 'var(--c-primary)' : 'var(--c-border)',
+                  transition: 'background 0.15s',
+                }}>
+                  <span style={{
+                    position: 'absolute', top: 3, left: includePhotos ? 19 : 3,
+                    width: 18, height: 18, borderRadius: 'var(--r-full)',
+                    background: 'var(--c-surface)', boxShadow: 'var(--shadow-sm)',
+                    transition: 'left 0.15s',
+                  }} />
+                </span>
+              </button>
+            </div>
+            {includePhotos && (
+              <p style={{ margin: 'var(--sp-1) 0 0', fontSize: 13, color: 'var(--c-text-2)' }}>
+                {photoCount === 1 ? '1 photo will be included.' : `${photoCount} photos will be included.`}
+              </p>
+            )}
+          </div>
+        )}
 
         <div style={{
           fontSize: 13, color: 'var(--c-text-3)', padding: 'var(--sp-3)',

@@ -120,3 +120,10 @@ export interface FamilyEntry {
   family: string;
   count: number;
 }
+
+export interface SeedPhoto {
+  id: string;
+  url: string;
+  notes: string | null;
+  createdAt: string;
+}
