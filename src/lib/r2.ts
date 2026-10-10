@@ -81,11 +81,15 @@ export async function uploadToR2(
 /**
  * Generate a presigned PUT URL for browser-direct upload.
  * Returns the URL; the caller PUTs the file directly to it.
+ * Content-Type and Content-Length are both signed, so the PUT must send exactly
+ * this Content-Type and Content-Length or R2 rejects it. (The presigner leaves
+ * content-type unsigned by default, which would let a client store any type.)
  * expiresIn is in seconds (default 300 = 5 minutes).
  */
 export async function getPresignedUploadUrl(
   key: string,
   contentType: string,
+  contentLength: number,
   expiresIn = 300,
 ): Promise<string> {
   const client = getClient();
@@ -95,8 +99,9 @@ export async function getPresignedUploadUrl(
       Bucket: BUCKET(),
       Key: key,
       ContentType: contentType,
+      ContentLength: contentLength,
     }),
-    { expiresIn },
+    { expiresIn, signableHeaders: new Set(['content-type', 'content-length']) },
   );
 }
 

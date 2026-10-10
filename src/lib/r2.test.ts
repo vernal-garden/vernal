@@ -65,7 +65,7 @@ describe('r2', () => {
   });
 
   it('getPresignedUploadUrl signs a PutObjectCommand', async () => {
-    const url = await getPresignedUploadUrl('uploads/b.jpg', 'image/jpeg');
+    const url = await getPresignedUploadUrl('uploads/b.jpg', 'image/jpeg', 1234);
 
     expect(getSignedUrlMock).toHaveBeenCalledTimes(1);
     const [, cmd, opts] = getSignedUrlMock.mock.calls[0];
@@ -74,8 +74,12 @@ describe('r2', () => {
       Bucket: 'test-bucket',
       Key: 'uploads/b.jpg',
       ContentType: 'image/jpeg',
+      ContentLength: 1234,
     });
-    expect(opts).toEqual({ expiresIn: 300 });
+    expect(opts.expiresIn).toBe(300);
+    expect(opts.signableHeaders).toBeInstanceOf(Set);
+    expect(opts.signableHeaders.has('content-type')).toBe(true);
+    expect(opts.signableHeaders.has('content-length')).toBe(true);
     expect(typeof url).toBe('string');
   });
 

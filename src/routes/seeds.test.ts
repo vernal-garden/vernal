@@ -1,8 +1,17 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
+
+vi.mock('../lib/r2', () => ({
+  getPresignedUploadUrl: vi.fn(),
+  deleteFromR2: vi.fn(() => Promise.resolve()),
+}));
+
+import { deleteFromR2 } from '../lib/r2';
 import app from '../index';
+
+const deleteFromR2Mock = vi.mocked(deleteFromR2);
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -25,6 +34,18 @@ async function createUser(email: string, password = 'Password123!'): Promise<num
     [email, hash],
   );
   return rows[0].id;
+}
+
+async function insertPhoto(seedId: string, n: number): Promise<{ id: string; key: string; url: string }> {
+  const key = `seed-photos/${seedId}/0000000${n}-0000-4000-8000-000000000000.jpg`;
+  const url = `https://photos.test/${key}`;
+  const { rows } = await pool.query<{ id: string }>(
+    `INSERT INTO seed_photos (seed_id, storage_url, r2_key, created_at)
+     VALUES ($1, $2, $3, now() + make_interval(secs => $4))
+     RETURNING id::text`,
+    [seedId, url, key, n],
+  );
+  return { id: rows[0].id, key, url };
 }
 
 async function loginAgent(email: string, password = 'Password123!') {
@@ -381,6 +402,22 @@ describe('DELETE /api/seeds/:id', () => {
     const res = await agent1.delete(`/api/seeds/${plantedSeedId}`);
     expect(res.status).toBe(204);
   });
+
+  it('DELETE a seed with two photos removes both R2 objects and rows', async () => {
+    const r = await agent1.post('/api/seeds').send({ commonName: 'Photo Delete Seed', plantFamily: 'Fam' });
+    const sid = r.body.id as string;
+    const p1 = await insertPhoto(sid, 1);
+    const p2 = await insertPhoto(sid, 2);
+    deleteFromR2Mock.mockClear();
+
+    const res = await agent1.delete(`/api/seeds/${sid}`);
+    expect(res.status).toBe(204);
+    expect(deleteFromR2Mock).toHaveBeenCalledTimes(2);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(p1.key);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(p2.key);
+    const { rows } = await pool.query('SELECT 1 FROM seed_photos WHERE seed_id = $1', [sid]);
+    expect(rows).toHaveLength(0);
+  });
 });
 
 // ── 10. add-from-cambium ──────────────────────────────────────────────────────
@@ -453,6 +490,41 @@ describe('POST /api/seeds/:id/contribute', () => {
     const res = await agent2.post(`/api/seeds/${importedSeedId}/contribute`).send({});
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/[Ii]mported/);
+  });
+
+  async function contributedContent(includePhotos: boolean, photoCount: number) {
+    const r = await agent1
+      .post('/api/seeds')
+      .send({ commonName: `Photo Contribute ${includePhotos} ${photoCount}`, plantFamily: 'Fam' });
+    const sid = r.body.id as string;
+    const photos = [];
+    for (let n = 1; n <= photoCount; n++) photos.push(await insertPhoto(sid, n));
+
+    const res = await agent1.post(`/api/seeds/${sid}/contribute`).send({ includePhotos });
+    expect(res.status).toBe(200);
+    const { rows } = await pool.query<{ content: Record<string, unknown> }>(
+      'SELECT content FROM moderation_items WHERE seed_id = $1',
+      [sid],
+    );
+    return { content: rows[0].content, photos };
+  }
+
+  it('includePhotos true with two photos → both photos in the snapshot, oldest first', async () => {
+    const { content, photos } = await contributedContent(true, 2);
+    expect(content.includePhotos).toBe(true);
+    expect(content.photos).toEqual(photos.map((p) => ({ id: p.id, url: p.url })));
+  });
+
+  it('includePhotos true with no photos → includePhotos false, no photos key', async () => {
+    const { content } = await contributedContent(true, 0);
+    expect(content.includePhotos).toBe(false);
+    expect(content).not.toHaveProperty('photos');
+  });
+
+  it('includePhotos false with photos → includePhotos false, no photos key', async () => {
+    const { content } = await contributedContent(false, 2);
+    expect(content.includePhotos).toBe(false);
+    expect(content).not.toHaveProperty('photos');
   });
 
   it('12. rejected seed can be resubmitted', async () => {

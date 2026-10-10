@@ -96,8 +96,8 @@ async function seedAccountData(ownerId: number, label: string) {
     [ownerId, `${label} Tomato`],
   );
   await insert(
-    `INSERT INTO seed_photos (seed_id, storage_url, taken_at) VALUES ($1, $2, '2026-05-01')`,
-    [seedId, `https://cdn.example.com/${label}.jpg`],
+    `INSERT INTO seed_photos (seed_id, storage_url, r2_key, taken_at) VALUES ($1, $2, $3, '2026-05-01')`,
+    [seedId, `https://cdn.example.com/${label}.jpg`, `seed-photos/${seedId}/${label}.jpg`],
   );
   const plantingId = await insert(
     `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, cell_x, cell_y, planting_date)

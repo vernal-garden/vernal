@@ -16,6 +16,7 @@ import type { DataGridEntry } from './DataGrid';
 import SeedForm from './SeedForm';
 import CorrectionModal from './CorrectionModal';
 import ContributeModal from './ContributeModal';
+import SeedPhotos from './SeedPhotos';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -408,6 +409,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
   const [editOpen, setEditOpen] = useState(false);
   const [contributeOpen, setContributeOpen] = useState(false);
   const [contributionStatus, setContributionStatus] = useState(detail.contributionStatus);
+  const [photoCount, setPhotoCount] = useState(0);
 
   async function handleRating(rating: number | null) {
     if (isGuest) { onPromptAccount(); return; }
@@ -578,12 +580,8 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
         )}
       </div>
 
-      {/* My Photos stub */}
-      <div style={{ background: 'var(--c-surface-raised)', borderRadius: 'var(--r-md)', padding: 'var(--sp-4)', textAlign: 'center', border: '1px dashed var(--c-border)' }}>
-        <p style={{ margin: 0, fontSize: 13, color: 'var(--c-text-3)' }}>
-          Photo uploads coming soon.
-        </p>
-      </div>
+      {/* My Photos (renders nothing for guests) */}
+      <SeedPhotos seedId={detail.id} onCountChange={setPhotoCount} />
 
       {/* Action row */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--c-border-subtle)' }}>
@@ -633,6 +631,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
       {contributeOpen && (
         <ContributeModal
           seed={detail}
+          photoCount={photoCount}
           onClose={() => setContributeOpen(false)}
           onContributed={() => setContributionStatus('pending')}
         />
