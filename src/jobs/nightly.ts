@@ -1,5 +1,8 @@
 import { db } from '../lib/db';
 import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
+import { deleteFromR2, exportsBucket } from '../lib/r2';
+import { logger } from '../lib/logger';
+import { exportKey } from '../lib/exportWorker';
 
 // The only writer of plantings.growth_stage_pct, growth_stage,
 // displayed_growth_stage, harvest_ready, and harvest_window_end — routes
@@ -106,6 +109,36 @@ export async function checkSubscriptionDowngrades(): Promise<{ affected: number 
   return { affected: result.rowCount ?? 0 };
 }
 
+// Deletes expired export ZIPs from the private exports bucket, then their job
+// rows. A failed object delete is logged and does not keep the row. If the
+// exports bucket is misconfigured this throws before any row is deleted.
+export async function purgeExpiredExports(): Promise<{ affected: number }> {
+  const { rows } = await db.query<{ id: number; account_id: number }>(
+    `SELECT id, account_id FROM data_export_jobs
+     WHERE status = 'complete' AND expires_at < NOW()`,
+  );
+  if (rows.length === 0) return { affected: 0 };
+
+  const bucket = exportsBucket();
+  for (const row of rows) {
+    const key = exportKey(row.account_id, row.id);
+    try {
+      await deleteFromR2(key, bucket);
+    } catch (err) {
+      logger.warn('Could not delete expired export from R2', {
+        jobId: row.id,
+        key,
+        errMsg: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const result = await db.query('DELETE FROM data_export_jobs WHERE id = ANY($1::int[])', [
+    rows.map((r) => r.id),
+  ]);
+  return { affected: result.rowCount ?? 0 };
+}
+
 export async function runNightlyJob(): Promise<void> {
   const started = new Date();
   const { rows } = await db.query<{ id: number }>(
@@ -122,6 +155,7 @@ export async function runNightlyJob(): Promise<void> {
     ['purgeExpiredGuests', purgeExpiredGuests],
     ['purgeScheduledAccounts', purgeScheduledAccounts],
     ['checkSubscriptionDowngrades', checkSubscriptionDowngrades],
+    ['purgeExpiredExports', purgeExpiredExports],
   ];
 
   for (const [name, task] of tasks) {

@@ -1,13 +1,20 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { Pool } from 'pg';
 import app from '../index';
 import * as mailer from '../lib/mailer';
+import * as exportWorker from '../lib/exportWorker';
 
 vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
 const sendMailMock = vi.mocked(mailer.sendMail);
+
+vi.mock('../lib/exportWorker', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/exportWorker')>()),
+  processExportJob: vi.fn().mockResolvedValue(undefined),
+}));
+const processExportJobMock = vi.mocked(exportWorker.processExportJob);
 
 function extractToken(html: string): string {
   const match = html.match(/token=([a-f0-9]+)/);
@@ -708,5 +715,195 @@ describe('GET /api/me/email/confirm', () => {
   it('returns 400 when token is missing', async () => {
     const res = await agent.get('/api/me/email/confirm');
     expect(res.status).toBe(400);
+  });
+});
+
+// ── Data export ───────────────────────────────────────────────────────────────
+
+describe('/api/me/export', () => {
+  let agent: ReturnType<typeof request.agent>;
+  let accountId: number;
+
+  async function insertJob(
+    status: string,
+    opts: { expiresInDays?: number; downloadUrl?: string; requestedMinutesAgo?: number } = {},
+  ): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO data_export_jobs (account_id, status, requested_at, download_url, expires_at)
+       VALUES ($1, $2, NOW() - ($3::text || ' minutes')::interval, $4,
+               CASE WHEN $5::int IS NULL THEN NULL ELSE NOW() + ($5::text || ' days')::interval END)
+       RETURNING id`,
+      [
+        accountId,
+        status,
+        opts.requestedMinutesAgo ?? 0,
+        opts.downloadUrl ?? null,
+        opts.expiresInDays ?? null,
+      ],
+    );
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    accountId = await createUser('me-export@example.com');
+    agent = await loginAgent('me-export@example.com');
+  });
+
+  beforeEach(async () => {
+    await pool.query('DELETE FROM data_export_jobs WHERE account_id = $1', [accountId]);
+    processExportJobMock.mockClear();
+  });
+
+  it('POST inserts a pending job and returns 202 with its id', async () => {
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(202);
+    expect(res.body.data.status).toBe('pending');
+    expect(typeof res.body.data.jobId).toBe('number');
+
+    const { rows } = await pool.query(
+      'SELECT account_id, status FROM data_export_jobs WHERE id = $1',
+      [res.body.data.jobId],
+    );
+    expect(rows[0]).toEqual({ account_id: accountId, status: 'pending' });
+    expect(processExportJobMock).toHaveBeenCalledWith(res.body.data.jobId);
+  });
+
+  it('POST returns 409 while a job is pending', async () => {
+    await insertJob('pending');
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('An export is already in progress.');
+    expect(processExportJobMock).not.toHaveBeenCalled();
+  });
+
+  it('POST returns 409 while a job is processing', async () => {
+    await insertJob('processing');
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('An export is already in progress.');
+  });
+
+  it('POST returns the existing download for an unexpired complete job', async () => {
+    await insertJob('complete', { expiresInDays: 3, downloadUrl: 'https://r2.example.com/x.zip' });
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('complete');
+    expect(res.body.data.downloadUrl).toBe('https://r2.example.com/x.zip');
+    expect(res.body.data.expiresAt).toBeTruthy();
+    expect(processExportJobMock).not.toHaveBeenCalled();
+
+    const { rows } = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM data_export_jobs WHERE account_id = $1',
+      [accountId],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it('POST creates a new job once the complete job has expired', async () => {
+    const oldId = await insertJob('complete', {
+      expiresInDays: -1,
+      downloadUrl: 'https://r2.example.com/old.zip',
+    });
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(202);
+    expect(res.body.data.jobId).not.toBe(oldId);
+    expect(processExportJobMock).toHaveBeenCalledWith(res.body.data.jobId);
+  });
+
+  it('GET returns 404 when no export was requested', async () => {
+    const res = await agent.get('/api/me/export');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('No export requested.');
+  });
+
+  it('GET returns the latest job', async () => {
+    await insertJob('failed', { requestedMinutesAgo: 60 });
+    const latestId = await insertJob('complete', {
+      expiresInDays: 7,
+      downloadUrl: 'https://r2.example.com/new.zip',
+    });
+
+    const res = await agent.get('/api/me/export');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      jobId: latestId,
+      status: 'complete',
+      downloadUrl: 'https://r2.example.com/new.zip',
+      expired: false,
+    });
+    expect(res.body.data.requestedAt).toBeTruthy();
+    expect(res.body.data.expiresAt).toBeTruthy();
+  });
+
+  it('GET marks a complete job past expires_at as expired with no download URL', async () => {
+    await insertJob('complete', { expiresInDays: -1, downloadUrl: 'https://r2.example.com/old.zip' });
+    const res = await agent.get('/api/me/export');
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('complete');
+    expect(res.body.data.expired).toBe(true);
+    expect(res.body.data.downloadUrl).toBeNull();
+  });
+
+  async function jobStatus(id: number): Promise<string> {
+    const { rows } = await pool.query<{ status: string }>(
+      'SELECT status FROM data_export_jobs WHERE id = $1',
+      [id],
+    );
+    return rows[0].status;
+  }
+
+  it.each(['processing', 'pending'])(
+    'POST fails a %s job older than 15 minutes and queues a new one',
+    async (status) => {
+      const staleId = await insertJob(status, { requestedMinutesAgo: 16 });
+
+      const res = await agent.post('/api/me/export');
+      expect(res.status).toBe(202);
+      expect(res.body.data.jobId).not.toBe(staleId);
+
+      expect(await jobStatus(staleId)).toBe('failed');
+      expect(await jobStatus(res.body.data.jobId)).toBe('pending');
+    },
+  );
+
+  it('POST still returns 409 for a processing job younger than 15 minutes', async () => {
+    const jobId = await insertJob('processing', { requestedMinutesAgo: 14 });
+
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(409);
+    expect(await jobStatus(jobId)).toBe('processing');
+  });
+
+  it('GET reports a stale processing job as failed', async () => {
+    const jobId = await insertJob('processing', { requestedMinutesAgo: 16 });
+
+    const res = await agent.get('/api/me/export');
+    expect(res.status).toBe(200);
+    expect(res.body.data.jobId).toBe(jobId);
+    expect(res.body.data.status).toBe('failed');
+  });
+
+  it("does not touch another account's stale job", async () => {
+    const otherId = await createUser('me-export-other@example.com');
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO data_export_jobs (account_id, status, requested_at)
+       VALUES ($1, 'processing', NOW() - INTERVAL '16 minutes')
+       RETURNING id`,
+      [otherId],
+    );
+    const otherJobId = rows[0].id;
+
+    expect((await agent.get('/api/me/export')).status).toBe(404);
+    expect((await agent.post('/api/me/export')).status).toBe(202);
+    expect(await jobStatus(otherJobId)).toBe('processing');
+
+    await pool.query('DELETE FROM accounts WHERE id = $1', [otherId]);
+  });
+
+  it('requires an account session', async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    expect((await guest.post('/api/me/export')).status).toBe(401);
+    expect((await guest.get('/api/me/export')).status).toBe(401);
   });
 });

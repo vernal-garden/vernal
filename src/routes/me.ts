@@ -5,6 +5,8 @@ import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
 import { clearSessionCookie } from '../lib/sessions';
 import { sendMail } from '../lib/mailer';
+import { logger } from '../lib/logger';
+import { processExportJob } from '../lib/exportWorker';
 
 const router = Router();
 router.use(requireAuth);
@@ -527,6 +529,140 @@ router.post('/supporter-prompt/shown', async (req, res) => {
     res.json({ data: { supporterPromptShown: true } });
   } catch (err) {
     console.error('POST /me/supporter-prompt/shown error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// A pending/processing export older than this is assumed dead (server restart
+// mid-job, or a crash before processExportJob ran) and is marked failed.
+const EXPORT_STALE_MINUTES = 15;
+
+async function failStaleExportJobs(
+  q: { query: typeof db.query },
+  accountId: number,
+): Promise<void> {
+  const { rows } = await q.query<{ id: number }>(
+    `UPDATE data_export_jobs SET status = 'failed'
+     WHERE account_id = $1
+       AND status IN ('pending', 'processing')
+       AND requested_at < now() - make_interval(mins => $2)
+     RETURNING id`,
+    [accountId, EXPORT_STALE_MINUTES],
+  );
+  for (const { id } of rows) {
+    logger.warn('Marked stale export job failed', { jobId: id, accountId });
+  }
+}
+
+// POST /api/me/export
+// Starts a data export. Returns the existing download while an unexpired
+// export exists; otherwise queues a job and processes it in the background.
+router.post('/export', async (req, res) => {
+  const accountId = req.session!.account!.id;
+
+  try {
+    let jobId: number;
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      // Serialises concurrent requests from the same account so only one job is queued.
+      await client.query('SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+      await failStaleExportJobs(client, accountId);
+
+      const { rows: active } = await client.query(
+        `SELECT 1 FROM data_export_jobs
+         WHERE account_id = $1 AND status IN ('pending', 'processing')
+         LIMIT 1`,
+        [accountId],
+      );
+      if (active.length > 0) {
+        await client.query('COMMIT');
+        return res.status(409).json({ error: 'An export is already in progress.' });
+      }
+
+      const { rows: ready } = await client.query<{ download_url: string; expires_at: Date }>(
+        `SELECT download_url, expires_at FROM data_export_jobs
+         WHERE account_id = $1 AND status = 'complete' AND expires_at > now()
+         ORDER BY expires_at DESC
+         LIMIT 1`,
+        [accountId],
+      );
+      if (ready.length > 0) {
+        await client.query('COMMIT');
+        return res.status(200).json({
+          data: {
+            status: 'complete',
+            downloadUrl: ready[0].download_url,
+            expiresAt: ready[0].expires_at,
+          },
+        });
+      }
+
+      const { rows: inserted } = await client.query<{ id: number }>(
+        `INSERT INTO data_export_jobs (account_id, status) VALUES ($1, 'pending') RETURNING id`,
+        [accountId],
+      );
+      jobId = inserted[0].id;
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
+
+    // Deliberately not awaited — processExportJob never throws.
+    void processExportJob(jobId);
+
+    res.status(202).json({ data: { jobId, status: 'pending' } });
+  } catch (err) {
+    logger.error('POST /me/export error', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/me/export
+// The account's most recent export job.
+router.get('/export', async (req, res) => {
+  const accountId = req.session!.account!.id;
+
+  try {
+    await failStaleExportJobs(db, accountId);
+    const { rows } = await db.query<{
+      id: number;
+      status: string;
+      requested_at: Date;
+      completed_at: Date | null;
+      download_url: string | null;
+      expires_at: Date | null;
+      expired: boolean;
+    }>(
+      `SELECT id, status, requested_at, completed_at, download_url, expires_at,
+              COALESCE(status = 'complete' AND expires_at <= now(), false) AS expired
+       FROM data_export_jobs
+       WHERE account_id = $1
+       ORDER BY requested_at DESC, id DESC
+       LIMIT 1`,
+      [accountId],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No export requested.' });
+    }
+
+    const job = rows[0];
+    res.json({
+      data: {
+        jobId: job.id,
+        status: job.status,
+        requestedAt: job.requested_at,
+        completedAt: job.completed_at,
+        downloadUrl: job.expired ? null : job.download_url,
+        expiresAt: job.expires_at,
+        expired: job.expired,
+      },
+    });
+  } catch (err) {
+    logger.error('GET /me/export error', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

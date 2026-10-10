@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { post, del } from '../../lib/api';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { get, post, del, ApiError } from '../../lib/api';
 import { useSignOut } from '../../hooks/useSignOut';
 import type { AccountData } from './types';
 import {
@@ -7,6 +7,7 @@ import {
   cardTitleSt,
   bodyTextSt,
   inputSt,
+  primaryButtonSt,
   secondaryButtonSt,
   dangerButtonSt,
   errorTextSt,
@@ -94,6 +95,182 @@ function DeleteAccountDialog({ onClose, onDeleted }: { onClose: () => void; onDe
   );
 }
 
+interface ExportJob {
+  jobId: number;
+  status: 'pending' | 'processing' | 'complete' | 'failed';
+  requestedAt: string;
+  completedAt: string | null;
+  downloadUrl: string | null;
+  expiresAt: string | null;
+  expired: boolean;
+}
+
+interface ExportRequestResult {
+  jobId?: number;
+  status: 'pending' | 'complete';
+  downloadUrl?: string;
+  expiresAt?: string;
+}
+
+type RequestableKind = 'idle' | 'expired' | 'failed';
+
+type ExportView =
+  | { kind: 'loading' }
+  | { kind: RequestableKind }
+  | { kind: 'requesting'; from: RequestableKind }
+  | { kind: 'pending' }
+  | { kind: 'complete'; downloadUrl: string; expiresAt: string };
+
+const EXPORT_POLL_MS = 4000;
+const tallButton: CSSProperties = { minHeight: 44 };
+
+function viewFromJob(job: ExportJob): ExportView {
+  if (job.status === 'pending' || job.status === 'processing') return { kind: 'pending' };
+  if (job.status === 'failed') return { kind: 'failed' };
+  if (job.expired || !job.downloadUrl || !job.expiresAt) return { kind: 'expired' };
+  return { kind: 'complete', downloadUrl: job.downloadUrl, expiresAt: job.expiresAt };
+}
+
+const EXPORT_COPY: Record<RequestableKind, { text: string; button: string }> = {
+  idle: { text: 'Download a copy of all your Vernal data.', button: 'Request export' },
+  expired: { text: 'Your last export has expired.', button: 'Request a new export' },
+  failed: { text: "That export didn't finish. Try again.", button: 'Request export' },
+};
+
+function ExportDataCard() {
+  const [view, setView] = useState<ExportView>({ kind: 'loading' });
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    get<{ data: ExportJob }>('/api/me/export')
+      .then((res) => {
+        if (!cancelled) setView(res ? viewFromJob(res.data) : { kind: 'idle' });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (!(err instanceof ApiError && err.status === 404)) {
+          setError(apiErrorMessage(err, 'Could not load your export status.'));
+        }
+        setView({ kind: 'idle' });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const isPending = view.kind === 'pending';
+
+  useEffect(() => {
+    if (!isPending) return;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      try {
+        const res = await get<{ data: ExportJob }>('/api/me/export');
+        if (cancelled || !res) return;
+        const next = viewFromJob(res.data);
+        if (next.kind !== 'pending') setView(next);
+      } catch {
+        // Transient failure — keep polling.
+      }
+    }, EXPORT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [isPending]);
+
+  async function handleRequest(from: RequestableKind) {
+    setError(null);
+    setView({ kind: 'requesting', from });
+    try {
+      const res = await post<{ data: ExportRequestResult }>('/api/me/export');
+      const result = res?.data;
+      if (result?.status === 'complete' && result.downloadUrl && result.expiresAt) {
+        setView({ kind: 'complete', downloadUrl: result.downloadUrl, expiresAt: result.expiresAt });
+      } else {
+        setView({ kind: 'pending' });
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setView({ kind: 'pending' });
+        return;
+      }
+      setError(apiErrorMessage(err, 'Could not start your export.'));
+      setView({ kind: from });
+    }
+  }
+
+  let body: ReactNode = null;
+
+  if (view.kind === 'idle' || view.kind === 'expired' || view.kind === 'failed' || view.kind === 'requesting') {
+    const from = view.kind === 'requesting' ? view.from : view.kind;
+    const requesting = view.kind === 'requesting';
+    body = (
+      <>
+        <p style={bodyTextSt}>{EXPORT_COPY[from].text}</p>
+        <div style={{ marginTop: 'var(--sp-3)' }}>
+          <button
+            type="button"
+            onClick={() => handleRequest(from)}
+            disabled={requesting}
+            style={{ ...primaryButtonSt, ...tallButton, opacity: requesting ? 0.6 : 1 }}
+          >
+            {requesting ? 'Requesting…' : EXPORT_COPY[from].button}
+          </button>
+        </div>
+      </>
+    );
+  } else if (view.kind === 'pending') {
+    body = (
+      <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)' }}>
+        <div
+          aria-hidden="true"
+          style={{
+            flexShrink: 0,
+            width: 18,
+            height: 18,
+            border: '2px solid var(--c-primary-light)',
+            borderTopColor: 'var(--c-primary)',
+            borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+          }}
+        />
+        <p style={bodyTextSt}>Preparing your export… this usually takes under a minute.</p>
+      </div>
+    );
+  } else if (view.kind === 'complete') {
+    const expires = new Date(view.expiresAt).toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    body = (
+      <>
+        <p style={bodyTextSt}>Your export is ready.</p>
+        <div style={{ marginTop: 'var(--sp-3)', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={() => window.open(view.downloadUrl, '_blank', 'noopener,noreferrer')}
+            style={{ ...primaryButtonSt, ...tallButton }}
+          >
+            Download
+          </button>
+          <span style={{ ...bodyTextSt, fontSize: 13 }}>Link expires {expires}</span>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <div style={cardSt}>
+      <h3 style={cardTitleSt}>Export your data</h3>
+      {body}
+      {error && <p style={errorTextSt}>{error}</p>}
+    </div>
+  );
+}
+
 export default function DataPrivacySettings({ account, onUpdate }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -120,17 +297,7 @@ export default function DataPrivacySettings({ account, onUpdate }: Props) {
       </h2>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
-        <div style={cardSt}>
-          <h3 style={cardTitleSt}>Export your data</h3>
-          <p style={bodyTextSt}>
-            Export is coming in a future update. You'll be able to download all your garden data as a file.
-          </p>
-          <div style={{ marginTop: 'var(--sp-3)' }}>
-            <button type="button" disabled style={{ ...secondaryButtonSt, opacity: 0.5, cursor: 'not-allowed' }}>
-              Export your data
-            </button>
-          </div>
-        </div>
+        <ExportDataCard />
 
         <div style={cardSt}>
           <h3 style={cardTitleSt}>Delete account</h3>
