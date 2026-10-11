@@ -1,5 +1,7 @@
 // client/src/types/catalogue.ts
 
+export type ContributionStatus = 'private' | 'pending' | 'approved' | 'rejected';
+
 // ── Browse list cards ─────────────────────────────────────────────────────────
 
 export interface CommunityCard {
@@ -23,7 +25,7 @@ export interface PersonalCard {
   userRating: number | null;
   isFavourite: boolean;
   origin: string;
-  contributionStatus: string;
+  contributionStatus: ContributionStatus;
   cambiumSourceId: string | null;
 }
 
@@ -88,7 +90,7 @@ export interface PersonalSeedDetail {
   illustrationKey: string | null;
   cambiumSourceId: string | null;
   origin: string;
-  contributionStatus: string;
+  contributionStatus: ContributionStatus;
   spacingInches: number | null;
   maturityDaysMin: number | null;
   maturityDaysMax: number | null;
