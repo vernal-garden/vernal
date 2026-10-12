@@ -1,5 +1,33 @@
 import { Request, Response, NextFunction } from 'express';
 import { findSession, COOKIE_NAME } from '../lib/sessions';
+import { db } from '../lib/db';
+import { logger } from '../lib/logger';
+
+const ACTIVITY_BUMP_INTERVAL_MS = 60 * 60 * 1000;
+
+// accountId → time (ms) of the last last_active_at bump issued by this process.
+// Keeps the UPDATE to at most once per account per hour per process; the SQL
+// guard below covers multiple processes.
+const lastActivityBump = new Map<number, number>();
+
+function bumpLastActive(accountId: number): void {
+  const now = Date.now();
+  const last = lastActivityBump.get(accountId);
+  if (last !== undefined && now - last < ACTIVITY_BUMP_INTERVAL_MS) return;
+  lastActivityBump.set(accountId, now);
+
+  db.query(
+    `UPDATE accounts SET last_active_at = now()
+      WHERE id = $1
+        AND (last_active_at IS NULL OR last_active_at < now() - interval '1 hour')`,
+    [accountId],
+  ).catch((err: unknown) => {
+    logger.warn('last_active_at update failed', {
+      accountId,
+      errMsg: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
 
 // Attaches session data to req.session on every request.
 // Sets req.session = null if no valid cookie is present.
@@ -20,6 +48,10 @@ export async function sessionMiddleware(
     req.session = await findSession(signed);
   } catch {
     req.session = null;
+  }
+
+  if (req.session?.account) {
+    bumpLastActive(req.session.account.id);
   }
 
   next();

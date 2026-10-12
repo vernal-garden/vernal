@@ -6,6 +6,7 @@ import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hook
 import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
 import FitLine from './FitLine';
+import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
 
 Konva.hitOnDragEnabled = true;
 
@@ -307,6 +308,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   conflictedIds, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
 }, ref) => {
+  useRegisterCanvas();
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(1);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
