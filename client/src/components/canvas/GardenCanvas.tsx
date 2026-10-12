@@ -1,11 +1,13 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import Konva from 'konva';
 import { Circle, Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
 import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
 import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
+import { apiUrl } from '../../lib/api';
 import FitLine from './FitLine';
+import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
 
 Konva.hitOnDragEnabled = true;
 
@@ -17,6 +19,11 @@ const GRID_HIDE_THRESHOLD = 0.4;
 const HANDLE_HALF = 6;
 const MARKER_RADIUS = GRID_PX * 0.38;
 const MARKER_HIT_RADIUS = GRID_PX * 0.5;
+
+// Phase 41: garden thumbnails
+const THUMB_LONG_SIDE_PX = 640;
+const THUMB_PAD = 24;
+const THUMB_DEBOUNCE_MS = 5000;
 
 const MARKER_COLORS = [
   '#2d6a4f', '#b5652a', '#5e3d8a', '#1a5f7a',
@@ -43,6 +50,7 @@ export interface GardenCanvasRef {
   zoomOut: () => void;
   resetZoom: () => void;
   focusBed: (bed: Bed) => void;
+  captureThumbnail: () => Promise<Blob | null>;
 }
 
 interface Props {
@@ -60,6 +68,8 @@ interface Props {
   // Phase 19
   garden: Garden | null;
   plantingsByBedId: PlantingsByBedId;
+  // Phase 41: true while plantings for gardenId are being fetched
+  plantingsLoading?: boolean;
   armedSeed: ArmedSeed | null;
   onConfirmPlacement: (
     bedId: string,
@@ -300,13 +310,14 @@ function markerWorldCenter(
 const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   beds, selectedBedId, onSelectBed, onDoubleBed,
   onCreateBed, onUpdateBedGeometry,
-  onScaleChange, onOverlapWarning, mode, panActive, gardenId: _gardenId,
-  garden, plantingsByBedId, armedSeed,
+  onScaleChange, onOverlapWarning, mode, panActive, gardenId,
+  garden, plantingsByBedId, plantingsLoading, armedSeed,
   onConfirmPlacement, onConfirmRemoval,
   // Phase 20
   conflictedIds, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
 }, ref) => {
+  useRegisterCanvas();
   const stageRef = useRef<Konva.Stage>(null);
   const [scale, setScale] = useState(1);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
@@ -553,7 +564,135 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     onScaleChange?.(clamped);
   }, [onScaleChange]);
 
+  // ---- Phase 41: thumbnail capture ----
+
+  // Renders only the thumb-* layers (beds, markers, labels), framed on their
+  // content, to a PNG whose long side is THUMB_LONG_SIDE_PX. Never throws.
+  const captureThumbnail = useCallback((): Promise<Blob | null> => {
+    const stage = stageRef.current;
+    if (!stage || bedsRef.current.length === 0) return Promise.resolve(null);
+
+    const hidden: Konva.Layer[] = [];
+    const restore = () => {
+      for (const layer of hidden) layer.visible(true);
+      hidden.length = 0;
+    };
+
+    try {
+      const thumbLayers: Konva.Layer[] = [];
+      for (const layer of stage.getLayers()) {
+        if (layer.name().startsWith('thumb-')) {
+          thumbLayers.push(layer);
+        } else if (layer.visible()) {
+          layer.visible(false);
+          hidden.push(layer);
+        }
+      }
+
+      let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+      for (const layer of thumbLayers) {
+        const r = layer.getClientRect();
+        // An empty layer (e.g. no plantings) reports a 0×0 rect at the origin.
+        if (r.width === 0 && r.height === 0) continue;
+        x1 = Math.min(x1, r.x);
+        y1 = Math.min(y1, r.y);
+        x2 = Math.max(x2, r.x + r.width);
+        y2 = Math.max(y2, r.y + r.height);
+      }
+      if (!(x2 - x1 > 0) || !(y2 - y1 > 0)) {
+        restore();
+        return Promise.resolve(null);
+      }
+
+      const box = {
+        x: x1 - THUMB_PAD,
+        y: y1 - THUMB_PAD,
+        width: x2 - x1 + THUMB_PAD * 2,
+        height: y2 - y1 + THUMB_PAD * 2,
+      };
+      const pixelRatio = THUMB_LONG_SIDE_PX / Math.max(box.width, box.height);
+      const canvas = stage.toCanvas({ ...box, pixelRatio });
+      restore();
+
+      return new Promise(resolve => {
+        try {
+          canvas.toBlob(blob => resolve(blob), 'image/png');
+        } catch {
+          resolve(null);
+        }
+      });
+    } catch {
+      restore();
+      return Promise.resolve(null);
+    }
+  }, []);
+
+  const captureAndUpload = useCallback((targetGardenId: string) => {
+    captureThumbnail()
+      .then(blob => {
+        if (!blob) return;
+        return fetch(apiUrl(`/api/gardens/${targetGardenId}/thumbnail`), {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'image/png' },
+          body: blob,
+        });
+      })
+      .catch(() => {});
+  }, [captureThumbnail]);
+
+  // Current-season content the thumbnail depicts. Selection, previews and
+  // overlays are deliberately excluded.
+  const thumbSignature = useMemo(() => JSON.stringify([
+    beds.map(b => [b.id, b.type, b.label, b.grid, b.freeform]),
+    beds.map(b => (plantingsByBedId[b.id] ?? []).map(p => [p.id, p.cell, p.point])),
+  ]), [beds, plantingsByBedId]);
+
+  // useGarden/usePlantings keep the previous garden's data until the new
+  // fetches land, so "loaded" means both belong to gardenId.
+  const thumbContentLoaded = gardenId !== '' && garden?.id === gardenId && !plantingsLoading;
+
+  const thumbTimerRef = useRef<number | null>(null);
+  const thumbPendingRef = useRef(false);
+  const thumbLastSigRef = useRef<string | null>(null);
+
+  // Per garden: forget the baseline. Cleanup runs on garden switch and on
+  // unmount (layout cleanup, so the Stage still exists) and flushes a
+  // pending capture for the garden that is still drawn.
+  useLayoutEffect(() => {
+    thumbLastSigRef.current = null;
+    return () => {
+      if (thumbTimerRef.current !== null) {
+        window.clearTimeout(thumbTimerRef.current);
+        thumbTimerRef.current = null;
+      }
+      if (thumbPendingRef.current) {
+        thumbPendingRef.current = false;
+        if (gardenId && stageRef.current) captureAndUpload(gardenId);
+      }
+    };
+  }, [gardenId, captureAndUpload]);
+
+  useEffect(() => {
+    if (!thumbContentLoaded) return;
+    if (thumbLastSigRef.current === null) {
+      thumbLastSigRef.current = thumbSignature; // baseline: opening a garden never captures
+      return;
+    }
+    if (thumbSignature === thumbLastSigRef.current) return;
+    thumbLastSigRef.current = thumbSignature;
+    thumbPendingRef.current = true;
+    if (thumbTimerRef.current !== null) window.clearTimeout(thumbTimerRef.current);
+    const targetGardenId = gardenId;
+    thumbTimerRef.current = window.setTimeout(() => {
+      thumbTimerRef.current = null;
+      thumbPendingRef.current = false;
+      captureAndUpload(targetGardenId);
+    }, THUMB_DEBOUNCE_MS);
+  }, [thumbContentLoaded, thumbSignature, gardenId, captureAndUpload]);
+
   useImperativeHandle(ref, () => ({
+    captureThumbnail,
     zoomIn() {
       const s = stageRef.current; if (!s) return;
       applyZoom(s.scaleX() * ZOOM_STEP, s.width() / 2, s.height() / 2);
@@ -590,7 +729,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       setScale(clamped);
       onScaleChange?.(clamped);
     },
-  }), [applyZoom, onScaleChange]);
+  }), [applyZoom, onScaleChange, captureThumbnail]);
 
   const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
@@ -1139,7 +1278,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         </Layer>
 
         {/* Layer 2: beds */}
-        <Layer listening={true}>
+        <Layer name="thumb-beds" listening={true}>
           {beds.map(bed => {
             const selected = bed.id === selectedBedId;
             const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
@@ -1232,7 +1371,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         </Layer>
 
         {/* Layer 3: planting markers (visual only — clicks resolved in JS) */}
-        <Layer listening={false}>
+        <Layer name="thumb-markers" listening={false}>
           {beds.map(bed => {
             const plantings = plantingsByBedId[bed.id] ?? [];
             const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
@@ -1289,7 +1428,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         </Layer>
 
         {/* Layer 5: chrome overlay — bed labels + overcrowding badges (above markers) */}
-        <Layer listening={false}>
+        <Layer name="thumb-labels" listening={false}>
           {/* Bed name labels + overcrowding badges, centered above the top border */}
           {beds.map(bed => {
             const isMoving = dragOffset != null && moveRef.current?.bedId === bed.id;
