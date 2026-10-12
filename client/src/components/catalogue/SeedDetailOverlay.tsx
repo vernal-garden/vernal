@@ -1,7 +1,7 @@
 // client/src/components/catalogue/SeedDetailOverlay.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { get, post, patch, ApiError } from '../../lib/api';
+import { get, post, patch, del, ApiError } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import type {
   BrowseCard,
@@ -75,6 +75,25 @@ const secondaryBtnStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+// Same shape as the photo viewer's buttons in SeedPhotos.tsx
+const textBtnStyle: React.CSSProperties = {
+  minHeight: 44, padding: '0 var(--sp-4)',
+  background: 'transparent', color: 'var(--c-text-2)',
+  border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)',
+  fontFamily: 'var(--font-ui)', fontSize: 14, cursor: 'pointer',
+};
+
+const dangerTextBtnStyle: React.CSSProperties = {
+  ...textBtnStyle,
+  color: 'var(--c-danger)', borderColor: 'var(--c-danger)',
+};
+
+const dangerSolidBtnStyle: React.CSSProperties = {
+  ...textBtnStyle,
+  background: 'var(--c-danger)', color: 'var(--c-text-on-primary)',
+  border: 'none', fontWeight: 600,
+};
+
 // ── Shared data-grid builder ──────────────────────────────────────────────────
 
 function buildDataEntries(d: CatalogueSeedDetail | PersonalSeedDetail): DataGridEntry[] {
@@ -100,6 +119,7 @@ interface Props {
   card: BrowseCard;
   onClose: () => void;
   onDetailUpdated?: (seed: PersonalSeedDetail) => void;
+  onDeleted?: (seedId: string) => void;
 }
 
 type DetailStatus =
@@ -108,11 +128,17 @@ type DetailStatus =
   | { status: 'loaded-personal'; detail: PersonalSeedDetail }
   | { status: 'error'; message: string };
 
-export default function SeedDetailOverlay({ card, onClose, onDetailUpdated }: Props) {
+export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDeleted }: Props) {
   const { isGuest } = useAuth();
   const navigate = useNavigate();
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const [detailStatus, setDetailStatus] = useState<DetailStatus>({ status: 'loading' });
+  // True while a seed delete request is in flight; blocks closing the overlay.
+  const deletingRef = useRef(false);
+
+  function requestClose() {
+    if (!deletingRef.current) onClose();
+  }
 
   // ── Fetch detail ───────────────────────────────────────────────────────────
 
@@ -143,7 +169,7 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated }: Pr
   // ── Escape key ────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    function onKeyDown(e: KeyboardEvent) { if (e.key === 'Escape' && !deletingRef.current) onClose(); }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [onClose]);
@@ -165,7 +191,7 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated }: Pr
         padding: '40px 16px 40px',
         overflowY: 'auto',
       }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget) requestClose(); }}
     >
       <style>{`
         @keyframes catalogue-fade-in { from { opacity: 0 } to { opacity: 1 } }
@@ -194,7 +220,7 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated }: Pr
         {/* Close button */}
         <button
           ref={closeBtnRef}
-          onClick={onClose}
+          onClick={requestClose}
           style={{
             position: 'absolute', top: 'var(--sp-4)', right: 'var(--sp-4)',
             background: 'var(--c-surface-raised)', border: 'none',
@@ -239,6 +265,12 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated }: Pr
             onDetailUpdated={(seed) => {
               setDetailStatus({ status: 'loaded-personal', detail: seed });
               onDetailUpdated?.(seed);
+            }}
+            onDeletingChange={(deleting) => { deletingRef.current = deleting; }}
+            onDeleted={() => {
+              deletingRef.current = false;
+              if (onDeleted) onDeleted(detailStatus.detail.id);
+              else onClose();
             }}
           />
         )}
@@ -397,9 +429,11 @@ interface PersonalDetailProps {
   onNavigateToGarden: () => void;
   onNavigateToCanvas: (gardenId: string) => void;
   onDetailUpdated: (seed: PersonalSeedDetail) => void;
+  onDeletingChange: (deleting: boolean) => void;
+  onDeleted: () => void;
 }
 
-function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, onNavigateToCanvas, onDetailUpdated }: PersonalDetailProps) {
+function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, onNavigateToCanvas, onDetailUpdated, onDeletingChange, onDeleted }: PersonalDetailProps) {
   const [localRating, setLocalRating] = useState<number | null>(detail.userRating);
   const [localFav, setLocalFav] = useState(detail.isFavourite);
   const [notes, setNotes] = useState(detail.userNotes ?? '');
@@ -410,6 +444,37 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
   const [contributeOpen, setContributeOpen] = useState(false);
   const [contributionStatus, setContributionStatus] = useState(detail.contributionStatus);
   const [photoCount, setPhotoCount] = useState(0);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Set on 409: the seed is still planted, so only Cancel is offered.
+  const [deleteBlocked, setDeleteBlocked] = useState(false);
+
+  function cancelDelete() {
+    setConfirmingDelete(false);
+    setDeleteError(null);
+    setDeleteBlocked(false);
+  }
+
+  async function deleteSeed() {
+    setDeleting(true);
+    onDeletingChange(true);
+    setDeleteError(null);
+    try {
+      await del(`/api/seeds/${detail.id}`);
+      onDeleted();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        const msg = (err.body as { error?: string } | null)?.error;
+        setDeleteError(msg ?? "This seed is planted in your gardens — remove those plantings first");
+        setDeleteBlocked(true);
+      } else {
+        setDeleteError("Couldn't delete this seed. Try again.");
+      }
+      setDeleting(false);
+      onDeletingChange(false);
+    }
+  }
 
   async function handleRating(rating: number | null) {
     if (isGuest) { onPromptAccount(); return; }
@@ -583,7 +648,32 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
       {/* My Photos (renders nothing for guests) */}
       <SeedPhotos seedId={detail.id} onCountChange={setPhotoCount} />
 
-      {/* Action row */}
+      {/* Action row (swapped for an inline confirm while deleting) */}
+      {confirmingDelete ? (
+        <div style={{ paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--c-border-subtle)' }}>
+          <p style={{ margin: '0 0 var(--sp-3)', fontSize: 14 }}>
+            Delete {detail.commonName}? This also deletes its photos. This can't be undone.
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--sp-2)' }}>
+            <button type="button" style={textBtnStyle} onClick={cancelDelete} disabled={deleting}>
+              Cancel
+            </button>
+            {!deleteBlocked && (
+              <button
+                type="button"
+                onClick={deleteSeed}
+                disabled={deleting}
+                style={{ ...dangerSolidBtnStyle, opacity: deleting ? 0.6 : 1 }}
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
+          </div>
+          {deleteError && (
+            <p role="alert" style={{ margin: 'var(--sp-2) 0 0', fontSize: 13, color: 'var(--c-danger)' }}>{deleteError}</p>
+          )}
+        </div>
+      ) : (
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--c-border-subtle)' }}>
         <button style={primaryBtnStyle} onClick={onNavigateToGarden}>Add to Garden</button>
         <button
@@ -611,7 +701,20 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
             {contributionStatusLabel[contributionStatus]}
           </span>
         )}
+        <button
+          type="button"
+          style={dangerTextBtnStyle}
+          onClick={() => {
+            if (isGuest) { onPromptAccount(); return; }
+            setDeleteError(null);
+            setDeleteBlocked(false);
+            setConfirmingDelete(true);
+          }}
+        >
+          Delete
+        </button>
       </div>
+      )}
       {editOpen && (
         <SeedForm
           mode="edit"
