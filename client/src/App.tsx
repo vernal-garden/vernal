@@ -1,17 +1,36 @@
+import { useEffect, useRef, useState } from 'react';
 import * as Sentry from '@sentry/react';
 import { RouterProvider } from 'react-router-dom';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 import { AuthProvider } from './context/AuthContext';
+import { CanvasPresenceProvider } from './context/CanvasPresenceContext';
 import MergePrompt from './components/MergePrompt';
+import FeedbackWidget from './components/FeedbackWidget';
 import router from './routes';
 
-function UpdateBanner() {
-  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW();
+interface UpdateBannerProps {
+  onReload: () => void;
+  // Reports the banner's rendered height so fixed-bottom chrome can sit above it.
+  onHeightChange: (height: number) => void;
+}
 
-  if (!needRefresh) return null;
+function UpdateBanner({ onReload, onHeightChange }: UpdateBannerProps) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => onHeightChange(el.offsetHeight));
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+      onHeightChange(0);
+    };
+  }, [onHeightChange]);
 
   return (
     <div
+      ref={ref}
       style={{
         position: 'fixed',
         bottom: 0,
@@ -30,7 +49,7 @@ function UpdateBanner() {
     >
       <span>Update available</span>
       <button
-        onClick={() => updateServiceWorker(true)}
+        onClick={onReload}
         style={{
           background: 'var(--c-primary)',
           color: 'var(--c-surface)',
@@ -47,13 +66,21 @@ function UpdateBanner() {
 }
 
 export default function App() {
+  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW();
+  const [bannerHeight, setBannerHeight] = useState(0);
+
   return (
     <Sentry.ErrorBoundary fallback={<p className="p-4 text-red-500">Something went wrong. Please refresh.</p>}>
       <AuthProvider>
-        <RouterProvider router={router} />
+        <CanvasPresenceProvider>
+          <RouterProvider router={router} />
+          <FeedbackWidget bottomOffset={needRefresh ? bannerHeight : 0} />
+        </CanvasPresenceProvider>
         <MergePrompt />
       </AuthProvider>
-      <UpdateBanner />
+      {needRefresh && (
+        <UpdateBanner onReload={() => updateServiceWorker(true)} onHeightChange={setBannerHeight} />
+      )}
     </Sentry.ErrorBoundary>
   );
 }
