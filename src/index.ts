@@ -21,6 +21,7 @@ import correctionsRouter from './routes/corrections';
 import weatherRouter from './routes/weather';
 import subscriptionRouter, { handleStripeWebhook } from './routes/subscription';
 import adminRouter from './routes/admin';
+import eventsRouter from './routes/events';
 import feedbackRouter from './routes/feedback';
 import { sessionMiddleware } from './middleware/session';
 import { requestMetricsMiddleware } from './lib/requestMetrics';
@@ -103,6 +104,7 @@ app.use('/api/corrections', correctionsRouter);
 app.use('/api/weather', weatherRouter);
 app.use('/api/subscription', subscriptionRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/events', eventsRouter);
 app.use('/api/feedback', feedbackRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));

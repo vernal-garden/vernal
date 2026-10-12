@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { get, post, patch } from '../lib/api';
+import { track } from '../lib/track';
 import UpgradePrompt from '../components/UpgradePrompt';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -381,6 +382,7 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
         await patch(`/api/amendments/${initial!.id}`, payload);
       } else {
         await post(`/api/gardens/${gardenId}/amendments`, payload);
+        track('fertilizer_entry_saved');
       }
       onSaved();
     } catch (e) {

@@ -8,6 +8,7 @@ import { fetchTempestCurrent } from '../lib/weather/providers/tempest';
 import { geocode, fetchOpenMeteoCurrent, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
 import type { NormalizedReading } from '../lib/weather/types';
 import { isNumericId } from '../lib/validation';
+import { recordUsageEvent } from '../lib/usageEvents';
 
 const weatherRouter = Router();
 weatherRouter.use(requireAuth, requireSupporter);
@@ -238,6 +239,7 @@ weatherRouter.get('/current', async (req: Request, res: Response): Promise<void>
       );
       await db.query('UPDATE weather_connections SET last_successful_sync = now() WHERE id = $1', [connection.id]);
 
+      void recordUsageEvent('weather_station_pull', req.session!.id, req.session!.account?.id ?? null);
       res.json({ ...reading, source: connection.provider, cached: false });
       return;
     }

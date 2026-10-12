@@ -1,6 +1,7 @@
 // client/src/components/catalogue/ContributeModal.tsx
 import { useEffect, useState } from 'react';
 import { post } from '../../lib/api';
+import { track } from '../../lib/track';
 import type { PersonalSeedDetail } from '../../types/catalogue';
 
 interface Props {
@@ -42,6 +43,7 @@ export default function ContributeModal({ seed, photoCount, onClose, onContribut
     setErrorMsg('');
     try {
       await post(`/api/seeds/${seed.id}/contribute`, { includePhotos: photoCount > 0 && includePhotos });
+      track('community_seed_submitted');
       onContributed();
       onClose();
     } catch (err: unknown) {

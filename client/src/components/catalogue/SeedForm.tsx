@@ -1,6 +1,7 @@
 // client/src/components/catalogue/SeedForm.tsx
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { get, post, patch } from '../../lib/api';
+import { track } from '../../lib/track';
 import { useFamilies } from '../../hooks/useFamilies';
 import type { PersonalSeedDetail, CatalogueSeedDetail, FamilyEntry } from '../../types/catalogue';
 
@@ -597,6 +598,7 @@ export default function SeedForm({ mode, initialSeed, onClose, onSaved }: SeedFo
       if (mode === 'add') {
         const payload = buildAddPayload(form, spacingUnit, tempUnit);
         saved = await post<PersonalSeedDetail>('/api/seeds', payload);
+        track('seed_catalogue_seed_added');
       } else {
         if (!initialSeed) return;
         const payload = buildEditPayload(form, initialSeed, spacingUnit, tempUnit);

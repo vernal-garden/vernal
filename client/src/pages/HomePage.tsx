@@ -20,6 +20,15 @@ import { useCompanions } from '../hooks/useCompanions';
 import { useConflicts } from '../hooks/useConflicts';
 import { computeBedOccupancy } from '../lib/crowding';
 import SupporterPromptModal from '../components/SupporterPromptModal';
+import { track } from '../lib/track';
+
+// Garden ids that have already logged a canvas_session during this page load.
+// Module-level so re-renders and StrictMode double effects can't fire it twice.
+const trackedCanvasSessions = new Set<string>();
+
+// How long after a successful placement a newly appearing conflict is still
+// attributed to it. Companion data for the new seed can load after the POST.
+const PLACEMENT_CONFLICT_WINDOW_MS = 10_000;
 
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
@@ -71,6 +80,36 @@ export default function HomePage() {
   });
 
   const conflictJumpIndexRef = useRef(0);
+
+  // Phase 43: usage instrumentation
+  useEffect(() => {
+    if (resolvedId && !trackedCanvasSessions.has(resolvedId)) {
+      trackedCanvasSessions.add(resolvedId);
+      track('canvas_session');
+    }
+  }, [resolvedId]);
+
+  // canvas_companion_warning: conflictedIds is snapshotted before a placement;
+  // the first conflict id that appears outside the snapshot while the placement
+  // is pending fires the event once. A garden switch cancels any pending check.
+  const conflictSnapshotRef = useRef<Set<string>>(new Set());
+  const pendingPlacementRef = useRef(false);
+  const placementWindowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    pendingPlacementRef.current = false;
+  }, [resolvedId]);
+
+  useEffect(() => {
+    if (!pendingPlacementRef.current) return;
+    for (const id of conflictedIds) {
+      if (!conflictSnapshotRef.current.has(id)) {
+        pendingPlacementRef.current = false;
+        track('canvas_companion_warning');
+        return;
+      }
+    }
+  }, [conflictedIds]);
 
   const handleJumpToConflict = useCallback(() => {
     const conflictBedArr = Array.from(conflictedBedIds);
@@ -293,7 +332,18 @@ export default function HomePage() {
       ...(point ? { point } : {}),
       ...(seed.source === 'catalogue' ? { cambiumSeedId: seed.id } : { seedId: seed.id }),
     };
+    conflictSnapshotRef.current = new Set(conflictedIds);
+    pendingPlacementRef.current = true;
+    if (placementWindowTimerRef.current) clearTimeout(placementWindowTimerRef.current);
     const placed = await placePlanting(bedId, payload, seed.commonName);
+    if (placed) {
+      track('canvas_plant_placed');
+      placementWindowTimerRef.current = setTimeout(() => {
+        pendingPlacementRef.current = false;
+      }, PLACEMENT_CONFLICT_WINDOW_MS);
+    } else {
+      pendingPlacementRef.current = false;
+    }
     if (
       placed &&
       date &&
@@ -302,7 +352,7 @@ export default function HomePage() {
     ) {
       setSupporterPromptOpen(true);
     }
-  }, [armedSeed, placePlanting, account]);
+  }, [armedSeed, placePlanting, account, conflictedIds]);
 
   const handleConfirmRemoval = useCallback(async (planting: Planting) => {
     await deletePlanting(planting.id, planting.bedId);
