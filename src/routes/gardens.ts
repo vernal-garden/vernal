@@ -1,8 +1,11 @@
-import { Router } from 'express';
+import crypto from 'crypto';
+import express, { Router } from 'express';
 import { db } from '../lib/db';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
+import { uploadToR2, deleteFromR2 } from '../lib/r2';
+import { logger } from '../lib/logger';
 
 const router = Router();
 router.use(requireSession);
@@ -98,6 +101,37 @@ function formatBed(row: BedRow) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+// ── Thumbnail helpers ─────────────────────────────────────────────────────────
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// uploadToR2 throws plain Errors when R2 env vars are missing.
+function isR2ConfigError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.message.startsWith('R2 not configured') || err.message.endsWith('is not set.'))
+  );
+}
+
+// The R2 key of a thumbnail this garden owns, or null for any other URL
+// (including one stored under another garden's prefix).
+function ownedThumbnailKey(url: string | null, gardenId: string): string | null {
+  const base = process.env.R2_PUBLIC_BASE_URL?.replace(/\/$/, '');
+  if (!url || !base) return null;
+  const prefix = `${base}/garden-thumbnails/${gardenId}/`;
+  return url.startsWith(prefix) ? url.slice(base.length + 1) : null;
+}
+
+// Fire-and-forget: a failed R2 delete leaves an orphan object, never a failed request.
+function deleteThumbnailObject(key: string): void {
+  deleteFromR2(key).catch((err: unknown) => {
+    logger.warn('garden thumbnail R2 delete failed', {
+      key,
+      errMsg: err instanceof Error ? err.message : String(err),
+    });
+  });
 }
 
 const VALID_STYLES = new Set(['grid', 'freeform']);
@@ -391,19 +425,77 @@ router.delete('/:id', writeLimiter, async (req, res) => {
   if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
-    const result = await db.query(
-      'DELETE FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3) RETURNING id',
+    const result = await db.query<{ id: string; thumbnail_url: string | null }>(
+      `DELETE FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)
+       RETURNING id, thumbnail_url`,
       [gardenId, accountId, sessionId],
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Garden not found' });
     }
+    const thumbKey = ownedThumbnailKey(result.rows[0].thumbnail_url, gardenId);
+    if (thumbKey) deleteThumbnailObject(thumbKey);
     res.status(204).send();
   } catch (err) {
     console.error('DELETE /gardens/:id error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// POST /api/gardens/:id/thumbnail  (raw PNG body, captured from the canvas)
+router.post(
+  '/:id/thumbnail',
+  writeLimiter,
+  express.raw({ type: 'image/png', limit: '1mb' }),
+  async (req, res) => {
+    const accountId = req.session!.account?.id ?? null;
+    const sessionId = req.session!.id;
+    const gardenId = req.params.id as string;
+
+    if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+
+    try {
+      const existing = await db.query<{ thumbnail_url: string | null }>(
+        'SELECT thumbnail_url FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+        [gardenId, accountId, sessionId],
+      );
+      if (existing.rows.length === 0) {
+        return res.status(404).json({ error: 'Garden not found' });
+      }
+
+      // A non-PNG Content-Type leaves req.body unparsed (not a Buffer).
+      const body: unknown = req.body;
+      if (
+        !Buffer.isBuffer(body) ||
+        body.length < PNG_SIGNATURE.length ||
+        !body.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+      ) {
+        return res.status(400).json({ error: 'Expected a PNG image.' });
+      }
+
+      const key = `garden-thumbnails/${gardenId}/${crypto.randomUUID()}.png`;
+      let url: string;
+      try {
+        url = await uploadToR2(key, body, 'image/png');
+      } catch (err) {
+        if (isR2ConfigError(err)) {
+          return res.status(503).json({ error: 'Photo storage is not configured.' });
+        }
+        throw err;
+      }
+
+      await db.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [url, gardenId]);
+
+      const oldKey = ownedThumbnailKey(existing.rows[0].thumbnail_url, gardenId);
+      if (oldKey) deleteThumbnailObject(oldKey);
+
+      res.json({ thumbnailUrl: url });
+    } catch (err) {
+      console.error('POST /gardens/:id/thumbnail error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  },
+);
 
 // ── Beds (nested under gardens) ───────────────────────────────────────────────
 

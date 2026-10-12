@@ -1,7 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
+
+vi.mock('../lib/r2', () => ({
+  uploadToR2: vi.fn(async (key: string) => `${process.env.R2_PUBLIC_BASE_URL}/${key}`),
+  deleteFromR2: vi.fn(async () => {}),
+}));
+
+import { uploadToR2, deleteFromR2 } from '../lib/r2';
 import app from '../index';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -379,6 +386,188 @@ describe('Id validation', () => {
   it('GET /api/gardens/99999999 → 404 (valid numeric id, nonexistent)', async () => {
     const res = await agent.get('/api/gardens/99999999');
     expect(res.status).toBe(404);
+  });
+});
+
+// ── Thumbnails ────────────────────────────────────────────────────────────────
+
+describe('Garden thumbnails', () => {
+  const BASE_URL = 'https://cdn.test.example';
+  const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const png = () => Buffer.concat([PNG_SIG, Buffer.from('fake-image-data')]);
+  const KEY_RE = (gardenId: string) =>
+    new RegExp(`^garden-thumbnails/${gardenId}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.png$`);
+
+  let agent: ReturnType<typeof request.agent>;
+  let prevBaseUrl: string | undefined;
+
+  async function createGarden(a: ReturnType<typeof request.agent>): Promise<string> {
+    const res = await a.post('/api/gardens').send(BASE_GARDEN);
+    expect(res.status).toBe(201);
+    return res.body.id as string;
+  }
+
+  async function thumbnailUrl(gardenId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ thumbnail_url: string | null }>(
+      'SELECT thumbnail_url FROM gardens WHERE id = $1',
+      [gardenId],
+    );
+    return rows[0].thumbnail_url;
+  }
+
+  const upload = (a: ReturnType<typeof request.agent>, gardenId: string, body: Buffer = png()) =>
+    a.post(`/api/gardens/${gardenId}/thumbnail`).set('Content-Type', 'image/png').send(body);
+
+  beforeAll(async () => {
+    prevBaseUrl = process.env.R2_PUBLIC_BASE_URL;
+    process.env.R2_PUBLIC_BASE_URL = BASE_URL;
+    await createUser('thumb-user@example.com');
+    agent = await loginAgent('thumb-user@example.com');
+  });
+
+  afterAll(() => {
+    if (prevBaseUrl === undefined) delete process.env.R2_PUBLIC_BASE_URL;
+    else process.env.R2_PUBLIC_BASE_URL = prevBaseUrl;
+  });
+
+  beforeEach(() => {
+    vi.mocked(uploadToR2).mockClear();
+    vi.mocked(deleteFromR2).mockClear();
+  });
+
+  it('account uploads to its garden → 200 and stores the URL', async () => {
+    const gardenId = await createGarden(agent);
+    const res = await upload(agent, gardenId);
+    expect(res.status).toBe(200);
+    expect(res.body.thumbnailUrl.startsWith(`${BASE_URL}/`)).toBe(true);
+    const key = res.body.thumbnailUrl.slice(BASE_URL.length + 1);
+    expect(key).toMatch(KEY_RE(gardenId));
+    expect(await thumbnailUrl(gardenId)).toBe(res.body.thumbnailUrl);
+    expect(uploadToR2).toHaveBeenCalledWith(key, expect.any(Buffer), 'image/png');
+  });
+
+  it('guest uploads to its own garden → 200', async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    const gardenId = await createGarden(guest);
+    const res = await upload(guest, gardenId);
+    expect(res.status).toBe(200);
+    expect(await thumbnailUrl(gardenId)).toBe(res.body.thumbnailUrl);
+  });
+
+  it("another session's garden → 404", async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    const gardenId = await createGarden(guest);
+    const res = await upload(agent, gardenId);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Garden not found');
+    expect(uploadToR2).not.toHaveBeenCalled();
+  });
+
+  it('non-numeric id → 400', async () => {
+    const res = await upload(agent, 'abc');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid id');
+  });
+
+  it('non-PNG bytes → 400', async () => {
+    const gardenId = await createGarden(agent);
+    const res = await upload(agent, gardenId, Buffer.from('GIF89a not a png at all'));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Expected a PNG image.');
+    expect(uploadToR2).not.toHaveBeenCalled();
+  });
+
+  it('Content-Type application/json → 400', async () => {
+    const gardenId = await createGarden(agent);
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/thumbnail`)
+      .set('Content-Type', 'application/json')
+      .send(JSON.stringify({ image: 'x' }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Expected a PNG image.');
+  });
+
+  it('body over 1 MB → 413', async () => {
+    const gardenId = await createGarden(agent);
+    const big = Buffer.concat([PNG_SIG, Buffer.alloc(1024 * 1024)]);
+    const res = await upload(agent, gardenId, big);
+    expect(res.status).toBe(413);
+    expect(uploadToR2).not.toHaveBeenCalled();
+  });
+
+  it('second upload deletes the first object; first upload deletes nothing', async () => {
+    const gardenId = await createGarden(agent);
+    const first = await upload(agent, gardenId);
+    expect(first.status).toBe(200);
+    expect(deleteFromR2).not.toHaveBeenCalled();
+
+    const second = await upload(agent, gardenId);
+    expect(second.status).toBe(200);
+    expect(deleteFromR2).toHaveBeenCalledTimes(1);
+    expect(deleteFromR2).toHaveBeenCalledWith(first.body.thumbnailUrl.slice(BASE_URL.length + 1));
+    expect(await thumbnailUrl(gardenId)).toBe(second.body.thumbnailUrl);
+  });
+
+  it('an old thumbnail_url without this garden\'s prefix is left alone', async () => {
+    const gardenId = await createGarden(agent);
+    const otherGardenUrl = `${BASE_URL}/garden-thumbnails/999999/old.png`;
+    await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [otherGardenUrl, gardenId]);
+    const res = await upload(agent, gardenId);
+    expect(res.status).toBe(200);
+
+    await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', ['https://elsewhere.example/x.png', gardenId]);
+    const res2 = await upload(agent, gardenId);
+    expect(res2.status).toBe(200);
+
+    expect(deleteFromR2).not.toHaveBeenCalled();
+  });
+
+  it('R2 not configured → 503 and thumbnail_url unchanged', async () => {
+    const gardenId = await createGarden(agent);
+    const ok = await upload(agent, gardenId);
+    expect(ok.status).toBe(200);
+
+    vi.mocked(uploadToR2).mockRejectedValueOnce(
+      new Error('R2 not configured: R2_ACCOUNT_ID, ... are required.'),
+    );
+    const res = await upload(agent, gardenId);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe('Photo storage is not configured.');
+    expect(await thumbnailUrl(gardenId)).toBe(ok.body.thumbnailUrl);
+  });
+
+  it('does not change updated_at', async () => {
+    const gardenId = await createGarden(agent);
+    await pool.query(
+      "UPDATE gardens SET updated_at = '2020-01-01T00:00:00Z' WHERE id = $1",
+      [gardenId],
+    );
+    const res = await upload(agent, gardenId);
+    expect(res.status).toBe(200);
+    const { rows } = await pool.query<{ updated_at: Date }>(
+      'SELECT updated_at FROM gardens WHERE id = $1',
+      [gardenId],
+    );
+    expect(rows[0].updated_at.toISOString()).toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  it('DELETE a garden with a thumbnail → 204 and deletes its object', async () => {
+    const gardenId = await createGarden(agent);
+    const up = await upload(agent, gardenId);
+    expect(up.status).toBe(200);
+
+    const res = await agent.delete(`/api/gardens/${gardenId}`);
+    expect(res.status).toBe(204);
+    expect(deleteFromR2).toHaveBeenCalledWith(up.body.thumbnailUrl.slice(BASE_URL.length + 1));
+  });
+
+  it('DELETE a garden without a thumbnail → 204 and deletes nothing', async () => {
+    const gardenId = await createGarden(agent);
+    const res = await agent.delete(`/api/gardens/${gardenId}`);
+    expect(res.status).toBe(204);
+    expect(deleteFromR2).not.toHaveBeenCalled();
   });
 });
 

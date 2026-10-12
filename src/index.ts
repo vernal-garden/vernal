@@ -108,6 +108,11 @@ app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 Sentry.setupExpressErrorHandler(app);
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // body-parser tags an over-limit body with type 'entity.too.large'; that is a
+  // client error, not a server fault.
+  if ((err as Error & { type?: string }).type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Request body too large.' });
+  }
   logger.error('Unhandled error', err);
   res.status(500).json({ error: 'Internal server error' });
 });
