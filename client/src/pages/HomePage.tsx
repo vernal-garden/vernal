@@ -48,7 +48,7 @@ export default function HomePage() {
 
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
   const { garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed } = useGarden(resolvedId);
-  const { plantingsByBedId, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint } = usePlantings(resolvedId);
+  const { plantingsByBedId, loading: plantingsLoading, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint } = usePlantings(resolvedId);
 
   // Phase 20: companion / conflict / occupancy
   const companionSeedIdsSet = useMemo(() => {
@@ -339,6 +339,7 @@ export default function HomePage() {
         onOverlapWarning={handleOverlapWarning}
         garden={garden}
         plantingsByBedId={plantingsByBedId}
+        plantingsLoading={plantingsLoading}
         armedSeed={armedSeed}
         onConfirmPlacement={handleConfirmPlacement}
         onConfirmRemoval={handleConfirmRemoval}
