@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { get, post, patch } from '../lib/api';
+import { track } from '../lib/track';
 import UpgradePrompt from '../components/UpgradePrompt';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -406,6 +407,7 @@ function EntryForm({ beds, defaultBedId, gardenId, initial, onSaved, onCancel }:
         await patch(`/api/soil-readings/${initial!.id}`, payload);
       } else {
         await post(`/api/gardens/${gardenId}/soil-readings`, payload);
+        track('soil_entry_saved');
       }
       onSaved();
     } catch (e) {
