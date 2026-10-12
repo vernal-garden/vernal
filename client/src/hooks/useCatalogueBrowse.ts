@@ -1,7 +1,7 @@
 // client/src/hooks/useCatalogueBrowse.ts
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { get } from '../lib/api';
-import type { BrowseCard, CommunityCard, PersonalCard } from '../types/catalogue';
+import type { BrowseCard, CommunityCard, ContributionStatus, PersonalCard } from '../types/catalogue';
 
 export type CatalogueSource = 'cambium' | 'mine' | 'all';
 
@@ -34,7 +34,7 @@ interface PersonalApiItem {
   id: string; commonName: string; scientificName: string | null;
   plantFamily: string | null; illustrationKey: string | null;
   userRating: number | null; isFavourite: boolean;
-  origin: string; contributionStatus: string; cambiumSourceId: string | null;
+  origin: string; contributionStatus: ContributionStatus; cambiumSourceId: string | null;
 }
 
 function toCommunityCard(item: CommunityApiItem): CommunityCard {

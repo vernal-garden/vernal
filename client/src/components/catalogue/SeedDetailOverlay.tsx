@@ -6,6 +6,7 @@ import { useAuth } from '../../context/AuthContext';
 import type {
   BrowseCard,
   CatalogueSeedDetail,
+  ContributionStatus,
   PersonalSeedDetail,
   PlantingHistoryEntry,
 } from '../../types/catalogue';
@@ -454,9 +455,9 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
   const canContribute =
     detail.origin === 'user_created' &&
     (contributionStatus === 'private' || contributionStatus === 'rejected');
-  const contributionStatusLabel: Record<string, string> = {
+  const contributionStatusLabel: Partial<Record<ContributionStatus, string>> = {
     pending: 'Contribution pending review',
-    published: 'Contributed to Cambium',
+    approved: 'Contributed to Cambium',
     rejected: 'Contribution returned',
   };
 
