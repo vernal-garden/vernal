@@ -304,6 +304,10 @@ export default function SeedCataloguePage() {
             );
             refetch();
           }}
+          onDeleted={() => {
+            setOpenCard(null);
+            refetch();
+          }}
         />
       )}
 
