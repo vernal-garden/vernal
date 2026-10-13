@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { get, post, patch } from '../lib/api';
+import { get, post, patch, del, ApiError } from '../lib/api';
 import { track } from '../lib/track';
 import UpgradePrompt from '../components/UpgradePrompt';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -142,11 +143,13 @@ function AmendmentRow({
   beds,
   soilReadings,
   onEdit,
+  onDelete,
 }: {
   log: AmendmentLog;
   beds: Bed[];
   soilReadings: SoilReading[];
   onEdit: (l: AmendmentLog) => void;
+  onDelete: (l: AmendmentLog) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showSoilList, setShowSoilList] = useState(false);
@@ -245,6 +248,12 @@ function AmendmentRow({
             style={{ ...cancelSt, fontSize: 12, padding: '4px 12px' }}
           >
             Edit
+          </button>
+          <button
+            onClick={e => { e.stopPropagation(); onDelete(log); }}
+            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', marginLeft: 'var(--sp-2)', color: 'var(--c-danger)' }}
+          >
+            Delete
           </button>
         </div>
       )}
@@ -550,17 +559,23 @@ type FormState =
   | { open: true; mode: 'add' }
   | { open: true; mode: 'edit'; log: AmendmentLog };
 
+type ConfirmState =
+  | { open: false }
+  | { open: true; entry: AmendmentLog };
+
 // ── AmendmentPage ─────────────────────────────────────────────────────────────
 
 export default function AmendmentPage() {
   const { gardenId } = useParams<{ gardenId: string }>();
   const { account }  = useAuth();
+  const [searchParams] = useSearchParams();
 
   const [garden,       setGarden]       = useState<GardenDetail | null>(null);
   const [amendments,   setAmendments]   = useState<AmendmentLog[]>([]);
   const [soilReadings, setSoilReadings] = useState<SoilReading[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [form,         setForm]         = useState<FormState>({ open: false });
+  const [confirm,      setConfirm]      = useState<ConfirmState>({ open: false });
 
   const FILTER_KEY = `vernal-amendment-filters-${gardenId}`;
 
@@ -584,6 +599,13 @@ export default function AmendmentPage() {
   });
   const [showAll, setShowAll] = useState(false);
 
+  // ?bed= deep link (from the canvas bed panel). load() reads it through a ref
+  // so a param change doesn't re-trigger loading. Each param value is applied
+  // once, so a reload after save/delete doesn't undo a filter the user changed.
+  const bedParamRef = useRef<string | null>(null);
+  const appliedBedParamRef = useRef<string | null>(null);
+  useEffect(() => { bedParamRef.current = searchParams.get('bed'); }, [searchParams]);
+
   const isSupporter = account?.subscriptionTier === 'supporter';
 
   const load = useCallback(async () => {
@@ -598,6 +620,11 @@ export default function AmendmentPage() {
       setGarden(g ?? null);
       setAmendments(a?.data ?? []);
       setSoilReadings(s?.data ?? []);
+      const bedParam = bedParamRef.current;
+      if (bedParam && bedParam !== appliedBedParamRef.current && g?.beds.some(b => b.id === bedParam)) {
+        appliedBedParamRef.current = bedParam;
+        setFilterBedId(bedParam);
+      }
     } finally {
       setLoading(false);
     }
@@ -613,6 +640,19 @@ export default function AmendmentPage() {
       );
     } catch { /* storage unavailable — fail silently */ }
   }, [FILTER_KEY, filterBedId, filterType, filterDateRange]);
+
+  const closeConfirm = useCallback(() => setConfirm({ open: false }), []);
+
+  async function deleteAmendment(log: AmendmentLog) {
+    try {
+      await del(`/api/amendments/${log.id}`);
+    } catch (e) {
+      // 404: already gone — treat as deleted
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+    }
+    setConfirm({ open: false });
+    load();
+  }
 
   if (!isSupporter) {
     return (
@@ -688,6 +728,7 @@ export default function AmendmentPage() {
                 beds={beds}
                 soilReadings={soilReadings}
                 onEdit={l => setForm({ open: true, mode: 'edit', log: l })}
+                onDelete={l => setConfirm({ open: true, entry: l })}
               />
             ))}
           </div>
@@ -731,6 +772,17 @@ export default function AmendmentPage() {
           }
           onSaved={() => { setForm({ open: false }); load(); }}
           onCancel={() => setForm({ open: false })}
+        />
+      )}
+
+      {/* Delete confirmation */}
+      {confirm.open && (
+        <ConfirmDeleteDialog
+          title="Delete this amendment?"
+          body={`This permanently removes ${confirm.entry.productName}, applied ${confirm.entry.applicationDate}. This cannot be undone.`}
+          confirmLabel="Delete amendment"
+          onConfirm={() => deleteAmendment(confirm.entry)}
+          onCancel={closeConfirm}
         />
       )}
     </div>

@@ -32,7 +32,7 @@ const PLACEMENT_CONFLICT_WINDOW_MS = 10_000;
 
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
-  const { account, markSupporterPromptShown } = useAuth();
+  const { account, isAccount, markSupporterPromptShown } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [activeId, setActiveId] = useState<string | null>(() => searchParams.get('garden'));
@@ -515,6 +515,8 @@ export default function HomePage() {
           onDelete={() => { deleteBed(selectedBed.id); setSelectedBed(null); }}
           focusName={detailFocusName}
           onAddPlant={handleAddPlant}
+          gardenId={resolvedId}
+          showDataLinks={isAccount}
         />
       )}
 

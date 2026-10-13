@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import type { Bed } from '../../hooks/useGarden';
 import { GRID_PX } from './GardenCanvas';
 
@@ -13,6 +14,29 @@ function shoelaceArea(points: number[]): number {
   return Math.abs(area) / 2;
 }
 
+function DataLink({ to, children }: { to: string; children: ReactNode }) {
+  const [hovered, setHovered] = useState(false);
+  const [focusVisible, setFocusVisible] = useState(false);
+  return (
+    <Link
+      to={to}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={e => setFocusVisible(e.currentTarget.matches(':focus-visible'))}
+      onBlur={() => setFocusVisible(false)}
+      style={{
+        display: 'flex', alignItems: 'center', minHeight: 32,
+        fontSize: 13, color: '#2d6a4f',
+        textDecoration: hovered || focusVisible ? 'underline' : 'none',
+        outline: focusVisible ? '2px solid #2d6a4f' : 'none',
+        outlineOffset: 2, borderRadius: 4,
+      }}
+    >
+      {children}
+    </Link>
+  );
+}
+
 interface Props {
   bed: Bed;
   plantingCount: number;
@@ -21,9 +45,11 @@ interface Props {
   onDelete: () => void;
   focusName: boolean;
   onAddPlant: () => void;
+  gardenId: string | null;
+  showDataLinks: boolean;
 }
 
-export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, onDelete, focusName, onAddPlant }: Props) {
+export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, onDelete, focusName, onAddPlant, gardenId, showDataLinks }: Props) {
   const [nameVal, setNameVal] = useState(bed.label);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -146,6 +172,14 @@ export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, 
         }}>
           + Add plant
         </button>
+
+        {/* Soil / amendment history for this bed (accounts only) */}
+        {showDataLinks && gardenId && (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <DataLink to={`/garden/${gardenId}/soil?bed=${bed.id}`}>Soil history</DataLink>
+            <DataLink to={`/garden/${gardenId}/amendments?bed=${bed.id}`}>Amendments</DataLink>
+          </div>
+        )}
 
         {/* Delete */}
         {!confirmDelete ? (
