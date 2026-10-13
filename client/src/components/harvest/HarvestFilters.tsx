@@ -128,7 +128,7 @@ export function HarvestFilterControls({ filters, onChange, gardens, seasonOption
           <option value="all">Any date</option>
           <option value="month">This month</option>
           <option value="3m">Last 3 months</option>
-          <option value="custom">Customâ€¦</option>
+          <option value="custom">Custom…</option>
         </select>
       </div>
 
