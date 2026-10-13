@@ -287,21 +287,35 @@ describe('Ownership', () => {
 
   it("another session's garden or entry → 404 on every route", async () => {
     const photoKey = `harvest-photos/${theirEntry}/11111111-1111-4111-8111-111111111111.jpg`;
-    const results = await Promise.all([
-      me.post('/api/harvests').send({ gardenId: theirGarden, cambiumSeedId: peaId }),
-      me.get(`/api/harvests/${theirEntry}`),
-      me.patch(`/api/harvests/${theirEntry}`).send({ notes: 'mine now' }),
-      me.patch(`/api/harvests/${myEntry}`).send({ gardenId: theirGarden }),
-      me.delete(`/api/harvests/${theirEntry}`),
-      me.get(`/api/harvests?gardenId=${theirGarden}`),
-      me.get(`/api/harvests/export.csv?gardenId=${theirGarden}`),
-      me
-        .post(`/api/harvests/${theirEntry}/photos/upload-url`)
-        .send({ contentType: 'image/jpeg', size: 1000 }),
-      me.post(`/api/harvests/${theirEntry}/photos`).send({ key: photoKey }),
-      me.delete(`/api/harvests/${theirEntry}/photos?key=${encodeURIComponent(photoKey)}`),
-    ]);
-    for (const r of results) expect(r.status).toBe(404);
+    // Sent one at a time: each supertest request opens and closes its own
+    // server, and ten in parallel caused intermittent ECONNRESET in CI. Each is
+    // wrapped in a function because building a request already calls
+    // app.listen(0), so a list of built requests would still open all ten at once.
+    const routes: Array<[string, () => request.Test]> = [
+      ['POST /', () => me.post('/api/harvests').send({ gardenId: theirGarden, cambiumSeedId: peaId })],
+      ['GET /:id', () => me.get(`/api/harvests/${theirEntry}`)],
+      ['PATCH /:id', () => me.patch(`/api/harvests/${theirEntry}`).send({ notes: 'mine now' })],
+      ['PATCH /:id move garden', () => me.patch(`/api/harvests/${myEntry}`).send({ gardenId: theirGarden })],
+      ['DELETE /:id', () => me.delete(`/api/harvests/${theirEntry}`)],
+      ['GET /?gardenId', () => me.get(`/api/harvests?gardenId=${theirGarden}`)],
+      ['GET /export.csv', () => me.get(`/api/harvests/export.csv?gardenId=${theirGarden}`)],
+      [
+        'POST /:id/photos/upload-url',
+        () =>
+          me
+            .post(`/api/harvests/${theirEntry}/photos/upload-url`)
+            .send({ contentType: 'image/jpeg', size: 1000 }),
+      ],
+      ['POST /:id/photos', () => me.post(`/api/harvests/${theirEntry}/photos`).send({ key: photoKey })],
+      [
+        'DELETE /:id/photos',
+        () => me.delete(`/api/harvests/${theirEntry}/photos?key=${encodeURIComponent(photoKey)}`),
+      ],
+    ];
+    for (const [label, send] of routes) {
+      const r = await send();
+      expect(r.status, label).toBe(404);
+    }
 
     const list = await me.get('/api/harvests');
     expect(list.body.data.map((e: { id: string }) => e.id)).toEqual([myEntry]);
