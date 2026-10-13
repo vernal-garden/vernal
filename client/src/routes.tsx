@@ -3,6 +3,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import GuestRoute from './components/GuestRoute';
 import AccountRoute from './components/AccountRoute';
 import RouteErrorBoundary from './components/RouteErrorBoundary';
+import AppShell from './components/shell/AppShell';
 import HomePage from './pages/HomePage';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
@@ -21,7 +22,10 @@ import AccountPage from './pages/AccountPage';
 import EmailConfirmPage from './pages/EmailConfirmPage';
 import NotFoundPage from './pages/NotFoundPage';
 
-const routes: RouteObject[] = [
+const withErrorBoundary = (route: RouteObject): RouteObject => ({ ...route, errorElement: <RouteErrorBoundary /> });
+
+// Signed-in app pages. Each child keeps its own guard, so guards run inside the shell.
+const shellRoutes: RouteObject[] = [
   {
     path: '/',
     element: (
@@ -29,42 +33,6 @@ const routes: RouteObject[] = [
         <HomePage />
       </ProtectedRoute>
     ),
-  },
-  {
-    path: '/onboarding',
-    element: (
-      <ProtectedRoute>
-        <OnboardingPage />
-      </ProtectedRoute>
-    ),
-  },
-  {
-    path: '/login',
-    element: (
-      <GuestRoute>
-        <LoginPage />
-      </GuestRoute>
-    ),
-  },
-  {
-    path: '/register',
-    element: (
-      <GuestRoute>
-        <RegisterPage />
-      </GuestRoute>
-    ),
-  },
-  {
-    path: '/session-expired',
-    element: <SessionExpiredPage />,
-  },
-  {
-    path: '/connection-problem',
-    element: <ConnectionProblemPage />,
-  },
-  {
-    path: '/reset-password',
-    element: <ResetPasswordPage />,
   },
   {
     path: '/gardens',
@@ -107,14 +75,6 @@ const routes: RouteObject[] = [
     ),
   },
   {
-    path: '/account/email/confirm',
-    element: (
-      <AccountRoute>
-        <EmailConfirmPage />
-      </AccountRoute>
-    ),
-  },
-  {
     path: '/garden/:gardenId/soil',
     element: (
       <AccountRoute>
@@ -138,12 +98,63 @@ const routes: RouteObject[] = [
       </AccountRoute>
     ),
   },
+];
+
+const routes: RouteObject[] = [
+  {
+    element: <AppShell />,
+    children: shellRoutes.map(withErrorBoundary),
+  },
+  {
+    path: '/onboarding',
+    element: (
+      <ProtectedRoute>
+        <OnboardingPage />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: '/login',
+    element: (
+      <GuestRoute>
+        <LoginPage />
+      </GuestRoute>
+    ),
+  },
+  {
+    path: '/register',
+    element: (
+      <GuestRoute>
+        <RegisterPage />
+      </GuestRoute>
+    ),
+  },
+  {
+    path: '/session-expired',
+    element: <SessionExpiredPage />,
+  },
+  {
+    path: '/connection-problem',
+    element: <ConnectionProblemPage />,
+  },
+  {
+    path: '/reset-password',
+    element: <ResetPasswordPage />,
+  },
+  {
+    path: '/account/email/confirm',
+    element: (
+      <AccountRoute>
+        <EmailConfirmPage />
+      </AccountRoute>
+    ),
+  },
   {
     path: '*',
     element: <NotFoundPage />,
   },
 ];
 
-const router = createBrowserRouter(routes.map((route) => ({ ...route, errorElement: <RouteErrorBoundary /> })));
+const router = createBrowserRouter(routes.map(withErrorBoundary));
 
 export default router;

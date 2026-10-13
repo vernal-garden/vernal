@@ -33,7 +33,7 @@ function UpdateBanner({ onReload, onHeightChange }: UpdateBannerProps) {
       ref={ref}
       style={{
         position: 'fixed',
-        bottom: 0,
+        bottom: 'var(--shell-bottom, 0px)',
         left: 0,
         right: 0,
         zIndex: 9999,

@@ -142,8 +142,8 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
 
   const onLeft = canvasMounted && isNarrow;
   const side = onLeft ? { left: EDGE } : { right: EDGE };
-  const fabBottom = `calc(${EDGE} + ${bottomOffset}px)`;
-  const panelBottom = `calc(${EDGE} + ${bottomOffset}px + ${FAB_SIZE}px + var(--sp-2))`;
+  const fabBottom = `calc(${EDGE} + var(--shell-bottom, 0px) + ${bottomOffset}px)`;
+  const panelBottom = `calc(${EDGE} + var(--shell-bottom, 0px) + ${bottomOffset}px + ${FAB_SIZE}px + var(--sp-2))`;
 
   const alreadySent = category !== null && sentCategories.has(category);
   const canSend =

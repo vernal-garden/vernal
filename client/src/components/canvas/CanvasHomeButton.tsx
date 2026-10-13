@@ -1,6 +1,11 @@
 import { Link } from 'react-router-dom';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 export function CanvasHomeButton() {
+  // On mobile the bottom tab bar's Gardens tab replaces this button.
+  const isMobile = useIsMobile();
+  if (isMobile) return null;
+
   return (
     <Link
       to="/gardens"
