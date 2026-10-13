@@ -10,6 +10,7 @@ import {
   computeWindows,
   currentSeason,
   isIsoDate,
+  normalizeFrostTolerance,
   type FrostContext,
   type Overrides,
 } from '../lib/plantingSchedule';
@@ -25,6 +26,7 @@ interface GardenRow {
   id: string;
   name: string;
   zone: string;
+  zone_location_label: string | null;
 }
 
 interface GuideRow {
@@ -171,7 +173,7 @@ router.get('/', async (req: Request, res: Response) => {
 
   try {
     const { rows: gardens } = await db.query<GardenRow>(
-      `SELECT id::text, name, zone FROM gardens
+      `SELECT id::text, name, zone, zone_location_label FROM gardens
        WHERE (owner_id = $1 OR guest_session_id = $2)
          AND ($3::int IS NULL OR id = $3)
        ORDER BY id`,
@@ -283,6 +285,7 @@ router.get('/', async (req: Request, res: Response) => {
           id: g.id,
           name: g.name,
           zone: g.zone,
+          zoneLocationLabel: g.zone_location_label,
           frost: {
             lastSpringFrost: frost.lastSpringFrost,
             firstFallFrost: frost.firstFallFrost,
@@ -315,6 +318,10 @@ router.get('/', async (req: Request, res: Response) => {
           plantFamily: r.plant_family,
           plantingCount: r.planting_count,
           successionIntervalWeeks: r.succession_interval_weeks,
+          frostTolerance: normalizeFrostTolerance(r.frost_tolerance),
+          weeksToTransplant: r.weeks_to_transplant,
+          maturityDaysMin: r.maturity_days_min,
+          maturityDaysMax: r.maturity_days_max,
           overrides,
           done: event ? { sowingEventId: event.id, markedDoneAt: event.marked_done_at } : null,
           windows,

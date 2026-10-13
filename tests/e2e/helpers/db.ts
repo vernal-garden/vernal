@@ -53,11 +53,27 @@ export async function createTestGarden(accountId: string, name = 'Test Garden'):
 }
 
 export async function createTestSeed(accountId: string,
-    commonName = 'Test Basil'): Promise<number> {
+    commonName = 'Test Basil', timing: {
+      weeksToTransplant?: number; frostTolerance?: 'none' | 'light' | 'hard';
+      maturityDaysMin?: number; maturityDaysMax?: number;
+    } = {}): Promise<number> {
   const result = await getPool().query<{ id: number }>(
-    `INSERT INTO seeds (owner_id, common_name, origin)
-     VALUES ($1, $2, 'user_created') RETURNING id`,
-    [accountId, commonName]
+    `INSERT INTO seeds (owner_id, common_name, origin, weeks_to_transplant,
+       frost_tolerance, maturity_days_min, maturity_days_max)
+     VALUES ($1, $2, 'user_created', $3, $4, $5, $6) RETURNING id`,
+    [accountId, commonName, timing.weeksToTransplant ?? null,
+     timing.frostTolerance ?? null, timing.maturityDaysMin ?? null,
+     timing.maturityDaysMax ?? null]
+  );
+  return result.rows[0].id;
+}
+
+// Community seed in cambium.seeds (not cleared by resetTestDb, so callers
+// should use a unique name).
+export async function createTestCambiumSeed(commonName: string): Promise<number> {
+  const result = await getPool().query<{ id: number }>(
+    `INSERT INTO cambium.seeds (common_name, source) VALUES ($1, 'editorial') RETURNING id`,
+    [commonName]
   );
   return result.rows[0].id;
 }

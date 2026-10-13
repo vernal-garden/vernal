@@ -1,6 +1,7 @@
 // client/src/pages/SeedCataloguePage.tsx
-import { useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { get } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import SeedCard from '../components/catalogue/SeedCard';
 import SeedDetailOverlay from '../components/catalogue/SeedDetailOverlay';
@@ -9,7 +10,27 @@ import { useFamilies } from '../hooks/useFamilies';
 import type { BrowseCard } from '../types/catalogue';
 import type { CatalogueSource } from '../hooks/useCatalogueBrowse';
 import SeedForm from '../components/catalogue/SeedForm';
-import type { PersonalSeedDetail } from '../types/catalogue';
+import type { CatalogueSeedDetail, PersonalSeedDetail } from '../types/catalogue';
+
+// Builds the card the detail overlay needs from a fetched seed, for a
+// ?open= deep link to a seed that isn't in the loaded page.
+async function fetchCard(kind: 'personal' | 'community', id: string): Promise<BrowseCard | null> {
+  if (kind === 'community') {
+    const d = await get<CatalogueSeedDetail>(`/api/catalogue/seeds/${id}`);
+    return d ? {
+      kind: 'community', id: d.id, commonName: d.commonName, scientificName: d.scientificName,
+      plantFamily: d.plantFamily, illustrationKey: d.illustrationKey,
+      aggregateRating: d.aggregateRating, ratingCount: d.ratingCount,
+    } : null;
+  }
+  const d = await get<PersonalSeedDetail>(`/api/seeds/${id}`);
+  return d ? {
+    kind: 'personal', id: d.id, commonName: d.commonName, scientificName: d.scientificName,
+    plantFamily: d.plantFamily, illustrationKey: d.illustrationKey, userRating: d.userRating,
+    isFavourite: d.isFavourite, origin: d.origin, contributionStatus: d.contributionStatus,
+    cambiumSourceId: d.cambiumSourceId,
+  } : null;
+}
 
 // ── Chip button ───────────────────────────────────────────────────────────────
 
@@ -59,6 +80,32 @@ export default function SeedCataloguePage() {
   const handleCardClick = useCallback((card: BrowseCard) => {
     setOpenCard(card);
   }, []);
+
+  // ?open=seed:<id> | cambium:<id> — open that seed's overlay once the first
+  // page has loaded, then drop the param. Unknown ids are ignored.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const openHandled = useRef(false);
+  useEffect(() => {
+    if (openHandled.current || loading) return;
+    openHandled.current = true;
+    const param = searchParams.get('open');
+    if (param === null) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('open');
+    setSearchParams(next, { replace: true });
+
+    const m = /^(seed|cambium):(\d+)$/.exec(param);
+    if (!m) return;
+    const kind = m[1] === 'seed' ? 'personal' : 'community';
+    const loaded = cards.find(c => c.kind === kind && c.id === m[2]);
+    if (loaded) {
+      setOpenCard(loaded);
+      return;
+    }
+    fetchCard(kind, m[2])
+      .then(card => { if (card) setOpenCard(card); })
+      .catch(() => { /* unknown or inaccessible seed: do nothing */ });
+  }, [loading, cards, searchParams, setSearchParams]);
 
   // ── Source chip definitions ────────────────────────────────────────────────
   const sourceOptions: { value: CatalogueSource; label: string }[] = isGuest
