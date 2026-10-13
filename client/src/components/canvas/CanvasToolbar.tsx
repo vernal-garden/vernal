@@ -94,7 +94,7 @@ export default function CanvasToolbar({
   return (
     <div style={{
       position: 'fixed',
-      bottom: 24,
+      bottom: 'calc(24px + var(--shell-bottom, 0px))',
       left: '50%',
       transform: 'translateX(-50%)',
       display: 'flex',

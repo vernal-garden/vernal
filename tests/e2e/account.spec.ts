@@ -35,6 +35,8 @@ test('sign out from the account page', async ({ page }) => {
   await signIn(page, user.email, user.password);
 
   await page.goto('/account');
+  // AppShell renders the desktop nav on every shell route except the canvas.
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
   await page.getByRole('button', { name: 'Sign out' }).click();
 
   await expect(page).toHaveURL(SIGNED_OUT_LANDING);

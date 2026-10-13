@@ -2,7 +2,6 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import AppNav from '../components/AppNav';
 import SeedCard from '../components/catalogue/SeedCard';
 import SeedDetailOverlay from '../components/catalogue/SeedDetailOverlay';
 import { useCatalogueBrowse } from '../hooks/useCatalogueBrowse';
@@ -82,7 +81,6 @@ export default function SeedCataloguePage() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--c-bg)', display: 'flex', flexDirection: 'column' }}>
-      <AppNav />
 
       <main style={{ flex: 1, maxWidth: 1280, width: '100%', margin: '0 auto', padding: 'var(--sp-6) var(--sp-5)' }}>
 

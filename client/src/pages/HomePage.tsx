@@ -426,7 +426,7 @@ export default function HomePage() {
       {/* Placing banner */}
       {armedSeed && selectedBed && (
         <div style={{
-          position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
+          position: 'fixed', top: 'calc(16px + var(--shell-top, 0px))', left: '50%', transform: 'translateX(-50%)',
           background: '#1c3a28', color: '#d4edda', borderRadius: 8,
           padding: '10px 18px', fontSize: 13, zIndex: 99,
           boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
@@ -439,7 +439,7 @@ export default function HomePage() {
       {/* Mutation error / overlap warning toast */}
       {(mutationError || overlapWarning) && (
         <div style={{
-          position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
+          position: 'fixed', top: 'calc(16px + var(--shell-top, 0px))', left: '50%', transform: 'translateX(-50%)',
           background: '#5a1e1e', color: '#ffd8d8', borderRadius: 8,
           padding: '10px 18px', fontSize: 13, zIndex: 100,
           boxShadow: '0 4px 16px rgba(0,0,0,0.3)',

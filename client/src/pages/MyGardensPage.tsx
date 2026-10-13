@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { useGardenList, type GardenSummary } from '../hooks/useGardenList';
 import * as api from '../lib/api';
 import GardenCard from '../components/GardenCard';
-import AppNav from '../components/AppNav';
 
 // ── Skeleton card for loading state ──────────────────────────────────────────
 
@@ -119,7 +118,6 @@ export default function MyGardensPage() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--c-bg)', display: 'flex', flexDirection: 'column' }}>
       <style>{responsiveCss}</style>
-      <AppNav />
 
       <main style={{ flex: 1, maxWidth: 1320, margin: '0 auto', width: '100%', padding: 'var(--sp-6) var(--sp-5)' }}>
         {/* Header */}
