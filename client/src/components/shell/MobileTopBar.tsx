@@ -7,6 +7,7 @@ export const TOP_BAR_HEIGHT = 52;
 
 const SOIL_PATTERN = '/garden/:gardenId/soil';
 const AMENDMENTS_PATTERN = '/garden/:gardenId/amendments';
+const HARVEST_DETAIL_PATTERN = '/harvest/:entryId';
 
 // Route pattern → top-bar title.
 export const ROUTE_TITLES: Record<string, string> = {
@@ -16,12 +17,14 @@ export const ROUTE_TITLES: Record<string, string> = {
   '/guide': 'Planting Guide',
   '/data': 'Data & Metrics',
   '/weather': 'Weather',
+  '/harvest': 'Harvest',
   '/account': 'Account',
   [SOIL_PATTERN]: 'Soil',
   [AMENDMENTS_PATTERN]: 'Amendments',
+  [HARVEST_DETAIL_PATTERN]: 'Harvest',
 };
 
-const DETAIL_PATTERNS = [SOIL_PATTERN, AMENDMENTS_PATTERN];
+const DETAIL_PATTERNS = [SOIL_PATTERN, AMENDMENTS_PATTERN, HARVEST_DETAIL_PATTERN];
 
 function titleFor(pathname: string): string {
   for (const [pattern, title] of Object.entries(ROUTE_TITLES)) {

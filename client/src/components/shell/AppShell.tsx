@@ -1,6 +1,7 @@
 import { useLayoutEffect } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import AppNav from '../AppNav';
+import MicroFeedbackHost from '../MicroFeedbackHost';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import BottomTabBar, { TAB_BAR_HEIGHT } from './BottomTabBar';
 import MobileTopBar, { TOP_BAR_HEIGHT } from './MobileTopBar';
@@ -36,6 +37,7 @@ export default function AppShell() {
       <>
         {!isCanvas && <AppNav />}
         <Outlet />
+        <MicroFeedbackHost />
       </>
     );
   }
@@ -52,6 +54,7 @@ export default function AppShell() {
         <Outlet />
       </main>
       <BottomTabBar />
+      <MicroFeedbackHost />
     </>
   );
 }

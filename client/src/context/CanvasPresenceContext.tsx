@@ -26,10 +26,13 @@ export function useCanvasMounted(): boolean {
 }
 
 // Call from the canvas page: flags the canvas as mounted for the lifetime of the caller.
-export function useRegisterCanvas(): void {
+// Other pages that hold the bottom-right corner (the mobile harvest log's "+"
+// button) pass `active` to move the feedback FAB left while they need it.
+export function useRegisterCanvas(active = true): void {
   const { setCanvasMounted } = useContext(CanvasPresenceContext);
   useEffect(() => {
+    if (!active) return;
     setCanvasMounted(true);
     return () => setCanvasMounted(false);
-  }, [setCanvasMounted]);
+  }, [active, setCanvasMounted]);
 }

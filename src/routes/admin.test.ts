@@ -3,7 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
-import { EVENT_KEYS } from '../lib/eventKeys';
+import { EVENT_KEYS, MICRO_FEEDBACK_TRIGGERS } from '../lib/eventKeys';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -580,11 +580,25 @@ describe('Phase 37 admin API', () => {
       expect(res.body.headline.canvasSessions).toBe(3);
     });
 
+    it('lists every MICRO_FEEDBACK_TRIGGERS entry in order', async () => {
+      const res = await adminAgent.get('/api/admin/features');
+      expect(res.body.microFeedback.map((m: { triggerKey: string }) => m.triggerKey)).toEqual(
+        MICRO_FEEDBACK_TRIGGERS.map((t) => t.triggerKey),
+      );
+      expect(res.body.microFeedback.map((m: { triggerKey: string }) => m.triggerKey)).toEqual([
+        'planted',
+        'first_sowing',
+        'harvest_logged',
+        'cross_season',
+        'upgrade',
+      ]);
+    });
+
     it('micro-feedback responseRate is null for a trigger never fired', async () => {
-      await pool.query('UPDATE accounts SET mf_data_export = false');
+      await pool.query('UPDATE accounts SET mf_upgrade = false');
       const res = await adminAgent.get('/api/admin/features');
       const row = res.body.microFeedback.find(
-        (m: { triggerKey: string }) => m.triggerKey === 'data_export',
+        (m: { triggerKey: string }) => m.triggerKey === 'upgrade',
       );
       expect(row.timesFired).toBe(0);
       expect(row.responseRate).toBeNull();

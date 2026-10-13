@@ -76,6 +76,17 @@ export function WeatherIcon(props: IconProps) {
   );
 }
 
+// A woven basket with a handle.
+export function HarvestIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M8 10a4 4 0 0 1 8 0" />
+      <path d="M3.5 10h17l-1.6 8.4a2 2 0 0 1-2 1.6H7.1a2 2 0 0 1-2-1.6z" />
+      <path d="M9 13.5v3M12 13.5v3M15 13.5v3" />
+    </Icon>
+  );
+}
+
 export function BackIcon(props: IconProps) {
   return (
     <Icon {...props}>

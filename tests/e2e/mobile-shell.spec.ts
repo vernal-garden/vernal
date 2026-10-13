@@ -11,7 +11,7 @@ const TAB_ROUTES = [
   { label: 'Canvas', url: '/', title: 'Garden' },
   { label: 'Planting', url: '/guide', title: 'Planting Guide' },
   { label: 'Catalogue', url: '/catalogue', title: 'Seed Catalogue' },
-  { label: 'Weather', url: '/weather', title: 'Weather' },
+  { label: 'Harvest', url: '/harvest', title: 'Harvest' },
 ];
 
 let gardenId: string;
@@ -61,6 +61,14 @@ test.describe('signed in', () => {
       await expect(nav.getByRole('link', { name: label })).toBeVisible();
     }
     await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeHidden();
+    await expect(nav.getByRole('link', { name: 'Weather' })).toHaveCount(0);
+  });
+
+  test('weather is reachable from the Harvest page', async ({ page }) => {
+    await page.goto('/harvest');
+    await page.getByRole('main').getByRole('link', { name: 'Weather' }).tap();
+    await expect(page).toHaveURL('/weather');
+    await expect(topBar(page).getByText('Weather', { exact: true })).toBeVisible();
   });
 
   test('each tab navigates and marks itself current', async ({ page }) => {
@@ -83,7 +91,7 @@ test.describe('signed in', () => {
   });
 
   test('no horizontal overflow on shell pages', async ({ page }) => {
-    for (const url of ['/gardens', '/catalogue', '/guide', '/weather', '/account']) {
+    for (const url of ['/gardens', '/catalogue', '/guide', '/harvest', '/weather', '/account']) {
       await page.goto(url);
       await expect(tabBar(page)).toBeVisible();
       // Let async page content settle before measuring.

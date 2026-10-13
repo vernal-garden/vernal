@@ -1,7 +1,8 @@
 // client/src/components/account/SubscriptionSettings.tsx
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { post, ApiError } from '../../lib/api';
+import { useMicroFeedback } from '../../lib/microFeedback';
 import { useSubscription, type SubscriptionData } from '../../hooks/useSubscription';
 import { PRICING, PRICING_ORDER, type Interval } from '../../config/pricing';
 
@@ -297,6 +298,16 @@ export default function SubscriptionSettings() {
     const t = setTimeout(reload, 2000);
     return () => clearTimeout(t);
   }, [subscribed, reload]);
+
+  // Ask once per page load, when the upgrade confirmation is showing.
+  const requestFeedback = useMicroFeedback();
+  const upgradeAsked = useRef(false);
+  const confirmedSupporter = subscribed && data?.isSupporter === true;
+  useEffect(() => {
+    if (!confirmedSupporter || upgradeAsked.current) return;
+    upgradeAsked.current = true;
+    requestFeedback('upgrade');
+  }, [confirmedSupporter, requestFeedback]);
 
   return (
     <section>
