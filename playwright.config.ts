@@ -28,12 +28,12 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: /mobile-shell\.spec\.ts/,
+      testIgnore: /mobile-.*\.spec\.ts/,
     },
     {
       name: 'mobile',
       use: { ...devices['Pixel 7'] },
-      testMatch: /mobile-shell\.spec\.ts/,
+      testMatch: /mobile-.*\.spec\.ts/,
     },
   ],
   webServer: [

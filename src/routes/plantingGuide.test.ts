@@ -39,10 +39,10 @@ async function loginAgent(email: string, password = 'Password123!'): Promise<Age
   return agent;
 }
 
-async function createGarden(agent: Agent, zone: string): Promise<number> {
+async function createGarden(agent: Agent, zone: string, zoneLocationLabel?: string): Promise<number> {
   const res = await agent
     .post('/api/gardens')
-    .send({ name: `Garden ${zone}`, style: 'grid', zone, growingMethod: 'in_ground' });
+    .send({ name: `Garden ${zone}`, style: 'grid', zone, zoneLocationLabel, growingMethod: 'in_ground' });
   expect(res.status).toBe(201);
   return Number(res.body.id);
 }
@@ -112,7 +112,7 @@ beforeAll(async () => {
   guest = request.agent(app);
   await guest.post('/api/auth/guest').expect(201);
 
-  gardenA = await createGarden(agentA, '7b');
+  gardenA = await createGarden(agentA, '7b', 'Raleigh, NC');
   gardenB = await createGarden(agentB, '6b');
   guestGarden = await createGarden(guest, '6b');
 
@@ -164,6 +164,7 @@ describe('GET /api/planting-guide', () => {
         id: String(gardenA),
         name: 'Garden 7b',
         zone: '7b',
+        zoneLocationLabel: 'Raleigh, NC',
         frost: {
           lastSpringFrost: `${SEASON}-04-15`,
           firstFallFrost: `${SEASON}-10-20`,
@@ -186,6 +187,39 @@ describe('GET /api/planting-guide', () => {
     expect(tomato.missingReason).toBeNull();
     expect(tomato.overrides).toBeNull();
     expect(tomato.done).toBeNull();
+  });
+
+  it('includes the timing fields on each row', async () => {
+    const res = await agentA.get('/api/planting-guide');
+    const tomato = rowNamed(res.body, 'Tomato') as unknown as Record<string, unknown>;
+    expect(tomato.frostTolerance).toBe('none');
+    expect(tomato.weeksToTransplant).toBe(6);
+    expect(tomato.maturityDaysMin).toBe(60);
+    expect(tomato.maturityDaysMax).toBe(80);
+    const pea = rowNamed(res.body, 'Pea') as unknown as Record<string, unknown>;
+    expect(pea.frostTolerance).toBe('hard');
+    expect(pea.weeksToTransplant).toBeNull();
+    expect(pea.maturityDaysMin).toBe(55);
+    expect(pea.maturityDaysMax).toBe(70);
+  });
+
+  it('returns a null zoneLocationLabel when the garden has none', async () => {
+    const res = await agentB.get('/api/planting-guide');
+    expect(res.body.gardens[0].zoneLocationLabel).toBeNull();
+  });
+
+  it('normalizes an unknown stored frost tolerance to none', async () => {
+    // A future season keeps this planting out of the other tests' rows.
+    const future = SEASON + 1;
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, source, frost_tolerance)
+       VALUES ('Mystery Squash', 'editorial', 'moderate') RETURNING id`,
+    );
+    await plant(await createBed(gardenB, future), gardenB, future, { cambiumSeedId: rows[0].id });
+    const res = await agentB.get(`/api/planting-guide?season=${future}`);
+    expect(res.status).toBe(200);
+    expect(res.body.rows).toHaveLength(1);
+    expect(res.body.rows[0].frostTolerance).toBe('none');
   });
 
   it('collapses two plantings of the same seed into one row with summed quantity', async () => {

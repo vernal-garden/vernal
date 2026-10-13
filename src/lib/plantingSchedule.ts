@@ -76,6 +76,14 @@ function customWindow(override: string, season: number): Window {
   return { start: d, end: d, source: 'custom' };
 }
 
+export type FrostTolerance = 'none' | 'light' | 'hard';
+
+// Anything other than 'light' or 'hard' (including null or an unknown stored
+// value) is treated as frost-tender.
+export function normalizeFrostTolerance(v: string | null): FrostTolerance {
+  return v === 'light' || v === 'hard' ? v : 'none';
+}
+
 export function computeWindows(
   timing: Timing,
   overrides: Overrides,
@@ -86,10 +94,7 @@ export function computeWindows(
     timing.weeksToTransplant !== null ||
     timing.frostTolerance !== null ||
     timing.maturityDaysMin !== null;
-  const tolerance =
-    timing.frostTolerance === 'light' || timing.frostTolerance === 'hard'
-      ? timing.frostTolerance
-      : 'none';
+  const tolerance = normalizeFrostTolerance(timing.frostTolerance);
   const transplants = timing.weeksToTransplant !== null;
 
   const L = frost.lastSpringFrost;

@@ -1,6 +1,6 @@
 // client/src/components/catalogue/SeedDetailOverlay.tsx
 import React, { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { get, post, patch, del, ApiError } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import type {
@@ -74,6 +74,13 @@ const secondaryBtnStyle: React.CSSProperties = {
   fontWeight: 500,
   cursor: 'pointer',
   whiteSpace: 'nowrap',
+};
+
+const scheduleLinkStyle: React.CSSProperties = {
+  ...secondaryBtnStyle,
+  display: 'inline-flex',
+  alignItems: 'center',
+  textDecoration: 'none',
 };
 
 // Same shape as the photo viewer's buttons in SeedPhotos.tsx
@@ -409,6 +416,9 @@ function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden 
         >
           Suggest a correction
         </button>
+        <Link to={`/guide?open=cambium:${detail.id}`} style={scheduleLinkStyle}>
+          View planting schedule
+        </Link>
       </div>
       {correctionOpen && (
         <CorrectionModal
@@ -686,6 +696,9 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
         >
           Edit
         </button>
+        <Link to={`/guide?open=seed:${detail.id}`} style={scheduleLinkStyle}>
+          View planting schedule
+        </Link>
         {canContribute && (
           <button
             style={secondaryBtnStyle}
