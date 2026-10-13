@@ -3,6 +3,7 @@ import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
 import { deleteFromR2, exportsBucket } from '../lib/r2';
 import { logger } from '../lib/logger';
 import { exportKey } from '../lib/exportWorker';
+import { harvestableCountSql } from '../lib/gardenBadges';
 
 // The only writer of plantings.growth_stage_pct, growth_stage,
 // displayed_growth_stage, harvest_ready, and harvest_window_end — routes
@@ -44,12 +45,7 @@ export async function deriveGrowth(): Promise<{ affected: number }> {
 export async function refreshGardenBadges(): Promise<{ affected: number }> {
   const result = await db.query(`
     UPDATE gardens g SET
-      harvestable_count = (
-        SELECT COUNT(*)::int FROM plantings p
-        WHERE p.garden_id = g.id
-          AND p.harvest_ready = true
-          AND p.indicator_dismissed_at IS NULL
-      ),
+      harvestable_count = ${harvestableCountSql('g.id')},
       has_companion_warnings = EXISTS (
         SELECT 1
         FROM plantings p1
