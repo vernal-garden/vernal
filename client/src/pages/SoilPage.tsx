@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { get, post, patch } from '../lib/api';
+import { get, post, patch, del, ApiError } from '../lib/api';
 import { track } from '../lib/track';
 import UpgradePrompt from '../components/UpgradePrompt';
+import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -152,10 +153,12 @@ function ReadingRow({
   reading,
   amendments,
   onEdit,
+  onDelete,
 }: {
   reading: SoilReading;
   amendments: AmendmentLog[];
   onEdit: (r: SoilReading) => void;
+  onDelete: (r: SoilReading) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showAmendmentList, setShowAmendmentList] = useState(false);
@@ -233,6 +236,12 @@ function ReadingRow({
             style={{ ...cancelSt, fontSize: 12, padding: '4px 12px' }}
           >
             Edit
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete(reading); }}
+            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', marginLeft: 'var(--sp-2)', color: 'var(--c-danger)' }}
+          >
+            Delete
           </button>
         </div>
       )}
@@ -313,12 +322,14 @@ function PerBedView({
   amendments,
   onBack,
   onEdit,
+  onDelete,
 }: {
   bed: Bed;
   readings: SoilReading[];
   amendments: AmendmentLog[];
   onBack: () => void;
   onEdit: (r: SoilReading) => void;
+  onDelete: (r: SoilReading) => void;
 }) {
   // Amendments for this specific bed
   const bedAmendments = amendments.filter(a => a.bedIds.includes(bed.id));
@@ -340,7 +351,7 @@ function PerBedView({
             No readings yet.
           </p>
         ) : (
-          readings.map(r => <ReadingRow key={r.id} reading={r} amendments={bedAmendments} onEdit={onEdit} />)
+          readings.map(r => <ReadingRow key={r.id} reading={r} amendments={bedAmendments} onEdit={onEdit} onDelete={onDelete} />)
         )}
       </div>
     </div>
@@ -516,11 +527,16 @@ type FormState =
   | { open: true; mode: 'add' }
   | { open: true; mode: 'edit'; reading: SoilReading };
 
+type ConfirmState =
+  | { open: false }
+  | { open: true; entry: SoilReading };
+
 // ── SoilPage ──────────────────────────────────────────────────────────────────
 
 export default function SoilPage() {
   const { gardenId } = useParams<{ gardenId: string }>();
   const { account }  = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [garden,     setGarden]     = useState<GardenDetail | null>(null);
   const [readings,   setReadings]   = useState<SoilReading[]>([]);
@@ -528,6 +544,12 @@ export default function SoilPage() {
   const [loading,    setLoading]    = useState(true);
   const [view,       setView]       = useState<ViewState>({ kind: 'all-beds' });
   const [form,       setForm]       = useState<FormState>({ open: false });
+  const [confirm,    setConfirm]    = useState<ConfirmState>({ open: false });
+
+  // ?bed= deep link (from the canvas bed panel). load() reads it through a ref
+  // so a param change doesn't re-trigger loading.
+  const bedParamRef = useRef<string | null>(null);
+  useEffect(() => { bedParamRef.current = searchParams.get('bed'); }, [searchParams]);
 
   const isSupporter = account?.subscriptionTier === 'supporter';
 
@@ -543,12 +565,38 @@ export default function SoilPage() {
       setGarden(g ?? null);
       setReadings(r?.data ?? []);
       setAmendments(a?.data ?? []);
+      const bedParam = bedParamRef.current;
+      if (bedParam && g?.beds.some(b => b.id === bedParam)) {
+        setView({ kind: 'per-bed', bedId: bedParam });
+      }
     } finally {
       setLoading(false);
     }
   }, [gardenId]);
 
   useEffect(() => { load(); }, [load]);
+
+  const closeConfirm = useCallback(() => setConfirm({ open: false }), []);
+
+  async function deleteReading(reading: SoilReading) {
+    try {
+      await del(`/api/soil-readings/${reading.id}`);
+    } catch (e) {
+      // 404: already gone — treat as deleted
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+    }
+    setConfirm({ open: false });
+    load();
+  }
+
+  function backToAllBeds() {
+    setView({ kind: 'all-beds' });
+    if (searchParams.has('bed')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('bed');
+      setSearchParams(next, { replace: true });
+    }
+  }
 
   if (!isSupporter) {
     return (
@@ -609,8 +657,9 @@ export default function SoilPage() {
           bed={currentBed}
           readings={byBedId[currentBed.id] ?? []}
           amendments={amendments}
-          onBack={() => setView({ kind: 'all-beds' })}
+          onBack={backToAllBeds}
           onEdit={(r) => setForm({ open: true, mode: 'edit', reading: r })}
+          onDelete={(r) => setConfirm({ open: true, entry: r })}
         />
       )}
 
@@ -636,6 +685,17 @@ export default function SoilPage() {
           }
           onSaved={() => { setForm({ open: false }); load(); }}
           onCancel={() => setForm({ open: false })}
+        />
+      )}
+
+      {/* Delete confirmation */}
+      {confirm.open && (
+        <ConfirmDeleteDialog
+          title="Delete this reading?"
+          body={`This permanently removes the ${confirm.entry.testDate} reading for ${beds.find(b => b.id === confirm.entry.bedId)?.label || 'this bed'}. This cannot be undone.`}
+          confirmLabel="Delete reading"
+          onConfirm={() => deleteReading(confirm.entry)}
+          onCancel={closeConfirm}
         />
       )}
     </div>
