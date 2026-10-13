@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { CanvasIcon, CatalogueIcon, GardensIcon, PlantingIcon, WeatherIcon } from './icons';
+import { CanvasIcon, CatalogueIcon, GardensIcon, HarvestIcon, PlantingIcon } from './icons';
 
 // Height of the bar itself, excluding the bottom safe-area inset.
 export const TAB_BAR_HEIGHT = 56;
@@ -13,7 +13,6 @@ interface Tab {
   match: (pathname: string) => boolean;
 }
 
-// The Harvest Log phase replaces the weather entry with harvest.
 export const TABS: Tab[] = [
   { key: 'gardens',   label: 'Gardens',   to: '/gardens',   icon: GardensIcon,
     match: (p) => p === '/gardens' },
@@ -23,8 +22,8 @@ export const TABS: Tab[] = [
     match: (p) => p.startsWith('/guide') },
   { key: 'catalogue', label: 'Catalogue', to: '/catalogue', icon: CatalogueIcon,
     match: (p) => p.startsWith('/catalogue') },
-  { key: 'weather',   label: 'Weather',   to: '/weather',   icon: WeatherIcon,
-    match: (p) => p.startsWith('/weather') },
+  { key: 'harvest',   label: 'Harvest',   to: '/harvest',   icon: HarvestIcon,
+    match: (p) => p.startsWith('/harvest') },
 ];
 
 export default function BottomTabBar() {

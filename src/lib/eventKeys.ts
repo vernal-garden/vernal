@@ -28,10 +28,42 @@ export function isEventKey(value: string): value is EventKey {
 
 // flag = the accounts.mf_* column set when the prompt is shown;
 // triggerKey = micro_feedback_responses.trigger_key for the answers.
+// mf_viewed_seed and mf_data_export exist in 001 but are not triggers
+// (Robert, 2026-10-09).
 export const MICRO_FEEDBACK_TRIGGERS = [
-  { flag: 'mf_viewed_seed', triggerKey: 'viewed_seed', label: 'First seed viewed' },
-  { flag: 'mf_planted', triggerKey: 'planted', label: 'First plant placed' },
-  { flag: 'mf_harvest_logged', triggerKey: 'harvest_logged', label: 'First harvest logged' },
-  { flag: 'mf_cross_season', triggerKey: 'cross_season', label: 'Cross-season comparison' },
-  { flag: 'mf_data_export', triggerKey: 'data_export', label: 'First data export' },
-] as const;
+  { flag: 'mf_planted', triggerKey: 'planted', label: 'First plant placed', responseType: 'thumbs' },
+  {
+    flag: 'mf_first_sowing',
+    triggerKey: 'first_sowing',
+    label: 'Planting guide — first save',
+    responseType: 'thumbs',
+  },
+  {
+    flag: 'mf_harvest_logged',
+    triggerKey: 'harvest_logged',
+    label: 'First harvest logged',
+    responseType: 'thumbs',
+  },
+  {
+    flag: 'mf_cross_season',
+    triggerKey: 'cross_season',
+    label: 'Cross-season comparison',
+    responseType: 'thumbs',
+  },
+  { flag: 'mf_upgrade', triggerKey: 'upgrade', label: 'Supporter upgrade', responseType: 'text' },
+] as const satisfies readonly {
+  flag: string;
+  triggerKey: string;
+  label: string;
+  responseType: 'thumbs' | 'text';
+}[];
+
+export type MicroFeedbackTriggerKey = (typeof MICRO_FEEDBACK_TRIGGERS)[number]['triggerKey'];
+
+const TRIGGER_KEY_SET: ReadonlySet<string> = new Set(
+  MICRO_FEEDBACK_TRIGGERS.map((t) => t.triggerKey),
+);
+
+export function isMicroFeedbackTrigger(value: unknown): value is MicroFeedbackTriggerKey {
+  return typeof value === 'string' && TRIGGER_KEY_SET.has(value);
+}

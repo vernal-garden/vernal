@@ -21,6 +21,7 @@ import { useConflicts } from '../hooks/useConflicts';
 import { computeBedOccupancy } from '../lib/crowding';
 import SupporterPromptModal from '../components/SupporterPromptModal';
 import { track } from '../lib/track';
+import { useMicroFeedback } from '../lib/microFeedback';
 
 // Garden ids that have already logged a canvas_session during this page load.
 // Module-level so re-renders and StrictMode double effects can't fire it twice.
@@ -33,6 +34,7 @@ const PLACEMENT_CONFLICT_WINDOW_MS = 10_000;
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
   const { account, isAccount, markSupporterPromptShown } = useAuth();
+  const requestFeedback = useMicroFeedback();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [activeId, setActiveId] = useState<string | null>(() => searchParams.get('garden'));
@@ -351,8 +353,10 @@ export default function HomePage() {
       !account?.supporterPromptShown
     ) {
       setSupporterPromptOpen(true);
+    } else if (placed) {
+      requestFeedback('planted');
     }
-  }, [armedSeed, placePlanting, account, conflictedIds]);
+  }, [armedSeed, placePlanting, account, conflictedIds, requestFeedback]);
 
   const handleConfirmRemoval = useCallback(async (planting: Planting) => {
     await deletePlanting(planting.id, planting.bedId);

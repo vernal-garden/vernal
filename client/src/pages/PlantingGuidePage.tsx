@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { usePlantingGuide } from '../hooks/usePlantingGuide';
 import { parseDay, todayPacific } from '../lib/guideDates';
-import { filterRows, hasWindows, rowKey, type GuideFilterState, type GuideView } from '../lib/guideModel';
-import type { GuideRow } from '../types/plantingGuide';
+import { filterRows, hasWindows, rowKey, seedParam, type GuideFilterState, type GuideView } from '../lib/guideModel';
+import { useMicroFeedback } from '../lib/microFeedback';
+import type { GuideOverrides, GuideRow } from '../types/plantingGuide';
+import { CloseIcon } from '../components/shell/icons';
 import ZoneStrip from '../components/guide/ZoneStrip';
 import SeasonSelector from '../components/guide/SeasonSelector';
 import ViewToggle from '../components/guide/ViewToggle';
@@ -16,7 +18,7 @@ import CalendarView from '../components/guide/CalendarView';
 import TimelineView from '../components/guide/TimelineView';
 import ListView from '../components/guide/ListView';
 import PlantSchedule from '../components/guide/PlantSchedule';
-import { primaryButtonStyle, textButtonStyle } from '../components/guide/styles';
+import { iconButtonStyle, primaryButtonStyle, textButtonStyle } from '../components/guide/styles';
 
 const VIEW_KEY = 'vernal.guide.view';
 const VIEWS: GuideView[] = ['calendar', 'timeline', 'list'];
@@ -39,6 +41,7 @@ function storeView(view: GuideView): void {
 }
 
 const OPEN_PARAM_RE = /^(seed|cambium):(\d+)$/;
+const LOG_PROMPT_MS = 10_000;
 
 function findDeepLinkRow(rows: GuideRow[], param: string): GuideRow | undefined {
   const m = OPEN_PARAM_RE.exec(param);
@@ -65,9 +68,39 @@ export default function PlantingGuidePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // null until the user picks a season: the first load asks the server for
-  // its current season.
-  const [season, setSeason] = useState<number | null>(null);
+  // its current season. A deep link (?open=…&season=<year>) loads that season.
+  const [season, setSeason] = useState<number | null>(() => {
+    const s = searchParams.get('season');
+    return searchParams.get('open') !== null && s !== null && /^\d{4}$/.test(s) ? Number(s) : null;
+  });
   const { data, loading, error, reload, setOverrides, setDone } = usePlantingGuide(season);
+  const requestFeedback = useMicroFeedback();
+
+  // "Marked done. Log your harvest?" after a plant is marked done.
+  const [logPromptRow, setLogPromptRow] = useState<GuideRow | null>(null);
+  useEffect(() => {
+    if (!logPromptRow) return;
+    const timer = window.setTimeout(() => setLogPromptRow(null), LOG_PROMPT_MS);
+    return () => window.clearTimeout(timer);
+  }, [logPromptRow]);
+
+  const readOnly = data?.readOnly ?? true;
+  const setDoneAndPrompt = useCallback(
+    async (row: GuideRow, done: boolean) => {
+      await setDone(row, done);
+      if (!done) return;
+      requestFeedback('first_sowing');
+      if (!readOnly) setLogPromptRow(row);
+    },
+    [setDone, requestFeedback, readOnly],
+  );
+  const setOverridesAndPrompt = useCallback(
+    async (row: GuideRow, partial: Partial<GuideOverrides>) => {
+      await setOverrides(row, partial);
+      requestFeedback('first_sowing');
+    },
+    [setOverrides, requestFeedback],
+  );
 
   const [view, setView] = useState<GuideView>(() => readStoredView() ?? (isMobile ? 'list' : 'calendar'));
   const [filters, setFilters] = useState<GuideFilterState>({ gardenId: 'all', sowType: 'all', dueThisMonth: false });
@@ -90,6 +123,7 @@ export default function PlantingGuidePage() {
     else setNotice("This seed isn't planted in any garden this season.");
     const next = new URLSearchParams(searchParams);
     next.delete('open');
+    next.delete('season');
     setSearchParams(next, { replace: true });
   }, [data, searchParams, setSearchParams]);
 
@@ -106,7 +140,7 @@ export default function PlantingGuidePage() {
   async function toggleDone(row: GuideRow, done: boolean) {
     setDoneError(null);
     try {
-      await setDone(row, done);
+      await setDoneAndPrompt(row, done);
     } catch {
       setDoneError(`Couldn't save ${row.commonName ?? 'that plant'}. Try again.`);
     }
@@ -210,9 +244,46 @@ export default function PlantingGuidePage() {
           onClose={() => setOpenRowKey(null)}
           onPrev={openIndex > 0 ? () => setOpenRowKey(rowKey(filteredRows[openIndex - 1])) : null}
           onNext={openIndex >= 0 && openIndex < filteredRows.length - 1 ? () => setOpenRowKey(rowKey(filteredRows[openIndex + 1])) : null}
-          setOverrides={setOverrides}
-          setDone={setDone}
+          setOverrides={setOverridesAndPrompt}
+          setDone={setDoneAndPrompt}
         />
+      )}
+
+      {logPromptRow && (
+        <div
+          role="status"
+          style={{
+            position: 'fixed',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            bottom: 'calc(var(--shell-bottom, 0px) + 16px)',
+            zIndex: 1060,
+            width: 'max-content',
+            maxWidth: 'calc(100vw - 32px)',
+            boxSizing: 'border-box',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--sp-2)',
+            padding: 'var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4)',
+            background: 'var(--c-surface)',
+            border: '1px solid var(--c-border)',
+            borderRadius: 'var(--r-lg)',
+            boxShadow: 'var(--shadow-lg)',
+            fontSize: 14,
+            color: 'var(--c-text)',
+          }}
+        >
+          <span>Marked done. Log your harvest?</span>
+          <Link
+            to={`/harvest?log=new&gardenId=${logPromptRow.gardenId}&seed=${seedParam(logPromptRow)}`}
+            style={{ ...primaryButtonStyle, padding: '0 var(--sp-3)' }}
+          >
+            Log harvest
+          </Link>
+          <button type="button" aria-label="Dismiss" onClick={() => setLogPromptRow(null)} style={iconButtonStyle}>
+            <CloseIcon width={18} height={18} />
+          </button>
+        </div>
       )}
     </div>
   );

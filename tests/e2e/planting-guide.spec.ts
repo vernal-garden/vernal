@@ -102,6 +102,9 @@ test('a guest sees the sign-in prompt in the schedule', async ({ page }) => {
   const season = currentSeason();
   const cambiumSeedId = await createTestCambiumSeed(`Guide Guest Pea ${Date.now()}`);
   await page.goto('/login');
+  // The app bootstraps its own guest session on load; let that finish so its
+  // cookie can't replace this one between the requests below.
+  await page.waitForLoadState('networkidle');
   expect((await page.request.post('/api/auth/guest')).ok()).toBe(true);
   const gardenResp = await page.request.post('/api/gardens', {
     data: { name: 'Guest Garden', style: 'grid', zone: '7b', growingMethod: 'in_ground' },

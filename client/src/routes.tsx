@@ -14,6 +14,7 @@ import ResetPasswordPage from './pages/ResetPasswordPage';
 import MyGardensPage from './pages/MyGardensPage';
 import SeedCataloguePage from './pages/SeedCataloguePage';
 import PlantingGuidePage from './pages/PlantingGuidePage';
+import HarvestLogPage from './pages/HarvestLogPage';
 import DataMetricsPage from './pages/DataMetricsPage';
 import SoilPage from './pages/SoilPage';
 import WeatherPage from './pages/WeatherPage';
@@ -55,6 +56,16 @@ const shellRoutes: RouteObject[] = [
     element: (
       <ProtectedRoute>
         <PlantingGuidePage />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    // One route for the list and the detail so the page (and its loaded list)
+    // stays mounted when an entry is opened.
+    path: '/harvest/:entryId?',
+    element: (
+      <ProtectedRoute>
+        <HarvestLogPage />
       </ProtectedRoute>
     ),
   },
