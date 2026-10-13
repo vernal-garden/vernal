@@ -106,7 +106,7 @@ export default function HarvestDetail({ entryId, isMobile, version, listSearch, 
   }
 
   const quantity = formatQuantity(entry.quantity, entry.unit);
-  const where = [entry.gardenName, entry.bedId ? entry.bedLabel?.trim() || 'Unnamed bed' : null].filter(Boolean).join(' Â· ');
+  const where = [entry.gardenName, entry.bedId ? entry.bedLabel?.trim() || 'Unnamed bed' : null].filter(Boolean).join(' · ');
 
   return (
     <article style={{ padding, fontFamily: 'var(--font-ui)', color: 'var(--c-text)' }}>
@@ -136,7 +136,7 @@ export default function HarvestDetail({ entryId, isMobile, version, listSearch, 
               onClick={() => setMenuOpen((o) => !o)}
               style={iconButtonStyle}
             >
-              <span aria-hidden="true">â‹¯</span>
+              <span aria-hidden="true">⋯</span>
             </button>
             {menuOpen && (
               <div
@@ -188,7 +188,7 @@ export default function HarvestDetail({ entryId, isMobile, version, listSearch, 
             <dd style={ddStyle}>
               <span role="img" aria-label={`${entry.qualityRating} of 5 stars`}>
                 {[1, 2, 3, 4, 5].map((n) => (
-                  <span key={n} aria-hidden="true" style={{ color: n <= entry.qualityRating! ? 'var(--c-warning)' : 'var(--c-border)', fontSize: 18 }}>â˜…</span>
+                  <span key={n} aria-hidden="true" style={{ color: n <= entry.qualityRating! ? 'var(--c-warning)' : 'var(--c-border)', fontSize: 18 }}>★</span>
                 ))}
               </span>
             </dd>
@@ -338,7 +338,7 @@ function PhotoViewer({
           onClick={() => onIndex(index - 1)}
           style={{ ...navButton, position: 'absolute', left: 8, top: '50%', transform: 'translateY(-50%)' }}
         >
-          â€¹
+          ‹
         </button>
       )}
       {index < photos.length - 1 && (
@@ -348,7 +348,7 @@ function PhotoViewer({
           onClick={() => onIndex(index + 1)}
           style={{ ...navButton, position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)' }}
         >
-          â€º
+          ›
         </button>
       )}
     </div>,
