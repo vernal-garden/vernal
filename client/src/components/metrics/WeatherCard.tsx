@@ -104,7 +104,7 @@ export default function WeatherCard({
         {/* ED: replace with final copy */}
         <Link to="/weather" style={linkStyle}>View weather</Link>
         {weather.station === null && (
-          <Link to="/weather" style={{ ...linkStyle, fontWeight: 400, color: 'var(--c-text-2)' }}>
+          <Link to="/weather?connect=station" style={{ ...linkStyle, fontWeight: 400, color: 'var(--c-text-2)' }}>
             {/* ED: replace with final copy */}
             Connect your own station
           </Link>

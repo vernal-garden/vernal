@@ -1,5 +1,6 @@
 // client/src/pages/WeatherPage.tsx
 import React, { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import UpgradePrompt from '../components/UpgradePrompt';
 import { useWeather } from '../hooks/useWeather';
@@ -7,6 +8,7 @@ import CurrentConditions from '../components/weather/CurrentConditions';
 import HistoryChart from '../components/weather/HistoryChart';
 import GrowingInsights from '../components/weather/GrowingInsights';
 import WeatherSetupCard from '../components/weather/WeatherSetupCard';
+import WeatherStationSection from '../components/weather/WeatherStationSection';
 
 function relativeSync(iso: string | null): string {
   if (!iso) return 'Never';
@@ -33,10 +35,25 @@ export default function WeatherPage() {
   const { account } = useAuth();
   const isSupporter = account?.subscriptionTier === 'supporter';
 
-  const { connections, current, history, insights, units, loading, error, setUnits, refreshCurrent, reload, disconnect } =
-    useWeather();
+  const {
+    connections,
+    current,
+    history,
+    insights,
+    units,
+    locationLabel,
+    loading,
+    error,
+    setUnits,
+    refreshCurrent,
+    reload,
+    disconnect,
+  } = useWeather();
 
   const [refreshing, setRefreshing] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const connectFromUrl = searchParams.get('connect') === 'station';
+  const [stationOpen, setStationOpen] = useState(false);
 
   if (!isSupporter) {
     return (
@@ -55,6 +72,25 @@ export default function WeatherPage() {
   }
 
   const showSetup = error === 'location_not_set' && connections.length === 0;
+
+  function collapseStation() {
+    setStationOpen(false);
+    if (connectFromUrl) {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete('connect');
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }
+
+  function handleStationConnected() {
+    collapseStation();
+    reload();
+  }
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -137,6 +173,18 @@ export default function WeatherPage() {
             {refreshing ? 'Retrying…' : 'Retry'}
           </button>
         </div>
+      )}
+
+      {!showSetup && connections.length === 0 && (
+        <WeatherStationSection
+          units={units}
+          locationLabel={locationLabel}
+          expanded={stationOpen || connectFromUrl}
+          focusOnOpen={connectFromUrl}
+          onExpand={() => setStationOpen(true)}
+          onCollapse={collapseStation}
+          onConnected={handleStationConnected}
+        />
       )}
 
       {!showSetup && connections.length > 0 && (

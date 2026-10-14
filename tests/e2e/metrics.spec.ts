@@ -95,6 +95,9 @@ test('a supporter sees the paid cards and compares two seasons as chart and tabl
   // instead of calling the forecast service.
   await expect(page.getByRole('region', { name: 'Weather', exact: true }))
     .toContainText('Set your location to see local weather.');
+  await expect(
+    page.getByRole('region', { name: 'Weather', exact: true }).getByRole('link', { name: 'Connect your own station' }),
+  ).toHaveAttribute('href', '/weather?connect=station');
 
   await page.goto(`/data/compare?plant=seed:${fx.seedId}`);
   const seasons = page.getByRole('region', { name: 'Season by season' });
