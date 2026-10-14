@@ -145,12 +145,5 @@ export function computeWindows(
   return { indoorStart, transplant, directSow, harvest, missingReason };
 }
 
-const SEASON_FORMAT = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/Los_Angeles',
-  year: 'numeric',
-});
-
-// The current season is the calendar year in America/Los_Angeles.
-export function currentSeason(now: Date): number {
-  return Number(SEASON_FORMAT.format(now));
-}
+// currentSeason lives in season.ts; re-exported so existing imports keep working.
+export { currentSeason } from './season';

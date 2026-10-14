@@ -6,6 +6,7 @@ const NAV_LINKS = [
   { to: '/catalogue', label: 'Seed Catalogue' },
   { to: '/guide',     label: 'Planting Guide' },
   { to: '/harvest',   label: 'Harvest' },
+  { to: '/data',      label: 'Data' },
   { to: '/weather',   label: 'Weather' },
   { to: '/account',   label: 'Account' },
 ] as const;

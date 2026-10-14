@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { apiUrl } from '../../lib/api';
 import { harvestQuery } from '../../hooks/useHarvests';
 import type { SeedParam } from '../../types/harvest';
@@ -18,9 +18,12 @@ interface Props {
   isSupporter: boolean;
 }
 
-// CSV export of the harvest log (desktop popover, mobile bottom sheet).
+// CSV export of the harvest log, or (supporters) the printable PDF page
+// (desktop popover, mobile bottom sheet).
 export default function ExportPanel({ isMobile, onClose, defaultFrom, defaultTo, gardenId, seeds, q, isSupporter }: Props) {
   const uid = useId();
+  const navigate = useNavigate();
+  const [format, setFormat] = useState<'csv' | 'pdf'>('csv');
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(defaultTo);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -48,26 +51,43 @@ export default function ExportPanel({ isMobile, onClose, defaultFrom, defaultTo,
 
   const params = harvestQuery({ gardenId, seeds, q, from: from || null, to: to || null });
   const href = apiUrl(`/api/harvests/export.csv?${params.toString()}`);
+  const invalidRange = from !== '' && to !== '' && from > to;
+  const downloadStyle: CSSProperties = { ...primaryButtonStyle, width: '100%', boxSizing: 'border-box' };
 
   const body = (
     <div style={{ padding: isMobile ? '0 var(--sp-4) var(--sp-4)' : 'var(--sp-4)', fontFamily: 'var(--font-ui)' }}>
       <fieldset style={{ border: 'none', margin: '0 0 var(--sp-4)', padding: 0 }}>
         <legend style={labelStyle}>Format</legend>
         <label style={radioRowStyle}>
-          <input type="radio" name={`${uid}-format`} checked readOnly style={radioStyle} />
+          <input
+            type="radio"
+            name={`${uid}-format`}
+            checked={format === 'csv'}
+            onChange={() => setFormat('csv')}
+            style={radioStyle}
+          />
           CSV
         </label>
-        <div style={{ ...radioRowStyle, color: 'var(--c-text-3)' }}>
-          <input type="radio" name={`${uid}-format`} disabled aria-label="PDF" style={radioStyle} />
-          <span>PDF</span>
-          {isSupporter ? (
-            <span style={secondaryTextStyle}>Coming soon</span>
-          ) : (
+        {isSupporter ? (
+          <label style={radioRowStyle}>
+            <input
+              type="radio"
+              name={`${uid}-format`}
+              checked={format === 'pdf'}
+              onChange={() => setFormat('pdf')}
+              style={radioStyle}
+            />
+            PDF
+          </label>
+        ) : (
+          <div style={{ ...radioRowStyle, color: 'var(--c-text-3)' }}>
+            <input type="radio" name={`${uid}-format`} disabled aria-label="PDF" style={radioStyle} />
+            <span>PDF</span>
             <Link to="/account" style={{ color: 'var(--c-primary)', fontWeight: 600, fontSize: 13, minHeight: 44, display: 'inline-flex', alignItems: 'center' }}>
               Upgrade
             </Link>
-          )}
-        </div>
+          </div>
+        )}
       </fieldset>
 
       <div style={{ display: 'flex', gap: 'var(--sp-3)', marginBottom: 'var(--sp-2)' }}>
@@ -80,13 +100,37 @@ export default function ExportPanel({ isMobile, onClose, defaultFrom, defaultTo,
           <input id={`${uid}-to`} type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} style={inputStyle} />
         </div>
       </div>
-      <p style={{ ...secondaryTextStyle, margin: '0 0 var(--sp-4)' }}>
-        {from || to ? 'Only harvests in this range are exported.' : 'Leave both empty to export every harvest.'}
-      </p>
+      {invalidRange ? (
+        <p role="alert" style={{ ...secondaryTextStyle, color: 'var(--c-danger)', margin: '0 0 var(--sp-4)' }}>
+          {/* ED: replace with final copy */}
+          The start date must be on or before the end date.
+        </p>
+      ) : (
+        <p style={{ ...secondaryTextStyle, margin: '0 0 var(--sp-4)' }}>
+          {from || to ? 'Only harvests in this range are exported.' : 'Leave both empty to export every harvest.'}
+        </p>
+      )}
 
-      <a href={href} download onClick={() => onClose()} style={{ ...primaryButtonStyle, width: '100%', boxSizing: 'border-box' }}>
-        Download
-      </a>
+      {invalidRange ? (
+        <button type="button" disabled style={{ ...downloadStyle, opacity: 0.5, cursor: 'not-allowed' }}>
+          Download
+        </button>
+      ) : format === 'pdf' && isSupporter ? (
+        <button
+          type="button"
+          onClick={() => {
+            onClose();
+            navigate(`/harvest/print${params.toString() ? `?${params.toString()}` : ''}`);
+          }}
+          style={downloadStyle}
+        >
+          Download
+        </button>
+      ) : (
+        <a href={href} download onClick={() => onClose()} style={downloadStyle}>
+          Download
+        </a>
+      )}
     </div>
   );
 

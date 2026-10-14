@@ -15,7 +15,9 @@ import MyGardensPage from './pages/MyGardensPage';
 import SeedCataloguePage from './pages/SeedCataloguePage';
 import PlantingGuidePage from './pages/PlantingGuidePage';
 import HarvestLogPage from './pages/HarvestLogPage';
+import HarvestPrintPage from './pages/HarvestPrintPage';
 import DataMetricsPage from './pages/DataMetricsPage';
+import ComparePage from './pages/ComparePage';
 import SoilPage from './pages/SoilPage';
 import WeatherPage from './pages/WeatherPage';
 import AmendmentPage from './pages/AmendmentPage';
@@ -78,6 +80,14 @@ const shellRoutes: RouteObject[] = [
     ),
   },
   {
+    path: '/data/compare',
+    element: (
+      <AccountRoute>
+        <ComparePage />
+      </AccountRoute>
+    ),
+  },
+  {
     path: '/account',
     element: (
       <AccountRoute>
@@ -115,6 +125,16 @@ const routes: RouteObject[] = [
   {
     element: <AppShell />,
     children: shellRoutes.map(withErrorBoundary),
+  },
+  {
+    // Outside the shell: a bare printable page. The static "print" segment
+    // outranks the shell's /harvest/:entryId? (flattened route ranking).
+    path: '/harvest/print',
+    element: (
+      <ProtectedRoute>
+        <HarvestPrintPage />
+      </ProtectedRoute>
+    ),
   },
   {
     path: '/onboarding',

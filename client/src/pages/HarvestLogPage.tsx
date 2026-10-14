@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useRegisterCanvas } from '../context/CanvasPresenceContext';
 import { useGardenList } from '../hooks/useGardenList';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useComparablePlants } from '../hooks/useMetrics';
 import { parseSeedParam, useHarvests } from '../hooks/useHarvests';
 import { parseDay, todayPacific } from '../lib/guideDates';
 import {
@@ -25,6 +26,7 @@ import HarvestDetail from '../components/harvest/HarvestDetail';
 import HarvestList from '../components/harvest/HarvestList';
 import ExportPanel from '../components/harvest/ExportPanel';
 import { FilterChips, HarvestFilterControls } from '../components/harvest/HarvestFilters';
+import { plantKeyOf } from '../components/metrics/styles';
 import {
   iconButtonStyle,
   primaryButtonStyle,
@@ -40,7 +42,7 @@ const TOAST_MS = 3000;
 // the URL; ?log=new | ?log=<entryId> opens the entry form over the page.
 export default function HarvestLogPage() {
   const isMobile = useIsMobile();
-  const { account } = useAuth();
+  const { account, isAccount } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const { entryId = null } = useParams();
@@ -110,6 +112,15 @@ export default function HarvestLogPage() {
     const key = o.seedId !== null ? `seed:${o.seedId}` : `cambium:${o.cambiumSeedId}`;
     if (o.commonName) setSeedNames((prev) => ({ ...prev, [key]: o.commonName! }));
   }, []);
+
+  // "Compare seasons" when the one filtered plant has 2+ seasons (accounts only).
+  const { plants: comparablePlants } = useComparablePlants(isAccount && filters.seeds.length === 1);
+  const compareKey =
+    isAccount &&
+    filters.seeds.length === 1 &&
+    comparablePlants.some((p) => plantKeyOf(p) === filters.seeds[0])
+      ? filters.seeds[0]
+      : null;
 
   const chips = filterChips(filters, currentYear, {
     garden: (id) => gardens.find((g) => g.id === id)?.name ?? 'Garden',
@@ -240,9 +251,33 @@ export default function HarvestLogPage() {
     </div>
   );
 
+  // Borderless header links; tighter padding on mobile so the header fits 360px.
+  const headerLinkStyle = {
+    ...textButtonStyle,
+    border: 'none',
+    color: 'var(--c-primary)',
+    fontWeight: 600,
+    ...(isMobile ? { padding: '0 var(--sp-2)' } : null),
+  };
+
   const weatherLink = (
-    <Link to="/weather" style={{ ...textButtonStyle, border: 'none', color: 'var(--c-primary)', fontWeight: 600 }}>
+    <Link to="/weather" style={headerLinkStyle}>
       Weather
+    </Link>
+  );
+
+  const dataLink = (
+    <Link to="/data" style={headerLinkStyle}>
+      Data
+    </Link>
+  );
+
+  const compareLink = compareKey && (
+    <Link
+      to={`/data/compare?plant=${encodeURIComponent(compareKey)}`}
+      style={{ ...textLinkButtonStyle, padding: 0 }}
+    >
+      Compare seasons
     </Link>
   );
 
@@ -382,19 +417,23 @@ export default function HarvestLogPage() {
 
     return (
       <div style={{ padding: 'var(--sp-3) var(--sp-4) calc(var(--sp-9) + var(--sp-4))', fontFamily: 'var(--font-ui)', background: 'var(--c-bg)', boxSizing: 'border-box', width: '100%' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
+        {/* Wraps at narrow widths: the Weather / Data pair drops to its own row, right-aligned. */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
           <button type="button" onClick={() => setFilterSheetOpen(true)} style={textButtonStyle}>
             Filter{chips.length > 0 ? ` (${chips.length})` : ''}
           </button>
           {exportButton}
-          <span style={{ flex: 1 }} />
-          {weatherLink}
+          <div style={{ display: 'flex', alignItems: 'center', marginLeft: 'auto' }}>
+            {weatherLink}
+            {dataLink}
+          </div>
         </div>
         {chips.length > 0 && (
           <div style={{ marginBottom: 'var(--sp-3)' }}>
             <FilterChips chips={chips} filters={filters} onChange={setFilters} onClearAll={clearFilters} scroll />
           </div>
         )}
+        {compareLink && <div style={{ marginBottom: 'var(--sp-3)' }}>{compareLink}</div>}
         {notice}
         {listBody}
 
@@ -457,6 +496,7 @@ export default function HarvestLogPage() {
         </h1>
         {exportButton}
         {weatherLink}
+        {dataLink}
         <button type="button" onClick={() => openForm('new')} style={primaryButtonStyle}>
           Log harvest
         </button>
@@ -477,6 +517,7 @@ export default function HarvestLogPage() {
           <FilterChips chips={chips} filters={filters} onChange={setFilters} onClearAll={clearFilters} scroll={false} />
         </div>
       )}
+      {compareLink && <div style={{ marginBottom: 'var(--sp-3)' }}>{compareLink}</div>}
       {notice}
 
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--sp-5)' }}>

@@ -8,6 +8,7 @@ export const TOP_BAR_HEIGHT = 52;
 const SOIL_PATTERN = '/garden/:gardenId/soil';
 const AMENDMENTS_PATTERN = '/garden/:gardenId/amendments';
 const HARVEST_DETAIL_PATTERN = '/harvest/:entryId';
+const COMPARE_PATTERN = '/data/compare';
 
 // Route pattern → top-bar title.
 export const ROUTE_TITLES: Record<string, string> = {
@@ -15,16 +16,17 @@ export const ROUTE_TITLES: Record<string, string> = {
   '/gardens': 'My Gardens',
   '/catalogue': 'Seed Catalogue',
   '/guide': 'Planting Guide',
-  '/data': 'Data & Metrics',
+  '/data': 'Data',
   '/weather': 'Weather',
   '/harvest': 'Harvest',
   '/account': 'Account',
   [SOIL_PATTERN]: 'Soil',
   [AMENDMENTS_PATTERN]: 'Amendments',
   [HARVEST_DETAIL_PATTERN]: 'Harvest',
+  [COMPARE_PATTERN]: 'Compare seasons',
 };
 
-const DETAIL_PATTERNS = [SOIL_PATTERN, AMENDMENTS_PATTERN, HARVEST_DETAIL_PATTERN];
+const DETAIL_PATTERNS = [SOIL_PATTERN, AMENDMENTS_PATTERN, HARVEST_DETAIL_PATTERN, COMPARE_PATTERN];
 
 function titleFor(pathname: string): string {
   for (const [pattern, title] of Object.entries(ROUTE_TITLES)) {
@@ -54,7 +56,7 @@ export default function MobileTopBar() {
     // this entry was the first in the app (e.g. a deep link), so -1 would leave Vernal.
     const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
     if (idx > 0) navigate(-1);
-    else navigate('/');
+    else navigate(matchPath(COMPARE_PATTERN, pathname) ? '/data' : '/');
   }
 
   let right;

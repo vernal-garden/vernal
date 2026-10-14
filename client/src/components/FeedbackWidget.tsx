@@ -22,6 +22,7 @@ const HIDDEN_PATHS = new Set([
   '/reset-password',
   '/session-expired',
   '/connection-problem',
+  '/harvest/print',
 ]);
 
 // Route → source_surface identifier attached to every submission.
@@ -176,7 +177,7 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
   }
 
   return (
-    <div ref={rootRef}>
+    <div ref={rootRef} data-print-hide>
       <style>{`
         @keyframes vernal-feedback-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
         @keyframes vernal-feedback-fade { from { opacity: 0; } to { opacity: 1; } }

@@ -83,3 +83,9 @@ export async function closePool(): Promise<void> {
   ended = true;
   await pool.end();
 }
+
+// Flip an account between free and supporter mid-test. The session's tier is
+// read from the database on every request, so the next request sees it.
+export async function setSubscriptionTier(accountId: string, tier: 'free' | 'supporter'): Promise<void> {
+  await getPool().query('UPDATE accounts SET subscription_tier = $2 WHERE id = $1', [accountId, tier]);
+}

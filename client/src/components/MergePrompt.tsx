@@ -30,7 +30,7 @@ export default function MergePrompt() {
   }
 
   return (
-    <div style={{
+    <div data-print-hide style={{
       position: 'fixed',
       inset: 0,
       background: 'rgba(0,0,0,0.45)',
