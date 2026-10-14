@@ -4,6 +4,7 @@ import { db } from '../lib/db';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
+import { currentSeason } from '../lib/season';
 import { uploadToR2, deleteFromR2 } from '../lib/r2';
 import { logger } from '../lib/logger';
 
@@ -195,7 +196,7 @@ router.get('/', async (req, res) => {
   try {
     const accountId = req.session!.account?.id ?? null;
     const sessionId = req.session!.id;
-    const currentYear = new Date().getFullYear();
+    const season = currentSeason();
     const result = await db.query<GardenListRow>(
       `SELECT ${GARDEN_SELECT},
         (SELECT COUNT(*)::int FROM plantings p
@@ -204,7 +205,7 @@ router.get('/', async (req, res) => {
        FROM gardens
        WHERE (owner_id = $1 OR guest_session_id = $2)
        ORDER BY last_accessed_at DESC`,
-      [accountId, sessionId, currentYear],
+      [accountId, sessionId, season],
     );
     res.json({
       data: result.rows.map(r => ({
@@ -309,7 +310,7 @@ router.get('/:id', async (req, res) => {
       if ('error' in parsed) return res.status(400).json({ error: parsed.error });
       season = parsed.value;
     } else {
-      season = new Date().getFullYear();
+      season = currentSeason();
     }
 
     const bedsResult = await db.query<BedRow>(
@@ -317,7 +318,7 @@ router.get('/:id', async (req, res) => {
        (SELECT COUNT(*)::int FROM plantings p WHERE p.bed_id = beds.id) AS planting_count
        FROM beds
        WHERE garden_id = $1 AND season = $2
-       ORDER BY created_at ASC`,
+       ORDER BY created_at ASC, id ASC`,
       [gardenId, season],
     );
 
@@ -442,6 +443,37 @@ router.delete('/:id', writeLimiter, async (req, res) => {
   }
 });
 
+// GET /api/gardens/:id/seasons  (the current season + every season with a layout)
+router.get('/:id/seasons', async (req, res) => {
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
+  const gardenId = req.params.id as string;
+
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+
+  try {
+    const garden = await db.query(
+      'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+      [gardenId, accountId, sessionId],
+    );
+    if (garden.rows.length === 0) {
+      return res.status(404).json({ error: 'Garden not found' });
+    }
+
+    const result = await db.query<{ season: number }>(
+      'SELECT DISTINCT season FROM beds WHERE garden_id = $1 ORDER BY season DESC',
+      [gardenId],
+    );
+    res.json({
+      currentSeason: currentSeason(),
+      layoutSeasons: result.rows.map(r => r.season),
+    });
+  } catch (err) {
+    console.error('GET /gardens/:id/seasons error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // POST /api/gardens/:id/thumbnail  (raw PNG body, captured from the canvas)
 router.post(
   '/:id/thumbnail',
@@ -522,7 +554,7 @@ router.get('/:gardenId/beds', async (req, res) => {
       if ('error' in parsed) return res.status(400).json({ error: parsed.error });
       season = parsed.value;
     } else {
-      season = new Date().getFullYear();
+      season = currentSeason();
     }
 
     const result = await db.query<BedRow>(
@@ -530,7 +562,7 @@ router.get('/:gardenId/beds', async (req, res) => {
        (SELECT COUNT(*)::int FROM plantings p WHERE p.bed_id = beds.id) AS planting_count
        FROM beds
        WHERE garden_id = $1 AND season = $2
-       ORDER BY created_at ASC`,
+       ORDER BY created_at ASC, id ASC`,
       [gardenId, season],
     );
     res.json({ data: result.rows.map(formatBed) });
@@ -569,7 +601,7 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
       if ('error' in parsed) return res.status(400).json({ error: parsed.error });
       season = parsed.value;
     } else {
-      season = new Date().getFullYear();
+      season = currentSeason();
     }
 
     const labelStr = typeof label === 'string' ? label.trim() : '';
@@ -617,6 +649,84 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
   } catch (err) {
     console.error('POST /gardens/:gardenId/beds error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/gardens/:gardenId/beds/carry-forward
+// Copies a past season's bed layout (geometry + labels, no plantings) into the
+// current season. Only allowed while the current season has no beds.
+router.post('/:gardenId/beds/carry-forward', writeLimiter, async (req, res) => {
+  const accountId = req.session!.account?.id ?? null;
+  const sessionId = req.session!.id;
+  const gardenId = req.params.gardenId as string;
+
+  if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
+
+  const season = currentSeason();
+  const { fromSeason: rawFromSeason } = (req.body ?? {}) as Record<string, unknown>;
+  const parsedFrom = validateSeason(rawFromSeason);
+  if ('error' in parsedFrom) {
+    return res.status(400).json({ error: parsedFrom.error.replace(/^season/, 'fromSeason') });
+  }
+  const fromSeason = parsedFrom.value;
+  if (fromSeason >= season) {
+    return res.status(400).json({
+      error: `fromSeason must be before the current season (${season})`,
+    });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Lock the garden row so two concurrent carry-forwards serialise on the
+    // "current season is empty" check below. Only carry-forward takes this
+    // lock; plain POST /beds does not, so it serialises carry-forwards only.
+    const garden = await client.query(
+      `SELECT id FROM gardens
+       WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)
+       FOR UPDATE`,
+      [gardenId, accountId, sessionId],
+    );
+    if (garden.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Garden not found' });
+    }
+
+    const existing = await client.query(
+      'SELECT 1 FROM beds WHERE garden_id = $1 AND season = $2 LIMIT 1',
+      [gardenId, season],
+    );
+    if (existing.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'This season already has beds.' });
+    }
+
+    const result = await client.query<BedRow>(
+      `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows,
+                         freeform_points, freeform_closed)
+       SELECT garden_id, $2, type, label, grid_x, grid_y, grid_cols, grid_rows,
+              freeform_points, freeform_closed
+       FROM beds
+       WHERE garden_id = $1 AND season = $3
+       ORDER BY created_at ASC, id ASC
+       RETURNING ${BED_SELECT}`,
+      [gardenId, season, fromSeason],
+    );
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'No beds in that season' });
+    }
+
+    await client.query('COMMIT');
+    const beds = [...result.rows].sort((a, b) => Number(a.id) - Number(b.id));
+    res.status(201).json({ data: beds.map(formatBed) });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('POST /gardens/:gardenId/beds/carry-forward error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 

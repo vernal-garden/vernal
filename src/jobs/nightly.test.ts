@@ -9,6 +9,7 @@ vi.mock('../lib/r2', () => ({
 }));
 
 import { deleteFromR2, exportsBucket } from '../lib/r2';
+import { currentSeason } from '../lib/season';
 import {
   deriveGrowth,
   refreshGardenBadges,
@@ -27,7 +28,7 @@ if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
 
 const pool = new Pool({ connectionString: url });
 
-const CURRENT_YEAR = new Date().getFullYear();
+const CURRENT_YEAR = currentSeason();
 
 async function resetDb() {
   await pool.query(
@@ -99,15 +100,23 @@ async function createCambiumSeed(): Promise<number> {
   return rows[0].id;
 }
 
-async function createPersonalSeed(ownerId: number, maturityDaysMax: number | null): Promise<number> {
+async function createPersonalSeed(
+  ownerId: number,
+  maturityDaysMax: number | null,
+  maturityDaysMin: number | null = null,
+): Promise<number> {
   const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO seeds (owner_id, common_name, origin, contribution_status, maturity_days_max)
-     VALUES ($1, 'Nightly Test Plant', 'user_created', 'private', $2)
+    `INSERT INTO seeds
+       (owner_id, common_name, origin, contribution_status, maturity_days_max, maturity_days_min)
+     VALUES ($1, 'Nightly Test Plant', 'user_created', 'private', $2, $3)
      RETURNING id`,
-    [ownerId, maturityDaysMax],
+    [ownerId, maturityDaysMax, maturityDaysMin],
   );
   return rows[0].id;
 }
+
+// "N days ago" is measured in Pacific time, matching the job's notion of today.
+const PACIFIC_TODAY = `(NOW() AT TIME ZONE 'America/Los_Angeles')::date`;
 
 async function createPlanting(
   bedId: number,
@@ -116,28 +125,85 @@ async function createPlanting(
     seedId?: number | null;
     cambiumSeedId?: number | null;
     plantingDateDaysAgo?: number | null;
+    plantingDate?: string; // YYYY-MM-DD; overrides plantingDateDaysAgo
     indicatorDismissed?: boolean;
+    season?: number;
   } = {},
 ): Promise<number> {
   const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO plantings
        (bed_id, garden_id, season, seed_id, cambium_seed_id, planting_date, indicator_dismissed_at, cell_x, cell_y)
      VALUES ($1, $2, $3, $4, $5,
-             CASE WHEN $6::int IS NULL THEN NULL ELSE CURRENT_DATE - $6::int END,
+             COALESCE($8::date,
+               CASE WHEN $6::int IS NULL THEN NULL ELSE ${PACIFIC_TODAY} - $6::int END),
              CASE WHEN $7::bool THEN NOW() ELSE NULL END,
              0, 0)
      RETURNING id`,
     [
       bedId,
       gardenId,
-      CURRENT_YEAR,
+      overrides.season ?? CURRENT_YEAR,
       overrides.seedId ?? null,
       overrides.cambiumSeedId ?? null,
       overrides.plantingDateDaysAgo ?? null,
       overrides.indicatorDismissed ?? false,
+      overrides.plantingDate ?? null,
     ],
   );
   return rows[0].id;
+}
+
+// markedDoneDaysAgo null leaves the event not done. A done event is stamped at
+// noon Pacific on that day so it can't straddle a date boundary.
+async function createSowingEvent(
+  gardenId: number,
+  overrides: {
+    seedId?: number | null;
+    cambiumSeedId?: number | null;
+    season?: number;
+    markedDoneDaysAgo?: number | null;
+  } = {},
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO sowing_events (garden_id, seed_id, cambium_seed_id, season, marked_done_at)
+     VALUES ($1, $2, $3, $4,
+             CASE WHEN $5::int IS NULL THEN NULL
+                  ELSE (${PACIFIC_TODAY} - $5::int + TIME '12:00') AT TIME ZONE 'America/Los_Angeles'
+             END)`,
+    [
+      gardenId,
+      overrides.seedId ?? null,
+      overrides.cambiumSeedId ?? null,
+      overrides.season ?? CURRENT_YEAR,
+      overrides.markedDoneDaysAgo === undefined ? 0 : overrides.markedDoneDaysAgo,
+    ],
+  );
+}
+
+// YYYY-MM-DD for the Pacific date `offsetDays` from today.
+async function pacificDateKey(offsetDays: number): Promise<string> {
+  const { rows } = await pool.query<{ d: string }>(
+    `SELECT (${PACIFIC_TODAY} + $1::int)::text AS d`,
+    [offsetDays],
+  );
+  return rows[0].d;
+}
+
+async function readGrowth(plantingId: number) {
+  const { rows } = await pool.query(
+    `SELECT growth_stage_pct, growth_stage, displayed_growth_stage, harvest_ready,
+            harvest_window_end::text AS harvest_window_end
+     FROM plantings WHERE id = $1`,
+    [plantingId],
+  );
+  const row = rows[0];
+  return {
+    pct: row.growth_stage_pct === null ? null : Number(row.growth_stage_pct),
+    stage: row.growth_stage as number | null,
+    displayedStage: row.displayed_growth_stage as number | null,
+    harvestReady: row.harvest_ready as boolean,
+    windowEnd: row.harvest_window_end as string | null,
+  };
 }
 
 afterAll(() => pool.end());
@@ -145,117 +211,261 @@ afterAll(() => pool.end());
 describe('deriveGrowth', () => {
   beforeEach(resetDb);
 
-  it('marks a planting at 100% maturity harvest-ready with growth_stage 5', async () => {
+  async function setup() {
     const ownerId = await createAccount();
     const gardenId = await createGarden(ownerId);
     const bedId = await createBed(gardenId);
+    return { ownerId, gardenId, bedId };
+  }
+
+  it('marks an anchored planting at 100% maturity harvest-ready with growth_stage 5', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
+    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
-    const { rows } = await pool.query(
-      `SELECT growth_stage_pct, growth_stage, displayed_growth_stage, harvest_ready,
-              harvest_window_end, planting_date
-       FROM plantings WHERE id = $1`,
-      [plantingId],
-    );
-    const row = rows[0];
-    expect(Number(row.growth_stage_pct)).toBe(100);
-    expect(row.growth_stage).toBe(5);
-    expect(row.displayed_growth_stage).toBe(5);
-    expect(row.harvest_ready).toBe(true);
-
-    const expectedWindowEnd = new Date(row.planting_date);
-    expectedWindowEnd.setUTCDate(expectedWindowEnd.getUTCDate() + 60 + 14);
-    expect(new Date(row.harvest_window_end).toISOString().slice(0, 10)).toBe(
-      expectedWindowEnd.toISOString().slice(0, 10),
-    );
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBe(100);
+    expect(row.stage).toBe(5);
+    expect(row.harvestReady).toBe(true);
+    expect(row.windowEnd).toBe(await pacificDateKey(-60 + 60 + 14));
   });
 
-  it('marks a planting at 50% maturity as growth_stage 3 and not harvest-ready', async () => {
-    const ownerId = await createAccount();
-    const gardenId = await createGarden(ownerId);
-    const bedId = await createBed(gardenId);
+  it('marks an anchored planting at 50% maturity as growth_stage 3 and not harvest-ready', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
-    const { rows } = await pool.query(
-      `SELECT growth_stage_pct, growth_stage, harvest_ready FROM plantings WHERE id = $1`,
-      [plantingId],
-    );
-    const row = rows[0];
-    expect(Number(row.growth_stage_pct)).toBe(50);
-    expect(row.growth_stage).toBe(3);
-    expect(row.harvest_ready).toBe(false);
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBe(50);
+    expect(row.stage).toBe(3);
+    expect(row.harvestReady).toBe(false);
   });
 
-  it('leaves growth fields unchanged when planting_date is null', async () => {
-    const ownerId = await createAccount();
-    const gardenId = await createGarden(ownerId);
-    const bedId = await createBed(gardenId);
+  it('clears growth fields for a planting with a planting_date but no done sowing event', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
-    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: null });
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
+    await createSowingEvent(gardenId, { seedId, markedDoneDaysAgo: null });
+    // Stale values from an earlier run must be reset, not left behind.
+    await pool.query(
+      `UPDATE plantings SET growth_stage_pct = 80, growth_stage = 4, harvest_ready = true,
+         harvest_window_end = CURRENT_DATE WHERE id = $1`,
+      [plantingId],
+    );
 
     await deriveGrowth();
 
-    const { rows } = await pool.query(
-      `SELECT growth_stage_pct, growth_stage, displayed_growth_stage, harvest_ready, harvest_window_end
-       FROM plantings WHERE id = $1`,
-      [plantingId],
-    );
-    const row = rows[0];
-    expect(row.growth_stage_pct).toBeNull();
-    expect(row.growth_stage).toBeNull();
-    expect(row.displayed_growth_stage).toBeNull();
-    expect(row.harvest_ready).toBe(false);
-    expect(row.harvest_window_end).toBeNull();
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBeNull();
+    expect(row.stage).toBeNull();
+    expect(row.harvestReady).toBe(false);
+    expect(row.windowEnd).toBeNull();
   });
 
-  it('leaves growth fields unchanged when the seed has no maturity_days_max', async () => {
-    const ownerId = await createAccount();
-    const gardenId = await createGarden(ownerId);
-    const bedId = await createBed(gardenId);
+  it('ignores done sowing events for another season or another seed', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const otherSeedId = await createPersonalSeed(ownerId, 60);
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+    await createSowingEvent(gardenId, { seedId, season: CURRENT_YEAR - 1 });
+    await createSowingEvent(gardenId, { seedId: otherSeedId });
+
+    await deriveGrowth();
+
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBeNull();
+    expect(row.stage).toBeNull();
+  });
+
+  it('does not anchor a personal-seed planting on a done event that only has its Cambium id', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const cambiumSeedId = await createCambiumSeed();
+    const plantingId = await createPlanting(bedId, gardenId, {
+      seedId,
+      cambiumSeedId,
+      plantingDateDaysAgo: 30,
+    });
+    await createSowingEvent(gardenId, { cambiumSeedId });
+
+    await deriveGrowth();
+
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBeNull();
+    expect(row.stage).toBeNull();
+  });
+
+  it('anchors on planting_date when it is set, not on the sowing event date', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+    await createSowingEvent(gardenId, { seedId, markedDoneDaysAgo: 3 });
+
+    await deriveGrowth();
+
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBe(50);
+    expect(row.windowEnd).toBe(await pacificDateKey(-30 + 60 + 14));
+  });
+
+  it('anchors on the earliest done sowing event (Pacific date) when planting_date is null', async () => {
+    const { gardenId, bedId } = await setup();
+    const cambiumSeedId = await createCambiumSeed();
+    await pool.query(`UPDATE cambium.seeds SET maturity_days_max = 60 WHERE id = $1`, [
+      cambiumSeedId,
+    ]);
+    const plantingId = await createPlanting(bedId, gardenId, {
+      cambiumSeedId,
+      plantingDateDaysAgo: null,
+    });
+    await createSowingEvent(gardenId, { cambiumSeedId, markedDoneDaysAgo: 10 });
+    await createSowingEvent(gardenId, { cambiumSeedId, markedDoneDaysAgo: 30 });
+
+    await deriveGrowth();
+
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBe(50);
+    expect(row.stage).toBe(3);
+    expect(row.windowEnd).toBe(await pacificDateKey(-30 + 60 + 14));
+  });
+
+  it('uses maturity_days_min for progress and maturity_days_max for the harvest window', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 70, 50);
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 50 });
+    await createSowingEvent(gardenId, { seedId });
+
+    await deriveGrowth();
+
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBe(100);
+    expect(row.stage).toBe(5);
+    expect(row.harvestReady).toBe(true);
+    expect(row.windowEnd).toBe(await pacificDateKey(-50 + 70 + 14));
+  });
+
+  it('maps 30% to stage 3 and 70% to stage 4', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, null, 100);
+    const at30 = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+    const at70 = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 70 });
+    await createSowingEvent(gardenId, { seedId });
+
+    await deriveGrowth();
+
+    const row30 = await readGrowth(at30);
+    expect(row30.pct).toBe(30);
+    expect(row30.stage).toBe(3);
+    const row70 = await readGrowth(at70);
+    expect(row70.pct).toBe(70);
+    expect(row70.stage).toBe(4);
+    expect(row70.harvestReady).toBe(false);
+  });
+
+  it('leaves growth fields null when the seed has no maturity days', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, null);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 10 });
+    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
-    const { rows } = await pool.query(
-      `SELECT growth_stage_pct, growth_stage, displayed_growth_stage, harvest_ready, harvest_window_end
-       FROM plantings WHERE id = $1`,
-      [plantingId],
-    );
-    const row = rows[0];
-    expect(row.growth_stage_pct).toBeNull();
-    expect(row.growth_stage).toBeNull();
-    expect(row.displayed_growth_stage).toBeNull();
-    expect(row.harvest_ready).toBe(false);
-    expect(row.harvest_window_end).toBeNull();
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBeNull();
+    expect(row.stage).toBeNull();
+    expect(row.harvestReady).toBe(false);
+    expect(row.windowEnd).toBeNull();
   });
 
-  it('keeps harvest_ready false at 100% maturity when indicator_dismissed_at is set', async () => {
-    const ownerId = await createAccount();
-    const gardenId = await createGarden(ownerId);
-    const bedId = await createBed(gardenId);
+  it('keeps stage 5 but harvest_ready false when indicator_dismissed_at is set', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
     const plantingId = await createPlanting(bedId, gardenId, {
       seedId,
       plantingDateDaysAgo: 60,
       indicatorDismissed: true,
     });
+    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
-    const { rows } = await pool.query(
-      `SELECT growth_stage, harvest_ready FROM plantings WHERE id = $1`,
-      [plantingId],
+    const row = await readGrowth(plantingId);
+    expect(row.stage).toBe(5);
+    expect(row.harvestReady).toBe(false);
+  });
+
+  it('never marks a previous-season planting harvest-ready', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    // Mid-June of last season: inside CURRENT_YEAR - 1 and well past 60 days ago.
+    const plantingId = await createPlanting(bedId, gardenId, {
+      seedId,
+      plantingDate: `${CURRENT_YEAR - 1}-06-15`,
+      season: CURRENT_YEAR - 1,
+    });
+    await createSowingEvent(gardenId, { seedId, season: CURRENT_YEAR - 1 });
+
+    await deriveGrowth();
+
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBe(100);
+    expect(row.stage).toBe(5);
+    expect(row.harvestReady).toBe(false);
+  });
+
+  it('leaves unchanged plantings untouched on a second run', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const anchored = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+    const unanchored = await createPlanting(bedId, gardenId, {
+      seedId: await createPersonalSeed(ownerId, 60),
+      plantingDateDaysAgo: 30,
+    });
+    await createSowingEvent(gardenId, { seedId });
+
+    const first = await deriveGrowth();
+    expect(first.affected).toBe(1);
+    const readUpdatedAt = async () => {
+      const { rows } = await pool.query<{ id: number; updated_at: Date }>(
+        `SELECT id, updated_at FROM plantings WHERE id = ANY($1::int[]) ORDER BY id`,
+        [[anchored, unanchored]],
+      );
+      return rows.map((r) => r.updated_at.toISOString());
+    };
+    const before = await readUpdatedAt();
+
+    const second = await deriveGrowth();
+
+    expect(second.affected).toBe(0);
+    expect(await readUpdatedAt()).toEqual(before);
+  });
+
+  it('does not write displayed_growth_stage', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const anchored = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
+    const unanchored = await createPlanting(bedId, gardenId, {
+      seedId: await createPersonalSeed(ownerId, 60),
+      plantingDateDaysAgo: 60,
+    });
+    await createSowingEvent(gardenId, { seedId });
+    await pool.query(
+      `UPDATE plantings SET displayed_growth_stage = 2 WHERE id = ANY($1::int[])`,
+      [[anchored, unanchored]],
     );
-    const row = rows[0];
-    expect(row.growth_stage).toBe(5);
-    expect(row.harvest_ready).toBe(false);
+
+    await deriveGrowth();
+
+    const anchoredRow = await readGrowth(anchored);
+    expect(anchoredRow.stage).toBe(5);
+    expect(anchoredRow.displayedStage).toBe(2);
+    expect((await readGrowth(unanchored)).displayedStage).toBe(2);
   });
 });
 

@@ -1,5 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../lib/api';
+import { currentSeasonPacific } from '../lib/guideDates';
+import type { GrowthStage } from '../lib/growthStages';
+
+export interface PlantingGrowth {
+  stagePct: number | null;
+  harvestReady: boolean;
+  // Never used by the canvas: there is no overdue state (no fading, recolouring
+  // or flagging past the window end).
+  harvestWindowEnd: string | null;
+  indicatorDismissedAt: string | null;
+  stage: GrowthStage | null;
+  displayedStage: GrowthStage | null;
+  anchored: boolean;
+}
 
 export interface Planting {
   id: string;
@@ -15,7 +29,7 @@ export interface Planting {
   plantingDate: string | null;
   cell: { x: number; y: number } | null;
   point: { x: number; y: number } | null;
-  growth: Record<string, unknown>;
+  growth: PlantingGrowth;
   createdAt: string;
   updatedAt: string;
   _commonName?: string; // client-side display label, not from API
@@ -30,11 +44,31 @@ export interface ArmedSeed {
 
 export type PlantingsByBedId = Record<string, Planting[]>;
 
-export function usePlantings(gardenId: string | null) {
+const EMPTY_GROWTH: PlantingGrowth = {
+  stagePct: null,
+  harvestReady: false,
+  harvestWindowEnd: null,
+  indicatorDismissedAt: null,
+  stage: null,
+  displayedStage: null,
+  anchored: false,
+};
+
+// season defaults to the current Pacific-year season; pass a past season to
+// load that season's plantings with the same code.
+export function usePlantings(gardenId: string | null, season: number = currentSeasonPacific()) {
   const [plantingsByBedId, setPlantingsByBedId] = useState<PlantingsByBedId>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [latestPlacing, setLatestPlacing] = useState<{ id: string; seq: number } | null>(null);
+  // `${gardenId}:${season}` of the last completed load; lets the canvas tell
+  // "loaded" apart from "not fetched yet".
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  // `${gardenId}:${season}` the current error belongs to.
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  // Latest load wins: stale responses (season/garden changed mid-fetch, or the
+  // id went null) are ignored.
+  const requestRef = useRef(0);
   const plantingsRef = useRef<PlantingsByBedId>({});
   const seqRef = useRef(0);
 
@@ -45,11 +79,13 @@ export function usePlantings(gardenId: string | null) {
 
   const reload = useCallback(async () => {
     if (!gardenId) return;
+    const req = ++requestRef.current;
     setLoading(true);
     setError(null);
+    setErrorKey(null);
     try {
-      const season = new Date().getFullYear();
       const res = await api.get<{ data: Planting[] }>(`/api/gardens/${gardenId}/plantings?season=${season}`);
+      if (req !== requestRef.current) return;
       const list = res?.data ?? [];
       const byBed: PlantingsByBedId = {};
       for (const p of list) {
@@ -57,15 +93,24 @@ export function usePlantings(gardenId: string | null) {
         byBed[p.bedId].push(p);
       }
       syncPlantings(byBed);
+      setLoadedKey(`${gardenId}:${season}`);
     } catch (e) {
+      if (req !== requestRef.current) return;
       setError(e instanceof Error ? e.message : 'Failed to load plantings');
+      setErrorKey(`${gardenId}:${season}`);
     } finally {
-      setLoading(false);
+      if (req === requestRef.current) setLoading(false);
     }
-  }, [gardenId, syncPlantings]);
+  }, [gardenId, season, syncPlantings]);
 
   useEffect(() => {
-    if (!gardenId) { syncPlantings({}); return; }
+    if (!gardenId) {
+      requestRef.current += 1;
+      setLoading(false);
+      setErrorKey(null);
+      syncPlantings({});
+      return;
+    }
     reload();
   }, [gardenId, reload, syncPlantings]);
 
@@ -97,7 +142,7 @@ export function usePlantings(gardenId: string | null) {
       id: tempId,
       bedId,
       gardenId,
-      season: new Date().getFullYear(),
+      season,
       seedId: payload.seedId ?? null,
       cambiumSeedId: payload.cambiumSeedId ?? null,
       companionSeedId: null,
@@ -106,7 +151,7 @@ export function usePlantings(gardenId: string | null) {
       plantingDate: payload.plantingDate ?? null,
       cell: payload.cell ?? null,
       point: payload.point ?? null,
-      growth: {},
+      growth: EMPTY_GROWTH,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       _commonName: commonName,
@@ -125,7 +170,7 @@ export function usePlantings(gardenId: string | null) {
       setError(e instanceof Error ? e.message : 'Failed to place planting');
       return false;
     }
-  }, [gardenId, _addPlanting, _removePlanting]);
+  }, [gardenId, season, _addPlanting, _removePlanting]);
 
   const deletePlanting = useCallback(async (plantingId: string, bedId: string): Promise<void> => {
     const snapshot = plantingsRef.current;
@@ -160,5 +205,48 @@ export function usePlantings(gardenId: string | null) {
     }
   }, [syncPlantings]);
 
-  return { plantingsByBedId, loading, error, reload, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint };
+  // Records that the canvas has shown these plantings' current stage, so the
+  // entrance/pulse does not repeat. Local state updates first; the PATCH is
+  // best-effort and failures are ignored.
+  const markStagesDisplayed = useCallback((plantingIds: string[]) => {
+    if (!gardenId || plantingIds.length === 0) return;
+    const ids = new Set(plantingIds);
+    const prev = plantingsRef.current;
+    const next: PlantingsByBedId = {};
+    for (const [bedId, list] of Object.entries(prev)) {
+      next[bedId] = list.map(p =>
+        ids.has(p.id) ? { ...p, growth: { ...p.growth, displayedStage: p.growth.stage } } : p,
+      );
+    }
+    syncPlantings(next);
+    for (let i = 0; i < plantingIds.length; i += 500) {
+      api.patch(`/api/gardens/${gardenId}/plantings/displayed-stage`, {
+        plantingIds: plantingIds.slice(i, i + 500),
+      }).catch(() => {});
+    }
+  }, [gardenId, syncPlantings]);
+
+  // "Mark as harvested": dismisses the harvest-ready indicator, then swaps in
+  // the returned planting (indicatorDismissedAt set). Throws on failure so the
+  // caller can show its own error; local state is untouched until success.
+  const dismissIndicator = useCallback(async (plantingId: string, bedId: string): Promise<void> => {
+    const result = await api.patch<Planting>(`/api/plantings/${plantingId}`, { dismissIndicator: true });
+    if (!result) throw new Error('No planting returned');
+    const prev = plantingsRef.current;
+    syncPlantings({
+      ...prev,
+      [bedId]: (prev[bedId] ?? []).map(p =>
+        // Keep the local displayedStage: markStagesDisplayed may be ahead of
+        // the server row (its PATCH is best-effort).
+        p.id === plantingId
+          ? { ...result, growth: { ...result.growth, displayedStage: p.growth.displayedStage }, _commonName: p._commonName }
+          : p,
+      ),
+    });
+  }, [syncPlantings]);
+
+  return {
+    plantingsByBedId, loading, error, errorKey, reload, placePlanting, deletePlanting, latestPlacing,
+    updatePlantingPoint, season, loadedKey, markStagesDisplayed, dismissIndicator,
+  };
 }

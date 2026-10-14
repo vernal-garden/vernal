@@ -51,6 +51,12 @@ export function todayPacific(now: Date = new Date()): string {
   return toKey(get('year'), get('month'), get('day'));
 }
 
+// The current season: the calendar year in America/Los_Angeles, matching the
+// server's currentSeason(). Never use new Date().getFullYear() for seasons.
+export function currentSeasonPacific(now: Date = new Date()): number {
+  return parseDay(todayPacific(now)).y;
+}
+
 // Whole days from a to b (positive when b is later).
 export function daysBetween(a: string, b: string): number {
   return Math.round((toUtc(b) - toUtc(a)) / DAY_MS);

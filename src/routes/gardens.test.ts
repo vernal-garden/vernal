@@ -10,6 +10,7 @@ vi.mock('../lib/r2', () => ({
 
 import { uploadToR2, deleteFromR2 } from '../lib/r2';
 import app from '../index';
+import { currentSeason } from '../lib/season';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -218,7 +219,7 @@ describe('Beds — nested CRUD', () => {
     });
     expect(res.status).toBe(201);
     expect(res.body.grid.cols).toBe(4);
-    expect(res.body.season).toBe(new Date().getFullYear());
+    expect(res.body.season).toBe(currentSeason());
     expect(res.body.freeform).toBeNull();
     gridBedId = res.body.id;
   });
@@ -568,6 +569,143 @@ describe('Garden thumbnails', () => {
     const res = await agent.delete(`/api/gardens/${gardenId}`);
     expect(res.status).toBe(204);
     expect(deleteFromR2).not.toHaveBeenCalled();
+  });
+});
+
+// ── Seasons and carry-forward (Phase 50) ─────────────────────────────────────
+
+describe('Seasons and carry-forward', () => {
+  const S = currentSeason();
+  let agent: ReturnType<typeof request.agent>;
+  let gardenId: string;
+  let otherGardenId: string;
+
+  async function insertBed(gid: string, season: number, bed: Record<string, unknown>) {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows,
+                         freeform_points, freeform_closed)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id::text`,
+      [gid, season, bed.type, bed.label, bed.grid_x ?? null, bed.grid_y ?? null,
+       bed.grid_cols ?? null, bed.grid_rows ?? null,
+       bed.freeform_points ? JSON.stringify(bed.freeform_points) : null, bed.freeform_closed ?? null],
+    );
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    await createUser('season-user@example.com');
+    agent = await loginAgent('season-user@example.com');
+    const g = await agent.post('/api/gardens').send({ ...BASE_GARDEN, name: 'Season Garden' });
+    gardenId = g.body.id;
+
+    const lastYearGrid = await insertBed(gardenId, S - 1, {
+      type: 'grid', label: 'Tomatoes', grid_x: 2, grid_y: 3, grid_cols: 4, grid_rows: 6,
+    });
+    await insertBed(gardenId, S - 1, {
+      type: 'freeform', label: 'Kidney', freeform_points: [0, 0, 50, 0, 50, 40, 0, 40],
+      freeform_closed: false,
+    });
+    await insertBed(gardenId, S - 3, {
+      type: 'grid', label: 'Old', grid_x: 0, grid_y: 0, grid_cols: 1, grid_rows: 1,
+    });
+    await pool.query(
+      `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, cell_x, cell_y)
+       VALUES ($1, $2, $3, 1, 0, 0)`,
+      [lastYearGrid, gardenId, S - 1],
+    );
+
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    const og = await guest.post('/api/gardens').send({ ...BASE_GARDEN, name: 'Guest Garden' });
+    otherGardenId = og.body.id;
+    await insertBed(otherGardenId, S - 1, {
+      type: 'grid', label: 'G', grid_x: 0, grid_y: 0, grid_cols: 1, grid_rows: 1,
+    });
+  });
+
+  it('GET /:id/seasons lists only years with beds (desc) and currentSeason', async () => {
+    const res = await agent.get(`/api/gardens/${gardenId}/seasons`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ currentSeason: S, layoutSeasons: [S - 1, S - 3] });
+  });
+
+  it("GET /:id/seasons for another session's garden → 404", async () => {
+    const res = await agent.get(`/api/gardens/${otherGardenId}/seasons`);
+    expect(res.status).toBe(404);
+  });
+
+  it('carry-forward with fromSeason >= current → 400', async () => {
+    for (const fromSeason of [S, S + 1]) {
+      const res = await agent.post(`/api/gardens/${gardenId}/beds/carry-forward`).send({ fromSeason });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('carry-forward with missing or non-integer fromSeason → 400', async () => {
+    for (const body of [{}, { fromSeason: 'abc' }, { fromSeason: S - 1.5 }, { fromSeason: 1e12 }]) {
+      const res = await agent.post(`/api/gardens/${gardenId}/beds/carry-forward`).send(body);
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('carry-forward accepts a numeric-string fromSeason (validateSeason convention)', async () => {
+    // S - 2 has no beds, so a parsed string reaches the 404 rather than a 400.
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: String(S - 2) });
+    expect(res.status).toBe(404);
+  });
+
+  it('carry-forward from a season with no beds → 404', async () => {
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 2 });
+    expect(res.status).toBe(404);
+  });
+
+  it("carry-forward into another session's garden → 404", async () => {
+    const res = await agent
+      .post(`/api/gardens/${otherGardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 1 });
+    expect(res.status).toBe(404);
+  });
+
+  it('carry-forward copies geometry and labels but no plantings', async () => {
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 1 });
+    expect(res.status).toBe(201);
+    expect(res.body.data).toHaveLength(2);
+    const grid = res.body.data.find((b: { type: string }) => b.type === 'grid');
+    const free = res.body.data.find((b: { type: string }) => b.type === 'freeform');
+    expect(grid).toMatchObject({
+      gardenId, season: S, label: 'Tomatoes',
+      grid: { x: 2, y: 3, cols: 4, rows: 6 }, freeform: null,
+    });
+    expect(free).toMatchObject({
+      gardenId, season: S, label: 'Kidney', grid: null,
+      freeform: { points: [0, 0, 50, 0, 50, 40, 0, 40], closed: false },
+    });
+
+    const { rows } = await pool.query<{ count: number }>(
+      'SELECT COUNT(*)::int AS count FROM plantings WHERE garden_id = $1 AND season = $2',
+      [gardenId, S],
+    );
+    expect(rows[0].count).toBe(0);
+
+    const beds = await agent.get(`/api/gardens/${gardenId}/beds`);
+    expect(beds.body.data).toHaveLength(2);
+
+    const seasons = await agent.get(`/api/gardens/${gardenId}/seasons`);
+    expect(seasons.body.layoutSeasons).toEqual([S, S - 1, S - 3]);
+  });
+
+  it('a second carry-forward → 409', async () => {
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 3 });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('This season already has beds.');
   });
 });
 

@@ -4,40 +4,94 @@ import { deleteFromR2, exportsBucket } from '../lib/r2';
 import { logger } from '../lib/logger';
 import { exportKey } from '../lib/exportWorker';
 import { harvestableCountSql } from '../lib/gardenBadges';
+import { STAGE_BOUNDS } from '../lib/growthStages';
+import { currentSeason } from '../lib/season';
 
-// The only writer of plantings.growth_stage_pct, growth_stage,
-// displayed_growth_stage, harvest_ready, and harvest_window_end — routes
-// must never write these fields directly.
+// The only writer of plantings.growth_stage_pct, growth_stage, harvest_ready,
+// and harvest_window_end — routes must never write these fields directly.
+// displayed_growth_stage is not written here: the client acknowledges the
+// stage it has shown through PATCH /api/gardens/:gardenId/plantings/displayed-stage.
+//
+// A planting is anchored once a sowing event for the same garden, seed, and
+// season is marked done. It grows from its planting_date, or failing that from
+// the Pacific date of the earliest done event. Unanchored plantings, and those
+// whose seed has no maturity days, get null growth and are never harvest-ready.
+// Stage bounds come from STAGE_BOUNDS so SQL and stageFor() can't drift; pct is
+// rounded to the column's two decimals before the stage is chosen.
 export async function deriveGrowth(): Promise<{ affected: number }> {
-  const result = await db.query(`
-    WITH seed_maturity AS (
+  const result = await db.query(
+    `
+    WITH anchor AS (
+      -- maturity stays NULL for unanchored plantings, which nulls everything below.
       SELECT p.id AS planting_id,
-        COALESCE(ps.maturity_days_max, cs.maturity_days_max) AS maturity
+        p.indicator_dismissed_at,
+        p.season,
+        COALESCE(p.planting_date,
+          (ds.first_done_at AT TIME ZONE 'America/Los_Angeles')::date) AS sow_date,
+        CASE WHEN ds.first_done_at IS NOT NULL THEN
+          NULLIF(COALESCE(ps.maturity_days_min, ps.maturity_days_max,
+            cs.maturity_days_min, cs.maturity_days_max), 0)
+        END AS maturity,
+        COALESCE(ps.maturity_days_max, ps.maturity_days_min,
+          cs.maturity_days_max, cs.maturity_days_min) AS window_days
       FROM plantings p
+      -- Seed key as in routes/harvests.ts seedKeyWhere: seed_id when the
+      -- planting has one, else a Cambium-only event.
+      LEFT JOIN LATERAL (
+        SELECT MIN(se.marked_done_at) AS first_done_at
+        FROM sowing_events se
+        WHERE se.garden_id = p.garden_id
+          AND se.season = p.season
+          AND se.marked_done_at IS NOT NULL
+          AND CASE WHEN p.seed_id IS NOT NULL THEN se.seed_id = p.seed_id
+                   ELSE se.seed_id IS NULL AND se.cambium_seed_id = p.cambium_seed_id END
+      ) ds ON true
       LEFT JOIN seeds ps ON ps.id = p.seed_id
       LEFT JOIN cambium.seeds cs ON cs.id = p.cambium_seed_id
-      WHERE p.planting_date IS NOT NULL
-        AND COALESCE(ps.maturity_days_max, cs.maturity_days_max) IS NOT NULL
     ),
     calc AS (
-      SELECT sm.planting_id,
-        sm.maturity,
-        LEAST(100.0, GREATEST(0.0,
-          (CURRENT_DATE - p.planting_date)::NUMERIC / sm.maturity * 100
-        )) AS pct
-      FROM seed_maturity sm
-      JOIN plantings p ON p.id = sm.planting_id
+      SELECT a.*,
+        -- GREATEST/LEAST skip NULLs, so guard unanchored / no-maturity rows.
+        CASE WHEN a.maturity IS NOT NULL THEN
+          ROUND(LEAST(100.0, GREATEST(0.0,
+            ((NOW() AT TIME ZONE 'America/Los_Angeles')::date - a.sow_date)::NUMERIC
+              / a.maturity * 100
+          )), 2)
+        END AS pct
+      FROM anchor a
+    ),
+    derived AS (
+      SELECT c.planting_id,
+        c.pct,
+        CASE
+          WHEN c.pct IS NULL THEN NULL
+          WHEN c.pct >= $3::numeric THEN 5
+          WHEN c.pct >  $2::numeric THEN 4
+          WHEN c.pct >  $1::numeric THEN 3
+          WHEN c.pct >  0 THEN 2
+          ELSE 1
+        END::smallint AS stage,
+        COALESCE(c.pct >= $3::numeric, false)
+          AND c.indicator_dismissed_at IS NULL
+          AND c.season = $4::int AS ready,
+        CASE WHEN c.pct IS NOT NULL THEN c.sow_date + c.window_days + 14 END AS window_end
+      FROM calc c
     )
     UPDATE plantings p SET
-      growth_stage_pct       = c.pct,
-      growth_stage           = GREATEST(1, LEAST(5, CEIL(c.pct / 20.0)::int)),
-      displayed_growth_stage = GREATEST(1, LEAST(5, CEIL(c.pct / 20.0)::int)),
-      harvest_ready          = c.pct >= 100.0 AND p.indicator_dismissed_at IS NULL,
-      harvest_window_end     = p.planting_date + c.maturity + 14,
-      updated_at             = NOW()
-    FROM calc c
-    WHERE p.id = c.planting_id
-  `);
+      growth_stage_pct   = d.pct,
+      growth_stage       = d.stage,
+      harvest_ready      = d.ready,
+      harvest_window_end = d.window_end,
+      updated_at         = NOW()
+    FROM derived d
+    WHERE p.id = d.planting_id
+      -- Only rows whose derived values change, so updated_at and rowCount
+      -- reflect real changes.
+      AND (p.growth_stage_pct, p.growth_stage, p.harvest_ready, p.harvest_window_end)
+        IS DISTINCT FROM (d.pct, d.stage, d.ready, d.window_end)
+  `,
+    [STAGE_BOUNDS.seedling, STAGE_BOUNDS.vegetative, STAGE_BOUNDS.ready, currentSeason()],
+  );
   return { affected: result.rowCount ?? 0 };
 }
 
@@ -63,11 +117,11 @@ export async function refreshGardenBadges(): Promise<{ affected: number }> {
           AND c.confidence >= $1
         WHERE p1.garden_id = g.id
           AND p1.cambium_seed_id IS NOT NULL
-          AND p1.season = EXTRACT(YEAR FROM CURRENT_DATE)::int
+          AND p1.season = $2::int
           AND p2.season = p1.season
       ),
       updated_at = NOW()
-  `, [COMPANION_CONFIDENCE_THRESHOLD]);
+  `, [COMPANION_CONFIDENCE_THRESHOLD, currentSeason()]);
   return { affected: result.rowCount ?? 0 };
 }
 

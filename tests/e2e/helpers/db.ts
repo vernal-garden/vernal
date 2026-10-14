@@ -89,3 +89,16 @@ export async function closePool(): Promise<void> {
 export async function setSubscriptionTier(accountId: string, tier: 'free' | 'supporter'): Promise<void> {
   await getPool().query('UPDATE accounts SET subscription_tier = $2 WHERE id = $1', [accountId, tier]);
 }
+
+// Growth fields are written by the nightly job; tests set them directly. Stage
+// 5 at 100 % with displayed_growth_stage already 5 so the canvas draws the
+// harvest-ready marker without a stage-change pulse.
+export async function setPlantingHarvestReady(plantingId: string): Promise<void> {
+  await getPool().query(
+    `UPDATE plantings
+        SET growth_stage = 5, growth_stage_pct = 100, displayed_growth_stage = 5,
+            harvest_ready = true, indicator_dismissed_at = NULL
+      WHERE id = $1`,
+    [plantingId],
+  );
+}
