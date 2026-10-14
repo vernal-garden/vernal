@@ -4,6 +4,9 @@ import { get, patch, del, ApiError } from '../lib/api';
 import type { UnitSystem } from '../lib/units';
 import type { WeatherInsight } from '../types/weather';
 
+// Mirrors the server's LOCATION_NOT_SET sentinel (src/lib/constants.ts).
+const LOCATION_NOT_SET = 'Not set';
+
 export interface WeatherConnection {
   id: string;
   provider: string;
@@ -47,6 +50,7 @@ export function useWeather() {
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [insights, setInsights] = useState<WeatherInsight[]>([]);
   const [units, setUnitsState] = useState<UnitSystem>('imperial');
+  const [locationLabel, setLocationLabel] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<WeatherErrorKind | null>(null);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
@@ -85,8 +89,12 @@ export function useWeather() {
   const load = useCallback(async () => {
     setLoading(true);
     await Promise.all([
-      get<{ data: { preferences?: { units?: UnitSystem } } }>('/api/me')
-        .then((res) => setUnitsState(res?.data.preferences?.units ?? 'imperial'))
+      get<{ data: { preferences?: { units?: UnitSystem }; zoneLocationLabel?: string | null } }>('/api/me')
+        .then((res) => {
+          setUnitsState(res?.data.preferences?.units ?? 'imperial');
+          const label = res?.data.zoneLocationLabel?.trim();
+          setLocationLabel(label && label !== LOCATION_NOT_SET ? label : null);
+        })
         .catch(() => {}),
       loadConnections(),
       loadCurrent(),
@@ -127,6 +135,7 @@ export function useWeather() {
     history,
     insights,
     units,
+    locationLabel,
     loading,
     error,
     disconnectError,
