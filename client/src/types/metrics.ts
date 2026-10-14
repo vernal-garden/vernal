@@ -2,6 +2,8 @@
 // dates YYYY-MM-DD. Every aggregate is computed on the server.
 
 import type { HarvestUnit } from './harvest';
+import type { WeatherInsight } from './weather';
+import type { UnitSystem } from '../lib/units';
 
 export type TimingStatus = 'early' | 'on_time' | 'late';
 export type SowDateSource = 'planting' | 'marked_done';
@@ -82,10 +84,39 @@ export interface AdvancedMetrics {
   }[];
 }
 
+export interface AmendmentLatest {
+  gardenId: string;
+  gardenName: string;
+  applicationDate: string;
+  productName: string;
+  amendmentType: string;
+  amount: number | null;
+  amountUnit: string | null;
+  beds: { bedId: string; label: string }[];
+}
+
+export interface AmendmentMetrics {
+  applicationCount: number;
+  bedCount: number;
+  seasonBedCount: number;
+  latest: AmendmentLatest | null;
+  byType: { amendmentType: string; count: number }[]; // most applied first
+  unamendedBeds: { bedId: string; label: string; gardenId: string; gardenName: string }[];
+}
+
+export interface WeatherMetrics {
+  station: { provider: string; lastSuccessfulSync: string | null } | null;
+  locationLabel: string | null;
+  units: UnitSystem;
+  week: { minLowC: number; maxHighC: number; precipMm: number; days: number } | null;
+  insights: WeatherInsight[];
+  historyUnavailable: boolean;
+}
+
 export interface PaidMetrics {
   soil: SoilRow[];
-  amendments: { applicationCount: number; bedCount: number };
-  weather: { connected: boolean; provider: string | null; lastSuccessfulSync: string | null };
+  amendments: AmendmentMetrics;
+  weather: WeatherMetrics;
   advanced: AdvancedMetrics;
 }
 

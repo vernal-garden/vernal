@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { get, post, patch, del, ApiError } from '../lib/api';
 import { track } from '../lib/track';
+import { todayPacific } from '../lib/guideDates';
 import UpgradePrompt from '../components/UpgradePrompt';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 
@@ -50,10 +51,6 @@ function phColors(ph: number | null): { bg: string; color: string } {
 
 function daysSince(iso: string): number {
   return Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-}
-
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 // ── Shared styles ─────────────────────────────────────────────────────────────
@@ -383,7 +380,7 @@ function EntryForm({ beds, defaultBedId, gardenId, initial, onSaved, onCancel }:
   const isEdit = Boolean(initial?.id);
   const [form, setForm] = useState<FormValues>({
     bedId:      initial?.bedId      ?? defaultBedId,
-    testDate:   initial?.testDate   ?? todayISO(),
+    testDate:   initial?.testDate   ?? todayPacific(),
     ph:         initial?.ph         ?? '',
     nitrogen:   initial?.nitrogen   ?? '',
     phosphorus: initial?.phosphorus ?? '',

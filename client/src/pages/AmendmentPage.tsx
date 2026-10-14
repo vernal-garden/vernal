@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { get, post, patch, del, ApiError } from '../lib/api';
 import { track } from '../lib/track';
+import { addDays, todayPacific } from '../lib/guideDates';
 import UpgradePrompt from '../components/UpgradePrompt';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 
@@ -70,22 +71,17 @@ const AMOUNT_UNITS = ['oz', 'lbs', 'kg', 'gallons', 'litres', 'cups', 'by hand']
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 function daysBetween(from: string, to: string): number {
   return Math.round((new Date(to).getTime() - new Date(from).getTime()) / 86_400_000);
 }
 
 function filterByDateRange(amendments: AmendmentLog[], range: string): AmendmentLog[] {
   if (range === 'all') return amendments;
-  const now = new Date();
-  const cutoff = new Date(now);
-  if (range === '30')    cutoff.setDate(now.getDate() - 30);
-  if (range === '90')    cutoff.setDate(now.getDate() - 90);
-  if (range === 'season') cutoff.setMonth(0, 1);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const today = todayPacific();
+  let cutoffStr = today;
+  if (range === '30')     cutoffStr = addDays(today, -30);
+  if (range === '90')     cutoffStr = addDays(today, -90);
+  if (range === 'season') cutoffStr = `${today.slice(0, 4)}-01-01`;
   return amendments.filter(a => a.applicationDate >= cutoffStr);
 }
 
@@ -341,7 +337,7 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
   const isEdit = Boolean(initial?.id);
   const [form, setForm] = useState<FormValues>({
     bedIds:            initial?.bedIds            ?? defaultBedIds,
-    applicationDate:   initial?.applicationDate   ?? todayISO(),
+    applicationDate:   initial?.applicationDate   ?? todayPacific(),
     productName:       initial?.productName       ?? '',
     amendmentType:     initial?.amendmentType     ?? '',
     amount:            initial?.amount            ?? '',

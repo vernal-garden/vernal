@@ -374,6 +374,8 @@ describe('GET /api/weather/history', () => {
     const res = await supporterAgent.get('/api/weather/history');
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(7);
+    expect(Array.isArray(res.body.insights)).toBe(true);
+    expect(res.body.insights.length).toBeLessThanOrEqual(3);
   });
 
   it('422 location_not_set when the account location is unset', async () => {

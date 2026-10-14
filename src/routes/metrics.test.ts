@@ -1,9 +1,36 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import { clearMetricsCache } from '../lib/metricsCache';
+import { LOCATION_NOT_SET } from '../lib/constants';
+import { buildInsights } from '../lib/weather/insights';
+import { currentSeason } from '../lib/plantingSchedule';
+import type { DailyHistoryPoint } from '../lib/weather/types';
+import * as openMeteo from '../lib/weather/providers/openMeteo';
 import app from '../index';
+
+// The dashboard's weather block geocodes the account location and fetches
+// Open-Meteo history; never hit the network from tests.
+vi.mock('../lib/weather/providers/openMeteo', () => ({
+  geocode: vi.fn(),
+  fetchOpenMeteoCurrent: vi.fn(),
+  fetchOpenMeteoHistory: vi.fn(),
+}));
+
+// A short weather timeout keeps the hanging-fetch test fast.
+vi.mock('../lib/metricsConstants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/metricsConstants')>()),
+  WEATHER_TIMEOUT_MS: 50,
+}));
+
+const HISTORY: DailyHistoryPoint[] = [
+  { date: '2025-06-01', tempMaxC: 20, tempMinC: 10, precipMm: 1 },
+  { date: '2025-06-02', tempMaxC: 21, tempMinC: 11, precipMm: 0 },
+  { date: '2025-06-03', tempMaxC: 22, tempMinC: 12, precipMm: 2 },
+  { date: '2025-06-04', tempMaxC: 23, tempMinC: 12, precipMm: 0 },
+];
+const HISTORY_WEEK = { minLowC: 10, maxHighC: 23, precipMm: 3, days: 4 };
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -16,6 +43,8 @@ type SeedRef = { seedId?: number; cambiumSeedId?: number };
 // Fixed past seasons so nothing depends on today's date.
 const S1 = 2024;
 const S2 = 2025;
+// The weather week and insights are only fetched for the current season.
+const NOW = currentSeason(new Date());
 
 async function resetDb() {
   await pool.query(
@@ -191,6 +220,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   clearMetricsCache();
+  vi.mocked(openMeteo.geocode).mockReset().mockResolvedValue({ lat: 45.5, lon: -122.7 });
+  vi.mocked(openMeteo.fetchOpenMeteoHistory).mockReset().mockResolvedValue(HISTORY);
 });
 
 afterAll(async () => {
@@ -709,8 +740,37 @@ describe('paid', () => {
       expect.objectContaining({ bedLabel: 'B', ph: 7.8, status: 'needs_attention' }),
       expect.objectContaining({ bedLabel: 'C', ph: null, status: 'no_ph' }),
     ]);
-    expect(body.paid.amendments).toEqual({ applicationCount: 2, bedCount: 2 });
-    expect(body.paid.weather).toEqual({ connected: false, provider: null, lastSuccessfulSync: null });
+    expect(body.paid.amendments).toEqual({
+      applicationCount: 2,
+      bedCount: 2,
+      seasonBedCount: 4,
+      latest: {
+        gardenId: String(g),
+        gardenName: 'Plot',
+        applicationDate: `${S2}-04-01`,
+        productName: 'Compost',
+        amendmentType: 'compost_manure',
+        amount: null,
+        amountUnit: null,
+        beds: [{ bedId: String(bedA), label: 'A' }],
+      },
+      byType: [{ amendmentType: 'compost_manure', count: 2 }],
+      // C was amended only last season.
+      unamendedBeds: [
+        { bedId: String(bedC), label: 'C', gardenId: String(g), gardenName: 'Plot' },
+        { bedId: String(bedD), label: 'D', gardenId: String(g), gardenName: 'Plot' },
+      ],
+    });
+    // S2 is a past season, so this week's weather is not fetched.
+    expect(body.paid.weather).toEqual({
+      station: null,
+      locationLabel: 'Test City',
+      units: 'imperial',
+      week: null,
+      insights: [],
+      historyUnavailable: false,
+    });
+    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
 
     const adv = body.paid.advanced;
     // 480 g over a 4x8 bed.
@@ -759,11 +819,200 @@ describe('paid', () => {
               ($1, 'public_weather', false, NULL, now())`,
       [accountId],
     );
-    const body = await dashboard(agent, { season: S2 });
+    const body = await dashboard(agent, { season: NOW });
     expect(body.paid.weather).toEqual({
-      connected: true,
-      provider: 'pws_ambient',
-      lastSuccessfulSync: '2025-06-01T10:00:00.000Z',
+      station: { provider: 'pws_ambient', lastSuccessfulSync: '2025-06-01T10:00:00.000Z' },
+      locationLabel: 'Test City',
+      units: 'imperial',
+      week: HISTORY_WEEK,
+      insights: buildInsights(HISTORY),
+      historyUnavailable: false,
+    });
+    expect(body.paid.weather.insights.length).toBeGreaterThan(0);
+    expect(openMeteo.geocode).toHaveBeenCalledWith('Test City');
+    expect(openMeteo.fetchOpenMeteoHistory).toHaveBeenCalledWith(45.5, -122.7);
+  });
+
+  it('weather with no station still summarizes the location history', async () => {
+    const { agent } = await account('paid-weather-nostation@example.com', 'supporter');
+    const body = await dashboard(agent, { season: NOW });
+    expect(body.paid.weather.station).toBeNull();
+    expect(body.paid.weather.week).toEqual(HISTORY_WEEK);
+    expect(body.paid.weather.historyUnavailable).toBe(false);
+  });
+
+  it('a past season skips the history fetch', async () => {
+    const { agent } = await account('paid-weather-past@example.com', 'supporter');
+    const body = await dashboard(agent, { season: NOW - 1 });
+    expect(body.paid.weather).toMatchObject({
+      locationLabel: 'Test City',
+      week: null,
+      insights: [],
+      historyUnavailable: false,
+    });
+    expect(openMeteo.geocode).not.toHaveBeenCalled();
+    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
+  });
+
+  it('weather with no location skips the history fetch', async () => {
+    const { agent, accountId } = await account('paid-weather-noloc@example.com', 'supporter');
+    await pool.query('UPDATE accounts SET zone_location_label = $1 WHERE id = $2', [
+      LOCATION_NOT_SET,
+      accountId,
+    ]);
+    const body = await dashboard(agent, { season: NOW });
+    expect(body.paid.weather).toEqual({
+      station: null,
+      locationLabel: null,
+      units: 'imperial',
+      week: null,
+      insights: [],
+      historyUnavailable: false,
+    });
+    expect(openMeteo.geocode).not.toHaveBeenCalled();
+    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
+  });
+
+  it('a failed Open-Meteo fetch marks history unavailable without failing the dashboard', async () => {
+    const { agent } = await account('paid-weather-fail@example.com', 'supporter');
+    vi.mocked(openMeteo.fetchOpenMeteoHistory).mockRejectedValueOnce(new Error('boom'));
+    const body = await dashboard(agent, { season: NOW });
+    expect(body.paid.weather).toMatchObject({
+      locationLabel: 'Test City',
+      week: null,
+      insights: [],
+      historyUnavailable: true,
+    });
+  });
+
+  it('a failed geocode marks history unavailable without failing the dashboard', async () => {
+    const { agent } = await account('paid-weather-geofail@example.com', 'supporter');
+    vi.mocked(openMeteo.geocode).mockRejectedValueOnce(new Error('no results'));
+    const body = await dashboard(agent, { season: NOW });
+    expect(body.paid.weather).toMatchObject({ week: null, insights: [], historyUnavailable: true });
+    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
+  });
+
+  it('a hanging Open-Meteo fetch times out without hanging the dashboard', async () => {
+    const { agent } = await account('paid-weather-hang@example.com', 'supporter');
+    vi.mocked(openMeteo.fetchOpenMeteoHistory).mockReturnValueOnce(new Promise(() => {}));
+    const body = await dashboard(agent, { season: NOW });
+    expect(body.paid.weather).toMatchObject({ week: null, insights: [], historyUnavailable: true });
+  });
+
+  it('a response with weather history unavailable is not cached', async () => {
+    const { agent } = await account('paid-weather-nocache@example.com', 'supporter');
+    vi.mocked(openMeteo.fetchOpenMeteoHistory).mockRejectedValueOnce(new Error('outage'));
+    const first = await dashboard(agent, { season: NOW });
+    expect(first.paid.weather.historyUnavailable).toBe(true);
+    // No cache clear: the next read rebuilds and picks up the recovered fetch.
+    const second = await dashboard(agent, { season: NOW });
+    expect(second.paid.weather.historyUnavailable).toBe(false);
+    expect(second.paid.weather.week).toEqual(HISTORY_WEEK);
+  });
+
+  it('weather units follow preferences.units', async () => {
+    const { agent, accountId } = await account('paid-weather-units@example.com', 'supporter');
+    await pool.query(`UPDATE accounts SET preferences = '{"units":"metric"}' WHERE id = $1`, [
+      accountId,
+    ]);
+    const body = await dashboard(agent, { season: NOW });
+    expect(body.paid.weather.units).toBe('metric');
+  });
+
+  it('PATCH /api/me/preferences and deleting a connection invalidate the cache', async () => {
+    const { agent, accountId } = await account('paid-weather-cache@example.com', 'supporter');
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO weather_connections (account_id, provider, is_primary)
+       VALUES ($1, 'pws_ambient', true) RETURNING id`,
+      [accountId],
+    );
+    const before = await dashboard(agent, { season: S2 });
+    expect(before.paid.weather.units).toBe('imperial');
+    expect(before.paid.weather.station).toMatchObject({ provider: 'pws_ambient' });
+
+    const patch = await agent.patch('/api/me/preferences').send({ units: 'metric' });
+    expect(patch.status).toBe(200);
+    expect((await dashboard(agent, { season: S2 })).paid.weather.units).toBe('metric');
+
+    const del = await agent.delete(`/api/weather/connections/${rows[0].id}`);
+    expect(del.status).toBe(204);
+    expect((await dashboard(agent, { season: S2 })).paid.weather.station).toBeNull();
+  });
+
+  it('amendments: latest, byType order and unamended beds', async () => {
+    const { agent, accountId } = await account('paid-amend@example.com', 'supporter');
+    const g = await createGarden(accountId, 'Plot');
+    const bedB = await createBed(g, S2, 'B');
+    const bedA = await createBed(g, S2, 'A');
+    const bedC = await createBed(g, S2, 'C');
+    const bedD = await createBed(g, S2, 'D');
+
+    const log = async (
+      date: string,
+      type: string,
+      beds: number[],
+      amount: number | null = null,
+      unit: string | null = null,
+    ) => {
+      const { rows } = await pool.query<{ id: number }>(
+        `INSERT INTO amendment_logs
+           (user_id, garden_id, application_date, product_name, amendment_type, amount, amount_unit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+        [accountId, g, date, `${type} product`, type, amount, unit],
+      );
+      for (const b of beds) {
+        await pool.query(
+          'INSERT INTO amendment_log_beds (amendment_log_id, bed_id) VALUES ($1, $2)',
+          [rows[0].id, b],
+        );
+      }
+    };
+    await log(`${S2}-02-01`, 'mulch', [bedA]);
+    await log(`${S2}-03-01`, 'lime', [bedA]);
+    await log(`${S2}-05-01`, 'lime', [bedA]);
+    await log(`${S2}-06-01`, 'mulch', [bedA]);
+    // Same date as the mulch log but a higher id: this one is the latest.
+    await log(`${S2}-06-01`, 'compost_manure', [bedB, bedA], 2.5, 'kg');
+    // Last season only.
+    await log(`${S1}-12-31`, 'other', [bedC]);
+
+    const body = await dashboard(agent, { season: S2 });
+    const am = body.paid.amendments;
+    expect(am.applicationCount).toBe(5);
+    expect(am.bedCount).toBe(2);
+    expect(am.seasonBedCount).toBe(4);
+    expect(am.latest).toEqual({
+      gardenId: String(g),
+      gardenName: 'Plot',
+      applicationDate: `${S2}-06-01`,
+      productName: 'compost_manure product',
+      amendmentType: 'compost_manure',
+      amount: 2.5,
+      amountUnit: 'kg',
+      beds: [
+        { bedId: String(bedA), label: 'A' },
+        { bedId: String(bedB), label: 'B' },
+      ],
+    });
+    expect(am.byType).toEqual([
+      { amendmentType: 'lime', count: 2 },
+      { amendmentType: 'mulch', count: 2 },
+      { amendmentType: 'compost_manure', count: 1 },
+    ]);
+    expect(am.unamendedBeds.map((b: { bedId: string }) => b.bedId)).toEqual([
+      String(bedC),
+      String(bedD),
+    ]);
+
+    const empty = await dashboard(agent, { season: 2023 });
+    expect(empty.paid.amendments).toEqual({
+      applicationCount: 0,
+      bedCount: 0,
+      seasonBedCount: 0,
+      latest: null,
+      byType: [],
+      unamendedBeds: [],
     });
   });
 });

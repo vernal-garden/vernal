@@ -2,13 +2,15 @@ import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
 import { encryptToBuffer, decryptFromBuffer } from '../lib/crypto';
-import { LOCATION_NOT_SET } from '../lib/constants';
+import { getAccountLocation } from '../lib/weather/location';
+import { buildInsights } from '../lib/weather/insights';
 import { getTtlMs } from '../lib/weather/ttl';
 import { fetchTempestCurrent } from '../lib/weather/providers/tempest';
 import { geocode, fetchOpenMeteoCurrent, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
 import type { NormalizedReading } from '../lib/weather/types';
 import { isNumericId } from '../lib/validation';
 import { recordUsageEvent } from '../lib/usageEvents';
+import { invalidateMetrics } from '../lib/metricsCache';
 
 const weatherRouter = Router();
 weatherRouter.use(requireAuth, requireSupporter);
@@ -16,15 +18,6 @@ weatherRouter.use(requireAuth, requireSupporter);
 const IMPLEMENTED_CONNECTION_PROVIDERS = new Set(['pws_tempest']);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-async function getAccountLocation(accountId: number): Promise<string | null> {
-  const { rows } = await db.query<{ zone_location_label: string }>(
-    'SELECT zone_location_label FROM accounts WHERE id = $1',
-    [accountId],
-  );
-  const label = rows[0]?.zone_location_label;
-  return label && label !== LOCATION_NOT_SET ? label : null;
-}
 
 function encryptCreds(obj: unknown): { enc: string } {
   return { enc: encryptToBuffer(JSON.stringify(obj)).toString('base64') };
@@ -111,6 +104,8 @@ weatherRouter.post('/connections', async (req: Request, res: Response): Promise<
       [accountId, provider, JSON.stringify(encryptCreds(creds)), stationId ?? null, makePrimary],
     );
     await client.query('COMMIT');
+    // The metrics dashboard shows the primary station.
+    invalidateMetrics(accountId);
 
     const row = rows[0];
     res.status(201).json({
@@ -178,6 +173,7 @@ weatherRouter.delete('/connections/:id', async (req: Request, res: Response): Pr
       res.status(404).json({ error: 'Connection not found' });
       return;
     }
+    invalidateMetrics(accountId);
     res.status(204).send();
   } catch (err) {
     console.error(err);
@@ -283,7 +279,7 @@ weatherRouter.get('/history', async (req: Request, res: Response): Promise<void>
 
     const geo = await geocode(location);
     const data = await fetchOpenMeteoHistory(geo.lat, geo.lon);
-    res.json({ data });
+    res.json({ data, insights: buildInsights(data) });
   } catch (err) {
     console.error(err);
     res.status(503).json({ error: 'Weather data unavailable' });

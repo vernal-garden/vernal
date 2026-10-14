@@ -82,7 +82,7 @@ export function monthFraction(key: string): { monthIndex: number; fraction: numb
   return { monthIndex: m - 1, fraction: (d - 1) / daysInMonth(y, m) };
 }
 
-function shortDate(key: string): string {
+export function shortDate(key: string): string {
   const { m, d } = parseDay(key);
   return `${MONTH_SHORT[m - 1]} ${d}`;
 }

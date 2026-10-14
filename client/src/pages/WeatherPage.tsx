@@ -33,7 +33,7 @@ export default function WeatherPage() {
   const { account } = useAuth();
   const isSupporter = account?.subscriptionTier === 'supporter';
 
-  const { connections, current, history, units, loading, error, setUnits, refreshCurrent, reload, disconnect } =
+  const { connections, current, history, insights, units, loading, error, setUnits, refreshCurrent, reload, disconnect } =
     useWeather();
 
   const [refreshing, setRefreshing] = useState(false);
@@ -105,7 +105,7 @@ export default function WeatherPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}>
           <CurrentConditions reading={current} units={units} onRefresh={handleRefresh} refreshing={refreshing} />
           <HistoryChart history={history} units={units} />
-          <GrowingInsights history={history} units={units} />
+          <GrowingInsights insights={insights} units={units} />
         </div>
       )}
 

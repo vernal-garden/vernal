@@ -11,8 +11,17 @@ import {
   PH_BALANCED_MIN,
   TIMING_TOLERANCE_DAYS,
   TREND_SAME_PCT,
+  WEATHER_TIMEOUT_MS,
 } from '../lib/metricsConstants';
 import { logger } from '../lib/logger';
+import { getAccountLocation } from '../lib/weather/location';
+import {
+  buildInsights,
+  weekSummary,
+  type WeatherInsight,
+  type WeekSummary,
+} from '../lib/weather/insights';
+import { geocode, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
 import type { SessionData } from '../types';
 
 // Metrics Dashboard and Cross-Season Comparison (Phase 49). Read-only: every
@@ -596,20 +605,113 @@ async function buildSoil(accountId: number, season: number) {
   });
 }
 
+// "In the season" means application_date falls in the season's calendar year,
+// in any of the account's gardens.
 async function buildAmendments(accountId: number, season: number) {
-  const { rows } = await db.query<{ application_count: number; bed_count: number }>(
-    `SELECT COUNT(DISTINCT al.id)::int AS application_count,
-            COUNT(DISTINCT alb.bed_id)::int AS bed_count
+  // Newest first, so the first row is the latest (ties by highest id).
+  const { rows: logs } = await db.query<{
+    id: string;
+    garden_id: string;
+    garden_name: string;
+    application_date: string;
+    product_name: string;
+    amendment_type: string;
+    amount: string | null;
+    amount_unit: string | null;
+  }>(
+    `SELECT al.id::text, al.garden_id::text, g.name AS garden_name,
+            al.application_date::text AS application_date,
+            al.product_name, al.amendment_type, al.amount::text, al.amount_unit
      FROM amendment_logs al
      JOIN gardens g ON g.id = al.garden_id
-     LEFT JOIN amendment_log_beds alb ON alb.amendment_log_id = al.id
-     WHERE g.owner_id = $1 AND EXTRACT(YEAR FROM al.application_date)::int = $2`,
+     WHERE g.owner_id = $1 AND EXTRACT(YEAR FROM al.application_date)::int = $2
+     ORDER BY al.application_date DESC, al.id DESC`,
     [accountId, season],
   );
-  return { applicationCount: rows[0].application_count, bedCount: rows[0].bed_count };
+
+  const logBeds =
+    logs.length === 0
+      ? []
+      : (
+          await db.query<{ log_id: string; bed_id: string; label: string }>(
+            `SELECT alb.amendment_log_id::text AS log_id, b.id::text AS bed_id, b.label
+             FROM amendment_log_beds alb
+             JOIN beds b ON b.id = alb.bed_id
+             JOIN gardens bg ON bg.id = b.garden_id AND bg.owner_id = $2
+             WHERE alb.amendment_log_id = ANY($1::int[])
+             ORDER BY b.label, b.id`,
+            [logs.map((l) => Number(l.id)), accountId],
+          )
+        ).rows;
+
+  const { rows: seasonBeds } = await db.query<{
+    bed_id: string;
+    label: string;
+    garden_id: string;
+    garden_name: string;
+  }>(
+    `SELECT b.id::text AS bed_id, b.label, g.id::text AS garden_id, g.name AS garden_name
+     FROM beds b
+     JOIN gardens g ON g.id = b.garden_id
+     WHERE g.owner_id = $1 AND b.season = $2
+     ORDER BY g.id, b.label, b.id`,
+    [accountId, season],
+  );
+
+  const amendedBedIds = new Set(logBeds.map((r) => r.bed_id));
+
+  const typeCounts = new Map<string, number>();
+  for (const l of logs) typeCounts.set(l.amendment_type, (typeCounts.get(l.amendment_type) ?? 0) + 1);
+  const byType = [...typeCounts]
+    .map(([amendmentType, count]) => ({ amendmentType, count }))
+    .sort((a, b) => b.count - a.count || cmp(a.amendmentType, b.amendmentType));
+
+  const top = logs[0];
+  const latest = top
+    ? {
+        gardenId: top.garden_id,
+        gardenName: top.garden_name,
+        applicationDate: top.application_date,
+        productName: top.product_name,
+        amendmentType: top.amendment_type,
+        amount: top.amount === null ? null : Number(top.amount),
+        amountUnit: top.amount_unit,
+        beds: logBeds
+          .filter((r) => r.log_id === top.id)
+          .map((r) => ({ bedId: r.bed_id, label: r.label })),
+      }
+    : null;
+
+  return {
+    applicationCount: logs.length,
+    bedCount: amendedBedIds.size,
+    seasonBedCount: seasonBeds.length,
+    latest,
+    byType,
+    unamendedBeds: seasonBeds
+      .filter((b) => !amendedBedIds.has(b.bed_id))
+      .map((b) => ({
+        bedId: b.bed_id,
+        label: b.label,
+        gardenId: b.garden_id,
+        gardenName: b.garden_name,
+      })),
+  };
 }
 
-async function buildWeather(accountId: number) {
+// Rejects if `promise` hasn't settled within `ms`; the timer is always cleared.
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// Never throws for a weather-provider failure: the dashboard must still load.
+// The week and insights describe the last 7 days, so they are only fetched for
+// the current season.
+async function buildWeather(accountId: number, isCurrentSeason: boolean) {
   const { rows } = await db.query<{ provider: string; last_successful_sync: Date | null }>(
     `SELECT provider, last_successful_sync FROM weather_connections
      WHERE account_id = $1
@@ -618,11 +720,44 @@ async function buildWeather(accountId: number) {
     [accountId],
   );
   const row = rows[0];
-  return {
-    connected: !!row,
-    provider: row?.provider ?? null,
-    lastSuccessfulSync: row?.last_successful_sync ? row.last_successful_sync.toISOString() : null,
-  };
+  const station = row
+    ? {
+        provider: row.provider,
+        lastSuccessfulSync: row.last_successful_sync
+          ? row.last_successful_sync.toISOString()
+          : null,
+      }
+    : null;
+
+  const { rows: prefRows } = await db.query<{ units: string | null }>(
+    `SELECT preferences->>'units' AS units FROM accounts WHERE id = $1`,
+    [accountId],
+  );
+  const units: 'imperial' | 'metric' = prefRows[0]?.units === 'metric' ? 'metric' : 'imperial';
+
+  const locationLabel = await getAccountLocation(accountId);
+
+  let week: WeekSummary | null = null;
+  let insights: WeatherInsight[] = [];
+  let historyUnavailable = false;
+  if (locationLabel !== null && isCurrentSeason) {
+    try {
+      const history = await withTimeout(
+        (async () => {
+          const { lat, lon } = await geocode(locationLabel);
+          return fetchOpenMeteoHistory(lat, lon);
+        })(),
+        WEATHER_TIMEOUT_MS,
+      );
+      week = weekSummary(history);
+      insights = buildInsights(history);
+    } catch (err) {
+      logger.error('Metrics dashboard weather history failed', err);
+      historyUnavailable = true;
+    }
+  }
+
+  return { station, locationLabel, units, week, insights, historyUnavailable };
 }
 
 async function loadBedAreas(bedIds: string[]): Promise<Map<string, number | null>> {
@@ -722,13 +857,14 @@ async function buildPaid(
   entries: EntryRow[],
   totalsAll: PlantTotal[],
   timing: TimingRow[],
+  isCurrentSeason: boolean,
 ) {
   const yieldPerSqFt = await buildYieldPerSqFt(entries, totalsAll);
   const first = totalsAll[0];
   return {
     soil: await buildSoil(accountId, season),
     amendments: await buildAmendments(accountId, season),
-    weather: await buildWeather(accountId),
+    weather: await buildWeather(accountId, isCurrentSeason),
     advanced: {
       yieldPerSqFt,
       yieldPerSqFtReason: yieldPerSqFt.length === 0 ? 'no_bed_data' : null,
@@ -825,7 +961,7 @@ router.get('/dashboard', async (req: Request, res: Response) => {
     const timing = await buildTiming(accountId, season, gardens);
     const trend = await buildTrend(accountId, season, totalsAll);
     const paid = isSupporter
-      ? await buildPaid(accountId, season, entries, totalsAll, timing)
+      ? await buildPaid(accountId, season, entries, totalsAll, timing, season === nowSeason)
       : null;
 
     const dates = entries.map((e) => e.harvest_date).sort();
@@ -867,7 +1003,8 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       paid,
     };
 
-    metricsCache.set(cacheKey, body);
+    // A weather outage shouldn't stick for the cache TTL; rebuild next read.
+    if (!paid?.weather.historyUnavailable) metricsCache.set(cacheKey, body);
     return res.json(body);
   } catch (err) {
     logger.error('GET /api/metrics/dashboard failed', err);

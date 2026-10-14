@@ -14,6 +14,32 @@ async function signIn(page: Page, email: string, password: string): Promise<void
   await expect(page).not.toHaveURL(/\/login/);
 }
 
+// 04:30 UTC on Oct 14 is 9:30 PM PDT on Oct 13: the forms must default to the
+// Pacific date, not the UTC one.
+test('new amendment and soil reading forms default to the Pacific date', async ({ page }) => {
+  const user = await createTestUser({
+    email: 'soil-pacific@example.com', password: 'SoilPacific123!', isSupporter: true,
+  });
+  const gardenId = await createTestGarden(user.id, 'Pacific Garden');
+  await signIn(page, user.email, user.password);
+  const bedResp = await page.request.post(`/api/gardens/${gardenId}/beds`, {
+    data: { type: 'grid', label: 'Pacific Bed', grid: { x: 0, y: 0, cols: 4, rows: 4 } },
+  });
+  expect(bedResp.status()).toBe(201);
+
+  await page.clock.setFixedTime(new Date('2026-10-14T04:30:00Z'));
+
+  await page.goto(`/garden/${gardenId}/amendments`);
+  await page.getByRole('button', { name: '+ Log amendment' }).click();
+  await expect(page.getByRole('heading', { name: 'Log amendment' })).toBeVisible();
+  await expect(page.locator('input[type="date"]')).toHaveValue('2026-10-13');
+
+  await page.goto(`/garden/${gardenId}/soil`);
+  await page.getByRole('button', { name: '+ Log reading' }).click();
+  await expect(page.getByRole('heading', { name: 'Log soil reading' })).toBeVisible();
+  await expect(page.locator('input[type="date"]')).toHaveValue('2026-10-13');
+});
+
 // The canvas bed-panel links (Soil history / Amendments) are checked by hand:
 // canvas hit-testing makes bed selection impractical in E2E.
 test('bed deep links and delete for soil readings and amendments', async ({ page }) => {

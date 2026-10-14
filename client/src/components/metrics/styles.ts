@@ -1,5 +1,5 @@
 import type React from 'react';
-import { MONTH_SHORT, parseDay } from '../../lib/guideDates';
+import { parseDay, shortDate } from '../../lib/guideDates';
 import type { PlantRef, TimingStatus } from '../../types/metrics';
 
 // Shared styles and formatting for the Metrics Dashboard cards. Button and link
@@ -115,10 +115,7 @@ export function plantName(name: string | null): string {
 }
 
 // "May 10"
-export function shortDate(key: string): string {
-  const { m, d } = parseDay(key);
-  return `${MONTH_SHORT[m - 1]} ${d}`;
-}
+export { shortDate };
 
 // "May 10, 2025"
 export function shortDateWithYear(key: string): string {

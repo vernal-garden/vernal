@@ -11,3 +11,7 @@ export const PH_BALANCED_MIN = 6.0;
 export const PH_BALANCED_MAX = 7.0;
 
 export const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// Longest the dashboard waits on geocoding plus the Open-Meteo history fetch
+// before reporting weather history as unavailable.
+export const WEATHER_TIMEOUT_MS = 5000;
