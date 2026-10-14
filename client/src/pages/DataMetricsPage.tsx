@@ -185,7 +185,7 @@ export default function DataMetricsPage() {
               <>
                 <SoilSummaryCard soil={data.paid.soil} gardens={data.gardens} />
                 <AmendmentSummaryCard amendments={data.paid.amendments} gardens={data.gardens} />
-                <WeatherCard weather={data.paid.weather} />
+                <WeatherCard weather={data.paid.weather} isCurrentSeason={data.season === data.currentSeason} />
                 <div style={fullWidth}>
                   <AdvancedPanel advanced={data.paid.advanced} isMobile={isMobile} />
                 </div>

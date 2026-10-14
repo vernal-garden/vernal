@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { get, patch, del, ApiError } from '../lib/api';
 import type { UnitSystem } from '../lib/units';
+import type { WeatherInsight } from '../types/weather';
 
 export interface WeatherConnection {
   id: string;
@@ -44,6 +45,7 @@ export function useWeather() {
   const [connections, setConnections] = useState<WeatherConnection[]>([]);
   const [current, setCurrent] = useState<CurrentReading | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
+  const [insights, setInsights] = useState<WeatherInsight[]>([]);
   const [units, setUnitsState] = useState<UnitSystem>('imperial');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<WeatherErrorKind | null>(null);
@@ -71,10 +73,12 @@ export function useWeather() {
 
   const loadHistory = useCallback(async () => {
     try {
-      const res = await get<{ data: HistoryPoint[] }>('/api/weather/history');
+      const res = await get<{ data: HistoryPoint[]; insights?: WeatherInsight[] }>('/api/weather/history');
       setHistory(res?.data ?? []);
+      setInsights(res?.insights ?? []);
     } catch {
       setHistory([]);
+      setInsights([]);
     }
   }, []);
 
@@ -121,6 +125,7 @@ export function useWeather() {
     connections,
     current,
     history,
+    insights,
     units,
     loading,
     error,

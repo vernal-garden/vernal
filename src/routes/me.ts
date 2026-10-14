@@ -7,6 +7,7 @@ import { clearSessionCookie } from '../lib/sessions';
 import { sendMail } from '../lib/mailer';
 import { logger } from '../lib/logger';
 import { processExportJob } from '../lib/exportWorker';
+import { invalidateMetrics } from '../lib/metricsCache';
 
 const router = Router();
 router.use(requireAuth);
@@ -187,6 +188,8 @@ router.patch('/', async (req, res) => {
       clearSessionCookie(res);
       return res.status(401).json({ error: 'Account not found' });
     }
+    // Location and frost dates feed the metrics dashboard.
+    invalidateMetrics(req.session!.account!.id);
     res.json({ data: formatAccount(rows[0]) });
   } catch (err) {
     console.error('PATCH /me error:', err);
@@ -216,6 +219,8 @@ router.patch('/preferences', async (req, res) => {
       clearSessionCookie(res);
       return res.status(401).json({ error: 'Account not found' });
     }
+    // preferences.units feeds the metrics dashboard's weather block.
+    invalidateMetrics(req.session!.account!.id);
     res.json({ data: { preferences: rows[0].preferences } });
   } catch (err) {
     console.error('PATCH /me/preferences error:', err);

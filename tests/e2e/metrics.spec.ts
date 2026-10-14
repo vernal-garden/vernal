@@ -72,6 +72,15 @@ test('View full comparison shows the upgrade prompt to a free account', async ({
 test('a supporter sees the paid cards and compares two seasons as chart and table', async ({ page }) => {
   await setSubscriptionTier(fx.accountId, 'supporter');
 
+  // An amendment dated this season (the first harvest date is never in the future).
+  const amendmentResp = await page.request.post(`/api/gardens/${fx.gardenId}/amendments`, {
+    data: {
+      bedIds: [String(fx.bedId)], applicationDate: fx.firstDate,
+      productName: 'Test Bone Meal', amendmentType: 'fertilizer_organic',
+    },
+  });
+  expect(amendmentResp.status(), await amendmentResp.text()).toBe(201);
+
   await page.goto('/data');
   const advanced = page.getByRole('region', { name: 'Advanced analytics' });
   await expect(advanced).toBeVisible();
@@ -79,6 +88,13 @@ test('a supporter sees the paid cards and compares two seasons as chart and tabl
   // 500 g over the 4 x 8 bed's 32 sq ft.
   await expect(advanced.getByText('Yield per square foot')).toBeVisible();
   await expect(advanced).toContainText('15.63 g per sq ft');
+
+  await expect(page.getByRole('region', { name: 'Amendments', exact: true }))
+    .toContainText(`Last applied ${shortDate(fx.firstDate)}: Test Bone Meal`);
+  // The test account has no location, so the Weather card prompts for one
+  // instead of calling the forecast service.
+  await expect(page.getByRole('region', { name: 'Weather', exact: true }))
+    .toContainText('Set your location to see local weather.');
 
   await page.goto(`/data/compare?plant=seed:${fx.seedId}`);
   const seasons = page.getByRole('region', { name: 'Season by season' });

@@ -6,6 +6,8 @@ const BASE_URL = process.env.BASE_URL ?? 'http://localhost:4173';
 
 export interface MetricsFixture {
   accountId: string;
+  gardenId: string;
+  bedId: number;
   seedId: number;
   thisYear: number;
   lastYear: number;
@@ -46,16 +48,21 @@ export async function createMetricsFixture(
   const firstDate = notAfterToday(`${thisYear}-01-02`);
   const latestDate = notAfterToday(`${thisYear}-01-10`);
 
+  let bedId = 0;
   const api = await request.newContext({ baseURL: BASE_URL });
   try {
     expect((await api.post('/api/auth/login', { data: { email, password } })).ok()).toBe(true);
-    expect((await api.patch('/api/me', { data: { lastSpringFrostDate: `${thisYear}-04-15` } })).ok()).toBe(true);
+    // 'Not set' is the server's LOCATION_NOT_SET sentinel: with no location the
+    // dashboard's Weather card never calls the live geocoder or Open-Meteo.
+    expect((await api.patch('/api/me', {
+      data: { lastSpringFrostDate: `${thisYear}-04-15`, zoneLocationLabel: 'Not set' },
+    })).ok()).toBe(true);
 
     const bedResp = await api.post(`/api/gardens/${gardenId}/beds`, {
       data: { type: 'grid', label: 'Long Bed', season: thisYear, grid: { x: 0, y: 0, cols: 4, rows: 8 } },
     });
     expect(bedResp.status()).toBe(201);
-    const bedId = Number((await bedResp.json()).id);
+    bedId = Number((await bedResp.json()).id);
 
     const plantingResp = await api.post(`/api/gardens/${gardenId}/beds/${bedId}/plantings`, {
       data: { seedId, quantity: 1, cell: { x: 0, y: 0 }, plantingDate },
@@ -81,7 +88,7 @@ export async function createMetricsFixture(
   } finally {
     await api.dispose();
   }
-  return { accountId: user.id, seedId, thisYear, lastYear, firstDate, latestDate };
+  return { accountId: user.id, gardenId, bedId, seedId, thisYear, lastYear, firstDate, latestDate };
 }
 
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

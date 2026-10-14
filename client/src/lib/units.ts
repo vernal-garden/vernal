@@ -34,11 +34,19 @@ export function formatWindSpeed(ms: number | null, units: UnitSystem): string | 
   return `${msToDisplay(ms, units).toFixed(1)} ${suffix}`;
 }
 
+function precipDigits(units: UnitSystem): number {
+  return units === 'imperial' ? 2 : 1;
+}
+
 export function formatPrecip(mm: number | null, units: UnitSystem): string | null {
   if (mm === null) return null;
   const suffix = units === 'imperial' ? 'in' : 'mm';
-  const digits = units === 'imperial' ? 2 : 1;
-  return `${mmToDisplay(mm, units).toFixed(digits)} ${suffix}`;
+  return `${mmToDisplay(mm, units).toFixed(precipDigits(units))} ${suffix}`;
+}
+
+// True when formatPrecip would display zero (e.g. 0.04 mm → "0.00 in").
+export function precipRoundsToZero(mm: number, units: UnitSystem): boolean {
+  return Number(mmToDisplay(mm, units).toFixed(precipDigits(units))) === 0;
 }
 
 export function formatPressure(hpa: number | null, units: UnitSystem): string | null {
