@@ -55,7 +55,7 @@ function markerColor(id: string): string {
 }
 
 function markerLabel(planting: Planting): string {
-  const name = planting._commonName ?? '';
+  const name = planting.commonName ?? planting._commonName ?? '';
   if (!name) return '•';
   return name.slice(0, 3).toUpperCase();
 }
