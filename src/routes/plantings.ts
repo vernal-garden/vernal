@@ -3,6 +3,7 @@ import { db } from '../lib/db';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
+import { currentSeason } from '../lib/season';
 import type { SessionData } from '../types';
 
 // ── Three routers, all with mergeParams ──────────────────────────────────────
@@ -31,6 +32,8 @@ interface PlantingRow {
   point_x: string | null;
   point_y: string | null;
   growth_stage_pct: string | null;
+  growth_stage: number | null;
+  displayed_growth_stage: number | null;
   harvest_ready: boolean;
   harvest_window_end: string | null;
   indicator_dismissed_at: string | null;
@@ -60,7 +63,8 @@ const PLANTING_GET_QUERY = `
   SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
     p.seed_id::text, p.cambium_seed_id::text,
     p.quantity, p.planting_date::text, p.cell_x, p.cell_y, p.point_x, p.point_y,
-    p.growth_stage_pct, p.harvest_ready, p.harvest_window_end,
+    p.growth_stage_pct, p.growth_stage, p.displayed_growth_stage,
+    p.harvest_ready, p.harvest_window_end,
     p.indicator_dismissed_at, p.created_at, p.updated_at,
     COALESCE(p.cambium_seed_id, s.cambium_source_id)::text AS companion_seed_id,
     COALESCE(cs.spacing_inches, s.spacing_inches) AS spacing_inches,
@@ -70,7 +74,13 @@ const PLANTING_GET_QUERY = `
   LEFT JOIN cambium.seeds cs ON cs.id = COALESCE(p.cambium_seed_id, s.cambium_source_id)
 `;
 
-const GROWTH_KEYS = ['growthStagePct', 'harvestReady', 'harvestWindowEnd'];
+const GROWTH_KEYS = [
+  'growthStagePct', 'harvestReady', 'harvestWindowEnd',
+  'stage', 'displayedStage', 'anchored',
+];
+
+// Upper bound on plantingIds per displayed-stage request.
+const MAX_DISPLAYED_STAGE_IDS = 500;
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 
@@ -88,6 +98,9 @@ function formatPlanting(row: PlantingRow) {
     point: row.point_x !== null ? { x: Number(row.point_x), y: Number(row.point_y) } : null,
     growth: {
       stagePct: row.growth_stage_pct !== null ? Number(row.growth_stage_pct) : null,
+      stage: row.growth_stage,
+      displayedStage: row.displayed_growth_stage,
+      anchored: row.growth_stage !== null,
       harvestReady: row.harvest_ready,
       harvestWindowEnd: row.harvest_window_end,
       indicatorDismissedAt: row.indicator_dismissed_at,
@@ -187,7 +200,7 @@ gardenPlantingsRouter.get('/', async (req, res) => {
       if (typeof result === 'string') return res.status(400).json({ error: result });
       season = result;
     } else {
-      season = new Date().getFullYear();
+      season = currentSeason();
     }
 
     const { rows } = await db.query<PlantingRow>(
@@ -199,6 +212,49 @@ gardenPlantingsRouter.get('/', async (req, res) => {
     res.json({ data: rows.map(formatPlanting) });
   } catch (err) {
     console.error('GET /gardens/:gardenId/plantings error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── gardenPlantingsRouter: PATCH /api/gardens/:gardenId/plantings/displayed-stage
+// Records that the client has shown each planting's current growth stage by
+// copying growth_stage into displayed_growth_stage. The only route that writes
+// displayed_growth_stage; leaves updated_at alone (not a user edit).
+
+gardenPlantingsRouter.patch('/displayed-stage', writeLimiter, async (req, res) => {
+  const { gardenId } = req.params as Record<string, string>;
+
+  if (!isNumericId(gardenId)) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+
+  const { plantingIds } = (req.body ?? {}) as Record<string, unknown>;
+  if (
+    !Array.isArray(plantingIds) ||
+    plantingIds.length < 1 ||
+    plantingIds.length > MAX_DISPLAYED_STAGE_IDS
+  ) {
+    return res.status(400).json({
+      error: `plantingIds must be an array of 1 to ${MAX_DISPLAYED_STAGE_IDS} ids`,
+    });
+  }
+  // Digit strings only; capped at 18 digits so every id fits a bigint.
+  if (!plantingIds.every(id => isNumericId(id) && id.length <= 18)) {
+    return res.status(400).json({ error: 'plantingIds must contain numeric id strings' });
+  }
+
+  try {
+    const found = await ownGarden(gardenId, req.session!);
+    if (!found) return res.status(404).json({ error: 'Garden not found' });
+
+    const result = await db.query(
+      `UPDATE plantings SET displayed_growth_stage = growth_stage
+       WHERE garden_id = $1 AND id = ANY($2::bigint[]) AND growth_stage IS NOT NULL`,
+      [gardenId, plantingIds],
+    );
+    res.json({ updated: result.rowCount ?? 0 });
+  } catch (err) {
+    console.error('PATCH /gardens/:gardenId/plantings/displayed-stage error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -387,7 +443,8 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
       `SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
               p.seed_id::text, p.cambium_seed_id::text,
               p.quantity, p.planting_date::text, p.cell_x, p.cell_y, p.point_x, p.point_y,
-              p.growth_stage_pct, p.harvest_ready, p.harvest_window_end,
+              p.growth_stage_pct, p.growth_stage, p.displayed_growth_stage,
+              p.harvest_ready, p.harvest_window_end,
               p.indicator_dismissed_at, p.created_at, p.updated_at,
               b.type AS bed_type, b.grid_cols, b.grid_rows
        FROM plantings p

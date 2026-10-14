@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
+import { currentSeason } from '../lib/season';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -49,7 +50,7 @@ let flaggedCambiumSeedId: number;
 let gridPlantingId: string;
 let freeformPlantingId: string;
 
-const CURRENT_YEAR = new Date().getFullYear();
+const CURRENT_YEAR = currentSeason();
 
 beforeAll(async () => {
   await resetDb();
@@ -610,6 +611,147 @@ describe('Test 20: GET plantings includes companionSeedId and spacingInches', ()
     if (p) {
       // personalSeedId has no cambium_source_id → companionSeedId should be null
       expect(p.companionSeedId).toBeNull();
+    }
+  });
+});
+
+// ── Phase 50: growth stage fields + displayed-stage endpoint ─────────────────
+
+describe('Phase 50: growth.stage / displayedStage / anchored', () => {
+  let stagedId: string;
+  let unstagedId: string;
+
+  beforeAll(async () => {
+    const a = await agent
+      .post(`/api/gardens/${gardenId}/beds/${gridBedId}/plantings`)
+      .send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 2, y: 5 } });
+    stagedId = a.body.id;
+    const b = await agent
+      .post(`/api/gardens/${gardenId}/beds/${gridBedId}/plantings`)
+      .send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 2, y: 6 } });
+    unstagedId = b.body.id;
+    await pool.query(
+      'UPDATE plantings SET growth_stage = 3, displayed_growth_stage = 2 WHERE id = $1',
+      [stagedId],
+    );
+  });
+
+  it('GET list exposes stage, displayedStage and anchored', async () => {
+    const res = await agent.get(`/api/gardens/${gardenId}/plantings`);
+    expect(res.status).toBe(200);
+    const staged = res.body.data.find((p: { id: string }) => p.id === stagedId);
+    const unstaged = res.body.data.find((p: { id: string }) => p.id === unstagedId);
+    expect(staged.growth).toMatchObject({ stage: 3, displayedStage: 2, anchored: true });
+    expect(unstaged.growth).toMatchObject({ stage: null, displayedStage: null, anchored: false });
+  });
+
+  it('PATCH /api/plantings/:id response includes the new fields', async () => {
+    const res = await agent.patch(`/api/plantings/${stagedId}`).send({ quantity: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.growth).toMatchObject({ stage: 3, displayedStage: 2, anchored: true });
+  });
+
+  it('rejects client-set stage / displayedStage / anchored on PATCH', async () => {
+    for (const key of ['stage', 'displayedStage', 'anchored']) {
+      const res = await agent.patch(`/api/plantings/${stagedId}`).send({ [key]: 1 });
+      expect(res.status).toBe(400);
+    }
+  });
+});
+
+describe('Phase 50: PATCH /api/gardens/:gardenId/plantings/displayed-stage', () => {
+  let p1: string;
+  let p2: string;
+  let pNull: string;
+  let otherGardenId: string;
+  let otherPlantingId: string;
+
+  beforeAll(async () => {
+    const mk = async (x: number, y: number) => {
+      const r = await agent
+        .post(`/api/gardens/${gardenId}/beds/${gridBedId}/plantings`)
+        .send({ cambiumSeedId: activeCambiumSeedId, cell: { x, y } });
+      return r.body.id as string;
+    };
+    p1 = await mk(3, 0);
+    p2 = await mk(3, 1);
+    pNull = await mk(3, 2);
+    await pool.query(
+      `UPDATE plantings SET growth_stage = 4, displayed_growth_stage = 1,
+         updated_at = '2020-01-01T00:00:00Z' WHERE id = ANY($1::int[])`,
+      [[p1, p2]],
+    );
+
+    const og = await otherAgent.post('/api/gardens').send({
+      name: 'Other Stage Garden', style: 'grid', zone: '7b', growingMethod: 'in_ground',
+    });
+    otherGardenId = og.body.id;
+    const ob = await otherAgent.post(`/api/gardens/${otherGardenId}/beds`).send({
+      type: 'grid', label: 'B', grid: { x: 0, y: 0, cols: 2, rows: 2 },
+    });
+    const op = await otherAgent
+      .post(`/api/gardens/${otherGardenId}/beds/${ob.body.id}/plantings`)
+      .send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 0 } });
+    otherPlantingId = op.body.id;
+    await pool.query(
+      'UPDATE plantings SET growth_stage = 5, displayed_growth_stage = 1 WHERE id = $1',
+      [otherPlantingId],
+    );
+  });
+
+  const stageUrl = () => `/api/gardens/${gardenId}/plantings/displayed-stage`;
+
+  it('copies growth_stage to displayed_growth_stage for this garden only, skipping null stages', async () => {
+    const res = await agent.patch(stageUrl()).send({ plantingIds: [p1, p2, pNull, otherPlantingId] });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ updated: 2 });
+
+    const { rows } = await pool.query<{ id: string; displayed_growth_stage: number | null; updated_at: Date }>(
+      'SELECT id::text, displayed_growth_stage, updated_at FROM plantings WHERE id = ANY($1::int[])',
+      [[p1, p2, pNull, otherPlantingId]],
+    );
+    const byId = Object.fromEntries(rows.map(r => [r.id, r]));
+    expect(byId[p1].displayed_growth_stage).toBe(4);
+    expect(byId[p2].displayed_growth_stage).toBe(4);
+    expect(byId[pNull].displayed_growth_stage).toBeNull();
+    expect(byId[otherPlantingId].displayed_growth_stage).toBe(1);
+    // updated_at untouched
+    expect(byId[p1].updated_at.toISOString()).toBe('2020-01-01T00:00:00.000Z');
+  });
+
+  it("another session's garden → 404", async () => {
+    const res = await agent
+      .patch(`/api/gardens/${otherGardenId}/plantings/displayed-stage`)
+      .send({ plantingIds: [otherPlantingId] });
+    expect(res.status).toBe(404);
+  });
+
+  it('501 ids → 400', async () => {
+    const ids = Array.from({ length: 501 }, (_, i) => String(i + 1));
+    const res = await agent.patch(stageUrl()).send({ plantingIds: ids });
+    expect(res.status).toBe(400);
+  });
+
+  it('500 ids → 200', async () => {
+    const ids = Array.from({ length: 500 }, (_, i) => String(1_000_000 + i));
+    const res = await agent.patch(stageUrl()).send({ plantingIds: ids });
+    expect(res.status).toBe(200);
+  });
+
+  it('empty array → 400', async () => {
+    const res = await agent.patch(stageUrl()).send({ plantingIds: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('missing plantingIds → 400', async () => {
+    const res = await agent.patch(stageUrl()).send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('non-numeric id → 400', async () => {
+    for (const bad of ['abc', '1.5', '-1', 7, '1234567890123456789']) {
+      const res = await agent.patch(stageUrl()).send({ plantingIds: [p1, bad] });
+      expect(res.status).toBe(400);
     }
   });
 });

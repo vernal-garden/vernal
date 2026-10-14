@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useGardenList } from '../hooks/useGardenList';
 import { useGarden } from '../hooks/useGarden';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../hooks/useGarden';
 import { usePlantings } from '../hooks/usePlantings';
-import type { Planting, ArmedSeed } from '../hooks/usePlantings';
+import type { Planting, ArmedSeed, PlantingsByBedId } from '../hooks/usePlantings';
+import { useGardenSeasons } from '../hooks/useGardenSeasons';
 import GardenCanvas from '../components/canvas/GardenCanvas';
 import type { GardenCanvasRef } from '../components/canvas/GardenCanvas';
 import BedDetailPanel from '../components/canvas/BedDetailPanel';
 import BedManager from '../components/canvas/BedManager';
 import CanvasToolbar from '../components/canvas/CanvasToolbar';
-import type { CanvasMode } from '../components/canvas/CanvasToolbar';
+import type { CanvasMode, SeasonOverlayStatus } from '../components/canvas/CanvasToolbar';
 import { CanvasHomeButton } from '../components/canvas/CanvasHomeButton';
 import PlantPicker from '../components/canvas/PlantPicker';
 import SeedForm from '../components/catalogue/SeedForm';
@@ -22,6 +24,8 @@ import { computeBedOccupancy } from '../lib/crowding';
 import SupporterPromptModal from '../components/SupporterPromptModal';
 import { track } from '../lib/track';
 import { useMicroFeedback } from '../lib/microFeedback';
+import * as api from '../lib/api';
+import { useIsMobile } from '../hooks/useIsMobile';
 
 // Garden ids that have already logged a canvas_session during this page load.
 // Module-level so re-renders and StrictMode double effects can't fire it twice.
@@ -31,10 +35,43 @@ const trackedCanvasSessions = new Set<string>();
 // attributed to it. Companion data for the new seed can load after the POST.
 const PLACEMENT_CONFLICT_WINDOW_MS = 10_000;
 
+// Stable empties for the season overlay while it is off or loading.
+const NO_OVERLAY_BEDS: Bed[] = [];
+const NO_OVERLAY_PLANTINGS: PlantingsByBedId = {};
+
+// Phase 50: "Start fresh" on the new-season prompt, per garden and season.
+function carryForwardDismissKey(gardenId: string, season: number): string {
+  return `vernal.carryForward.dismissed.${gardenId}.${season}`;
+}
+
+function readCarryForwardDismissed(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeCarryForwardDismissed(key: string): void {
+  try {
+    window.localStorage.setItem(key, '1');
+  } catch {
+    // Storage unavailable: the in-memory dismissal still hides the prompt.
+  }
+}
+
+const CARRY_FORWARD_ERROR = 'Couldn’t bring your beds forward. Please try again.';
+
+const promptButtonStyle: CSSProperties = {
+  minHeight: 44, minWidth: 44, padding: '0 var(--sp-4)', borderRadius: 'var(--r-md)',
+  fontFamily: 'var(--font-ui)', fontSize: 14, fontWeight: 600,
+};
+
 export default function HomePage() {
   const { gardens, loading: listLoading } = useGardenList();
   const { account, isAccount, markSupporterPromptShown } = useAuth();
   const requestFeedback = useMicroFeedback();
+  const isMobile = useIsMobile();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [activeId, setActiveId] = useState<string | null>(() => searchParams.get('garden'));
@@ -58,8 +95,137 @@ export default function HomePage() {
   const [supporterPromptOpen, setSupporterPromptOpen] = useState(false);
 
   const resolvedId = activeId ?? (gardens.length > 0 ? gardens[0].id : null);
-  const { garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed } = useGarden(resolvedId);
-  const { plantingsByBedId, loading: plantingsLoading, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint } = usePlantings(resolvedId);
+  // Phase 50: one season for the whole page. Starts at currentSeasonPacific()
+  // and follows the server's currentSeason once the season list loads.
+  // gardenSeasons.refetch() reloads the season list (e.g. after carry-forward).
+  const gardenSeasons = useGardenSeasons(resolvedId);
+  const { currentSeason, earlierSeasons } = gardenSeasons;
+  const {
+    garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed,
+    loadedKey: gardenLoadedKey, reload: reloadGarden,
+  } = useGarden(resolvedId, currentSeason);
+  const {
+    plantingsByBedId, loading: plantingsLoading, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint,
+    loadedKey: plantingsLoadedKey, markStagesDisplayed, dismissIndicator,
+  } = usePlantings(resolvedId, currentSeason);
+
+  // Phase 50: past-season overlay. Component state only (never saved). Keyed
+  // by garden so a garden switch hides it on the same render; the effect
+  // below then clears it so switching back doesn't bring it back.
+  const [overlay, setOverlay] = useState<{ gardenId: string; season: number } | null>(null);
+  const overlaySeason = overlay && overlay.gardenId === resolvedId ? overlay.season : null;
+  useEffect(() => { setOverlay(null); }, [resolvedId]);
+  const overlaySeasonRef = useRef<number | null>(null);
+  overlaySeasonRef.current = overlaySeason;
+  // The same hooks as the current canvas, with a null garden id while the
+  // overlay is off so nothing is fetched.
+  const overlayGardenId = overlaySeason != null ? resolvedId : null;
+  const overlayLoadSeason = overlaySeason ?? currentSeason;
+  const {
+    beds: overlayBedsRaw, loading: overlayBedsLoading, errorKey: overlayBedsErrorKey, loadedKey: overlayBedsKey,
+  } = useGarden(overlayGardenId, overlayLoadSeason);
+  const {
+    plantingsByBedId: overlayPlantingsRaw, loading: overlayPlantingsLoading, errorKey: overlayPlantingsErrorKey,
+    loadedKey: overlayPlantingsKey,
+  } = usePlantings(overlayGardenId, overlayLoadSeason);
+  const overlayKey = overlayGardenId ? `${overlayGardenId}:${overlayLoadSeason}` : null;
+  const overlayReady = overlayKey != null
+    && overlayBedsKey === overlayKey && overlayPlantingsKey === overlayKey
+    && !overlayBedsLoading && !overlayPlantingsLoading;
+  const overlayBeds = overlayReady ? overlayBedsRaw : NO_OVERLAY_BEDS;
+  const overlayPlantingsByBedId = overlayReady ? overlayPlantingsRaw : NO_OVERLAY_PLANTINGS;
+  const overlayStatus: SeasonOverlayStatus = overlaySeason == null ? 'off'
+    : overlayReady ? (overlayBedsRaw.length === 0 ? 'empty' : 'ready')
+    : overlayBedsErrorKey === overlayKey || overlayPlantingsErrorKey === overlayKey ? 'error'
+    : 'loading';
+
+  // Turns the overlay on for a past season (or off with null). Tracks once per
+  // activation: only when the shown season actually changes to a past year.
+  // Step 8 calls this after carrying a layout forward.
+  const showSeasonOverlay = useCallback((season: number | null) => {
+    if (!resolvedId) return;
+    if (season == null || season >= currentSeason) {
+      setOverlay(null);
+      return;
+    }
+    if (overlaySeasonRef.current !== season) track('canvas_season_overlay');
+    overlaySeasonRef.current = season;
+    setOverlay({ gardenId: resolvedId, season });
+  }, [resolvedId, currentSeason]);
+
+  // Phase 50: new-season prompt. Offered when this season has no beds and an
+  // earlier season has a layout. "Start fresh" hides it for this garden and
+  // season; "Bring beds forward" copies the latest earlier layout.
+  const latestEarlierSeason = earlierSeasons.length > 0 ? earlierSeasons[0] : null;
+  const refetchSeasons = gardenSeasons.refetch;
+  const [carryForward, setCarryForward] = useState<{ pending: boolean; error: string | null }>({ pending: false, error: null });
+  const [dismissedCarryKeys, setDismissedCarryKeys] = useState<string[]>([]);
+  // Synchronous double-click guard (buttons use aria-disabled, not disabled).
+  const carryPendingRef = useRef(false);
+  const resolvedIdRef = useRef(resolvedId);
+  resolvedIdRef.current = resolvedId;
+  useEffect(() => { setCarryForward({ pending: false, error: null }); }, [resolvedId]);
+
+  const handleCarryForward = useCallback(async () => {
+    if (!resolvedId || latestEarlierSeason == null) return;
+    const gardenId = resolvedId;
+    const fromSeason = latestEarlierSeason;
+    if (carryPendingRef.current) return;
+    carryPendingRef.current = true;
+    setCarryForward({ pending: true, error: null });
+    try {
+      let alreadyHasBeds = false;
+      try {
+        await api.post(`/api/gardens/${gardenId}/beds/carry-forward`, { fromSeason });
+      } catch (e) {
+        const status = e instanceof api.ApiError ? e.status : null;
+        if (status === 409) {
+          alreadyHasBeds = true;
+        } else if (status === 404 || status === 400) {
+          // The earlier layout is gone (or the season is stale): refresh the list.
+          if (resolvedIdRef.current !== gardenId) return;
+          await refetchSeasons();
+          if (resolvedIdRef.current !== gardenId) return;
+          setCarryForward({ pending: false, error: 'Those beds are no longer there.' });
+          return;
+        } else {
+          if (resolvedIdRef.current === gardenId) {
+            setCarryForward({ pending: false, error: CARRY_FORWARD_ERROR });
+          }
+          return;
+        }
+      }
+      // Garden switched mid-request: the new garden loads itself, and reloading
+      // here would fetch the old garden into the current canvas.
+      if (resolvedIdRef.current !== gardenId) return;
+      const reloaded = await reloadGarden();
+      await refetchSeasons();
+      if (resolvedIdRef.current !== gardenId) return;
+      if (!reloaded || reloaded.length === 0) {
+        setCarryForward({ pending: false, error: CARRY_FORWARD_ERROR });
+        return;
+      }
+      setCarryForward({ pending: false, error: null });
+      if (!alreadyHasBeds) showSeasonOverlay(fromSeason);
+    } finally {
+      carryPendingRef.current = false;
+    }
+  }, [resolvedId, latestEarlierSeason, reloadGarden, refetchSeasons, showSeasonOverlay]);
+
+  const handleStartFresh = useCallback(() => {
+    if (!resolvedId || carryPendingRef.current) return;
+    const key = carryForwardDismissKey(resolvedId, currentSeason);
+    writeCarryForwardDismissed(key);
+    setDismissedCarryKeys(keys => (keys.includes(key) ? keys : [...keys, key]));
+  }, [resolvedId, currentSeason]);
+
+  const carryDismissKey = resolvedId ? carryForwardDismissKey(resolvedId, currentSeason) : null;
+  const carryDismissed = useMemo(
+    () => carryDismissKey == null
+      || dismissedCarryKeys.includes(carryDismissKey)
+      || readCarryForwardDismissed(carryDismissKey),
+    [carryDismissKey, dismissedCarryKeys],
+  );
 
   // Phase 20: companion / conflict / occupancy
   const companionSeedIdsSet = useMemo(() => {
@@ -362,6 +528,10 @@ export default function HomePage() {
     await deletePlanting(planting.id, planting.bedId);
   }, [deletePlanting]);
 
+  const handleMarkHarvested = useCallback(async (planting: Planting) => {
+    await dismissIndicator(planting.id, planting.bedId);
+  }, [dismissIndicator]);
+
   if (listLoading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#f8f4eb' }}>
@@ -374,6 +544,13 @@ export default function HomePage() {
   if (!listLoading && gardens.length === 0) return null;
 
   const hasNoBeds = !gardenLoading && garden != null && beds.length === 0;
+  // Only once both this season's beds and the garden's seasons have resolved,
+  // so neither the prompt nor the plain instruction flashes ahead of the data.
+  const emptyStateReady = hasNoBeds
+    && resolvedId != null
+    && gardenLoadedKey === `${resolvedId}:${currentSeason}`
+    && gardenSeasons.loadedGardenId === resolvedId;
+  const showNewSeasonPrompt = emptyStateReady && latestEarlierSeason != null && !carryDismissed;
 
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh', background: '#f8f4eb', overflow: 'hidden' }}>
@@ -394,18 +571,106 @@ export default function HomePage() {
         garden={garden}
         plantingsByBedId={plantingsByBedId}
         plantingsLoading={plantingsLoading}
+        plantingsLoadedKey={plantingsLoadedKey}
+        onStagesDisplayed={markStagesDisplayed}
         armedSeed={armedSeed}
         onConfirmPlacement={handleConfirmPlacement}
         onConfirmRemoval={handleConfirmRemoval}
+        onMarkHarvested={handleMarkHarvested}
         conflictedIds={conflictedIds}
         conflictedBedIds={conflictedBedIds}
         latestPlacing={latestPlacing}
         occupancyByBedId={occupancyByBedId}
         relationshipBetween={relationshipBetween}
+        overlayBeds={overlayBeds}
+        overlayPlantingsByBedId={overlayPlantingsByBedId}
       />
 
+      {/* Phase 50: new-season prompt (in place of the empty-beds instruction) */}
+      {showNewSeasonPrompt && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          pointerEvents: 'none',
+          padding: 'var(--sp-4)',
+          // Keep clear of the shell bars and the bottom canvas toolbar.
+          paddingTop: 'calc(var(--sp-4) + var(--shell-top, 0px))',
+          paddingBottom: 'calc(96px + var(--shell-bottom, 0px))',
+        }}>
+          <section
+            aria-labelledby="new-season-prompt-title"
+            aria-live="polite"
+            style={{
+              pointerEvents: 'auto',
+              width: '100%',
+              maxWidth: 400,
+              background: 'var(--c-surface)',
+              border: '1px solid var(--c-border)',
+              borderRadius: 'var(--r-lg)',
+              padding: isMobile ? 'var(--sp-4)' : 'var(--sp-5)',
+              boxShadow: 'var(--shadow-lg)',
+              fontFamily: 'var(--font-ui)',
+              color: 'var(--c-text)',
+              textAlign: 'center',
+            }}
+          >
+            <h2
+              id="new-season-prompt-title"
+              style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: isMobile ? 18 : 20, fontWeight: 600, color: 'var(--c-text)' }}
+            >
+              New season, same garden?
+            </h2>
+            <p style={{ margin: 'var(--sp-2) 0 0', fontSize: 14, lineHeight: 1.5, color: 'var(--c-text-2)' }}>
+              Bring your beds forward from {latestEarlierSeason}. Your plants stay with {latestEarlierSeason}.
+            </p>
+            {carryForward.error && (
+              <p role="alert" style={{ margin: 'var(--sp-3) 0 0', fontSize: 13, color: 'var(--c-danger)' }}>
+                {carryForward.error}
+              </p>
+            )}
+            <div style={{
+              display: 'flex',
+              flexDirection: isMobile ? 'column' : 'row',
+              gap: 'var(--sp-2)',
+              justifyContent: 'center',
+              marginTop: 'var(--sp-4)',
+            }}>
+              <button
+                type="button"
+                onClick={handleCarryForward}
+                aria-disabled={carryForward.pending}
+                style={{
+                  ...promptButtonStyle,
+                  border: 'none',
+                  background: 'var(--c-primary)',
+                  color: 'var(--c-text-on-primary)',
+                  cursor: carryForward.pending ? 'progress' : 'pointer',
+                  opacity: carryForward.pending ? 0.7 : 1,
+                }}
+              >
+                {carryForward.pending ? 'Bringing beds forward…' : 'Bring beds forward'}
+              </button>
+              <button
+                type="button"
+                onClick={handleStartFresh}
+                aria-disabled={carryForward.pending}
+                style={{
+                  ...promptButtonStyle,
+                  border: '1px solid var(--c-border)',
+                  background: 'transparent',
+                  color: 'var(--c-text)',
+                  cursor: carryForward.pending ? 'default' : 'pointer',
+                  opacity: carryForward.pending ? 0.7 : 1,
+                }}
+              >
+                Start fresh
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {/* Empty-beds overlay */}
-      {hasNoBeds && (
+      {emptyStateReady && !showNewSeasonPrompt && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
           <div style={{
             background: 'rgba(250, 247, 242, 0.88)',
@@ -506,6 +771,11 @@ export default function HomePage() {
           onBedManagerToggle={handleBedManagerToggle}
           conflictCount={conflictedIds.size}
           onJumpToConflict={handleJumpToConflict}
+          currentSeason={currentSeason}
+          earlierSeasons={earlierSeasons}
+          overlaySeason={overlaySeason}
+          overlayStatus={overlayStatus}
+          onOverlaySeasonChange={showSeasonOverlay}
         />
       )}
 

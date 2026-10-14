@@ -1,13 +1,18 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import Konva from 'konva';
-import { Circle, Layer, Line, Group, Rect, Stage, Text } from 'react-konva';
+import { Circle, Layer, Line, Group, Rect, Shape, Stage, Text } from 'react-konva';
 import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
 import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
 import { apiUrl } from '../../lib/api';
 import FitLine from './FitLine';
 import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
+import { STAGE_NAMES, isHarvestReady } from '../../lib/growthStages';
+import { shortDate } from '../../lib/guideDates';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { drawStageMark, markerTier } from './stageMarks';
 
 Konva.hitOnDragEnabled = true;
 
@@ -24,6 +29,16 @@ const MARKER_HIT_RADIUS = GRID_PX * 0.5;
 const THUMB_LONG_SIDE_PX = 640;
 const THUMB_PAD = 24;
 const THUMB_DEBOUNCE_MS = 5000;
+
+// Phase 50: past-season overlay (read-only, drawn under the current markers).
+// WD: confirm opacity and tint
+const OVERLAY_OPACITY = 0.35;
+// WD: confirm opacity and tint
+const OVERLAY_TINT = '#8A9499';
+// Module constant so the memoised PlantingMarker keeps a stable `plain` prop.
+const OVERLAY_MARKER_PLAIN = { fill: OVERLAY_TINT, opacity: OVERLAY_OPACITY };
+const EMPTY_BEDS: Bed[] = [];
+const EMPTY_PLANTINGS: PlantingsByBedId = {};
 
 const MARKER_COLORS = [
   '#2d6a4f', '#b5652a', '#5e3d8a', '#1a5f7a',
@@ -79,12 +94,22 @@ interface Props {
     date: string | null,
   ) => void;
   onConfirmRemoval: (planting: Planting) => void;
+  // Phase 50: "Mark as harvested" in the inspection popover. Rejects on failure.
+  onMarkHarvested?: (planting: Planting) => Promise<void>;
   // Phase 20: companion indicators
   conflictedIds?: Set<string>;
   conflictedBedIds?: Set<string>;
   latestPlacing?: { id: string; seq: number } | null;
   occupancyByBedId?: Record<string, { consumed: number; capacity: number; over: boolean }>;
   relationshipBetween?: (a: string, b: string) => 'beneficial' | 'antagonistic' | null;
+  // Phase 50: `${gardenId}:${season}` of the last completed plantings load,
+  // and the callback that records stages as shown (PATCH displayed-stage).
+  plantingsLoadedKey?: string | null;
+  onStagesDisplayed?: (plantingIds: string[]) => void;
+  // Phase 50: a past season's layout drawn read-only between the bed and
+  // marker layers. Never hit-tested, never animated, never acknowledged.
+  overlayBeds?: Bed[];
+  overlayPlantingsByBedId?: PlantingsByBedId;
 }
 
 type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
@@ -101,13 +126,52 @@ type PendingPlacement = {
   screenY: number;
 };
 
-type PendingRemoval = {
-  planting: Planting;
+// Phase 50: inspection popover. Holds ids, not the planting, so it always
+// renders the latest planting (e.g. after "Mark as harvested").
+type PendingInspect = {
+  plantingId: string;
+  bedId: string;
   screenX: number;
   screenY: number;
 };
 
+// Touch gesture bookkeeping so a tap only inspects when it was a single,
+// stationary finger (not the end of a pan or a two-finger gesture).
+type TouchGesture = { startX: number; startY: number; multi: boolean; moved: boolean };
+const TAP_SLOP_PX = 10;
+// Browsers can follow a tap with emulated mouse events; ignore a click this
+// soon after a tap so the hit-test does not run twice.
+const TAP_CLICK_DEDUPE_MS = 800;
+
+// "seed:<id>" | "cambium:<id>", the format both the planting guide (?open=)
+// and the harvest log (?seed=) accept. Personal seed wins.
+function seedParam(planting: Planting): string | null {
+  if (planting.seedId) return `seed:${planting.seedId}`;
+  if (planting.cambiumSeedId) return `cambium:${planting.cambiumSeedId}`;
+  return null;
+}
+
+const popoverButtonStyle: CSSProperties = {
+  minHeight: 44, minWidth: 44, padding: '0 var(--sp-3)', borderRadius: 'var(--r-md)',
+  fontSize: 13, fontFamily: 'inherit', cursor: 'pointer',
+};
+
+const popoverLinkStyle: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', minHeight: 44, minWidth: 44,
+  color: 'var(--c-primary)', fontSize: 13, fontWeight: 600, textDecoration: 'underline',
+};
+
 // ---- Pure helpers ----
+
+// Space on a focused control (or anything inside a dialog) belongs to that
+// control, not to Space-to-pan.
+function spaceTargetsControl(active: Element | null): boolean {
+  const el = active as HTMLElement | null;
+  if (!el) return false;
+  return el.tagName === 'BUTTON' || el.tagName === 'A' || el.tagName === 'INPUT'
+    || el.tagName === 'TEXTAREA' || el.isContentEditable
+    || el.closest('[role="dialog"]') !== null;
+}
 
 function computeExtents(beds: Bed[]) {
   const MARGIN = 10 * GRID_PX;
@@ -201,6 +265,20 @@ function gridFromCells(
     cols: Math.max(1, Math.abs(b.cellX - a.cellX) + 1),
     rows: Math.max(1, Math.abs(b.cellY - a.cellY) + 1),
   };
+}
+
+// Inner cell lines of a grid bed, in the bed's local coords.
+function gridCellLines(cols: number, rows: number, stroke: string): ReactNode[] {
+  const bw = cols * GRID_PX;
+  const bh = rows * GRID_PX;
+  const lines: ReactNode[] = [];
+  for (let col = 1; col < cols; col++) {
+    lines.push(<Line key={`vc${col}`} points={[col * GRID_PX, 0, col * GRID_PX, bh]} stroke={stroke} strokeWidth={0.5} />);
+  }
+  for (let row = 1; row < rows; row++) {
+    lines.push(<Line key={`hr${row}`} points={[0, row * GRID_PX, bw, row * GRID_PX]} stroke={stroke} strokeWidth={0.5} />);
+  }
+  return lines;
 }
 
 function bedToPolygon(bed: Bed): number[] | null {
@@ -305,6 +383,137 @@ function markerWorldCenter(
   return null;
 }
 
+// ---- Planting marker ----
+
+interface PlantingMarkerProps {
+  planting: Planting;
+  x: number;
+  y: number;
+  scale: number;
+  conflicted?: boolean;
+  // Plain markers (e.g. a past-season overlay): no label, stage mark, harvest
+  // treatment, companion ring or animation refs; fill/opacity from the caller.
+  plain?: { fill: string; opacity: number };
+  // Stable registry from the parent; called with null on unmount.
+  registerRef?: (kind: MarkerRefKind, id: string, node: Konva.Node | null) => void;
+}
+
+type MarkerRefKind = 'group' | 'circle' | 'ring' | 'brightness';
+
+// Drawn centred on a Group at (x, y) so entrance tweens scale about the
+// marker's centre. Visual only: hit-testing stays in JS.
+// Memoised: during a bed drag only the moving bed's markers get new props,
+// so the rest skip render and keep their ref callbacks.
+const PlantingMarker = memo(function PlantingMarker({
+  planting, x, y, scale, conflicted, plain, registerRef,
+}: PlantingMarkerProps) {
+  const id = planting.id;
+  const groupRef = useCallback((n: Konva.Group | null) => registerRef?.('group', id, n), [registerRef, id]);
+  const circleRef = useCallback((n: Konva.Circle | null) => registerRef?.('circle', id, n), [registerRef, id]);
+  const ringRef = useCallback((n: Konva.Circle | null) => registerRef?.('ring', id, n), [registerRef, id]);
+  const brightnessRef = useCallback((n: Konva.Circle | null) => registerRef?.('brightness', id, n), [registerRef, id]);
+  const stage = planting.growth.stage;
+  const sceneFunc = useCallback((ctx: Konva.Context) => {
+    if (stage !== null) drawStageMark(ctx, stage, MARKER_RADIUS);
+  }, [stage]);
+
+  if (plain) {
+    return (
+      <Group x={x} y={y} listening={false}>
+        <Circle radius={MARKER_RADIUS} fill={plain.fill} opacity={plain.opacity} />
+      </Group>
+    );
+  }
+
+  const seedId = planting.cambiumSeedId ?? planting.seedId ?? planting.id;
+  const color = markerColor(seedId);
+  const tier = markerTier(2 * MARKER_RADIUS * scale);
+  const ready = isHarvestReady(planting);
+  const { anchored } = planting.growth;
+  const showMark = tier === 'large' && anchored && stage !== null;
+  const showLabel = tier === 'medium' || (tier === 'large' && !showMark);
+  const showHarvest = ready && tier !== 'small';
+  // Markers are drawn in world units inside the scaled stage, so the harvest
+  // ring's on-screen px (2 px inset, 2.5 px stroke) are divided by scale.
+  const px = 1 / scale;
+
+  return (
+    <Group ref={groupRef} x={x} y={y} listening={false}>
+      <Circle
+        ref={circleRef}
+        radius={MARKER_RADIUS}
+        fill={tier === 'small' && ready ? '#E6B85C' : color}
+        opacity={0.88}
+      />
+      {showHarvest && (
+        <>
+          <Circle radius={MARKER_RADIUS} fill="rgba(230, 184, 92, 0.10)" listening={false} />
+          <Circle ref={brightnessRef} radius={MARKER_RADIUS} fill="#fff" opacity={0.12} listening={false} />
+          <Circle
+            radius={MARKER_RADIUS - 2 * px}
+            stroke="#E6B85C"
+            strokeWidth={2.5 * px}
+            opacity={0.68}
+            listening={false}
+          />
+        </>
+      )}
+      {conflicted && (
+        <Circle
+          ref={ringRef}
+          radius={MARKER_RADIUS + 3}
+          fill="transparent"
+          stroke="#C88A2A"
+          strokeWidth={2}
+          listening={false}
+        />
+      )}
+      {showMark && (
+        <Shape sceneFunc={sceneFunc} listening={false} />
+      )}
+      {showLabel && (
+        <Text
+          text={markerLabel(planting)}
+          x={-MARKER_RADIUS}
+          y={-5}
+          width={MARKER_RADIUS * 2}
+          fontSize={8}
+          align="center"
+          fill="#fff"
+          fontStyle="bold"
+          listening={false}
+        />
+      )}
+    </Group>
+  );
+});
+
+// ---- Past-season overlay bed ----
+
+// Same geometry as the bed layer (grid rect + cell lines / freeform polygon),
+// tinted, with no label, selection, conflict or drag state. Visual only.
+const OverlayBed = memo(function OverlayBed({ bed }: { bed: Bed }) {
+  if (bed.type === 'grid' && bed.grid) {
+    const { x, y, cols, rows } = bed.grid;
+    return (
+      <Group x={x * GRID_PX} y={y * GRID_PX} opacity={OVERLAY_OPACITY} listening={false}>
+        <Rect width={cols * GRID_PX} height={rows * GRID_PX}
+          fill={OVERLAY_TINT} stroke={OVERLAY_TINT} strokeWidth={1.5} cornerRadius={2} />
+        {gridCellLines(cols, rows, OVERLAY_TINT)}
+      </Group>
+    );
+  }
+  if (bed.type === 'freeform' && bed.freeform) {
+    return (
+      <Group opacity={OVERLAY_OPACITY} listening={false}>
+        <Line points={bed.freeform.points} closed={bed.freeform.closed}
+          fill={OVERLAY_TINT} stroke={OVERLAY_TINT} strokeWidth={1.5} dash={[6, 4]} />
+      </Group>
+    );
+  }
+  return null;
+});
+
 // ---- Component ----
 
 const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
@@ -312,10 +521,12 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   onCreateBed, onUpdateBedGeometry,
   onScaleChange, onOverlapWarning, mode, panActive, gardenId,
   garden, plantingsByBedId, plantingsLoading, armedSeed,
-  onConfirmPlacement, onConfirmRemoval,
+  onConfirmPlacement, onConfirmRemoval, onMarkHarvested,
   // Phase 20
   conflictedIds, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
+  plantingsLoadedKey, onStagesDisplayed,
+  overlayBeds = EMPTY_BEDS, overlayPlantingsByBedId = EMPTY_PLANTINGS,
 }, ref) => {
   useRegisterCanvas();
   const stageRef = useRef<Konva.Stage>(null);
@@ -389,13 +600,24 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const markerCircleRefs = useRef<Map<string, Konva.Circle>>(new Map());
   const ringCircleRefs = useRef<Map<string, Konva.Circle>>(new Map());
+  const markerGroupRefs = useRef<Map<string, Konva.Group>>(new Map());
+  const brightnessCircleRefs = useRef<Map<string, Konva.Circle>>(new Map());
+  const registerMarkerRef = useCallback((kind: MarkerRefKind, id: string, node: Konva.Node | null) => {
+    const map: Map<string, Konva.Node> =
+      kind === 'group' ? markerGroupRefs.current
+        : kind === 'circle' ? markerCircleRefs.current
+          : kind === 'ring' ? ringCircleRefs.current
+            : brightnessCircleRefs.current;
+    if (node) map.set(id, node);
+    else map.delete(id);
+  }, []);
 
   const setFreeformPtsSynced = useCallback((pts: number[]) => {
     freeformPtsRef.current = pts;
     setFreeformPts(pts);
   }, []);
 
-  // Phase 19: placement + removal popovers
+  // Phase 19: placement popover
   const [pendingPlacement, setPendingPlacement] = useState<PendingPlacement | null>(null);
   const pendingPlacementRef = useRef<PendingPlacement | null>(null);
   const setPendingPlacementSynced = useCallback((v: PendingPlacement | null) => {
@@ -405,12 +627,22 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const [placementQty, setPlacementQty] = useState(1);
   const [placementDate, setPlacementDate] = useState('');
 
-  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
-  const pendingRemovalRef = useRef<PendingRemoval | null>(null);
-  const setPendingRemovalSynced = useCallback((v: PendingRemoval | null) => {
-    pendingRemovalRef.current = v;
-    setPendingRemoval(v);
+  // Phase 50: inspection popover (replaces the removal popover)
+  const isMobile = useIsMobile();
+  const [pendingInspect, setPendingInspect] = useState<PendingInspect | null>(null);
+  const pendingInspectRef = useRef<PendingInspect | null>(null);
+  const [harvestBusy, setHarvestBusy] = useState(false);
+  const [harvestError, setHarvestError] = useState<string | null>(null);
+  const setPendingInspectSynced = useCallback((v: PendingInspect | null) => {
+    pendingInspectRef.current = v;
+    setPendingInspect(v);
+    setHarvestBusy(false);
+    setHarvestError(null);
   }, []);
+  const inspectPopoverRef = useRef<HTMLDivElement>(null);
+  const [inspectH, setInspectH] = useState(150);
+  const touchGestureRef = useRef<TouchGesture | null>(null);
+  const lastTapAtRef = useRef(0);
 
   const closeFreeform = useCallback((pts: number[]) => {
     if (pts.length < 6) { setFreeformPtsSynced([]); setCursorWorld(null); return; }
@@ -433,8 +665,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' && !e.repeat) {
-        const el = document.activeElement as HTMLElement | null;
-        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+        if (spaceTargetsControl(document.activeElement)) return;
         e.preventDefault();
         setSpaceHeld(true);
         if (moveRef.current) {
@@ -453,20 +684,61 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         resizeRef.current = null;
         setResizePreviewSynced(null);
         setPendingPlacementSynced(null);
-        setPendingRemovalSynced(null);
+        setPendingInspectSynced(null);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
-        const el = document.activeElement as HTMLElement | null;
-        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+        if (spaceTargetsControl(document.activeElement)) return;
         setSpaceHeld(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [setFreeformPtsSynced, setDragOffsetSynced, setResizePreviewSynced, setMoveOverlapSynced, setPendingPlacementSynced, setPendingRemovalSynced]);
+  }, [setFreeformPtsSynced, setDragOffsetSynced, setResizePreviewSynced, setMoveOverlapSynced, setPendingPlacementSynced, setPendingInspectSynced]);
+
+  // Inspection popover: a pointerdown outside it closes it. Presses on the
+  // canvas are left to handleClick, which already closes popovers on click.
+  useEffect(() => {
+    if (!pendingInspect) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (!target) return;
+      if (inspectPopoverRef.current?.contains(target)) return;
+      if (stageRef.current?.container().contains(target)) return;
+      setPendingInspectSynced(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [pendingInspect, setPendingInspectSynced]);
+
+  // Measure the inspection popover so edge-flipping uses its real height.
+  // Re-measures when it opens for a planting or that planting changes
+  // (e.g. "Mark as harvested" removes the button), or the error toggles.
+  const inspectedPlanting = pendingInspect
+    ? (plantingsByBedId[pendingInspect.bedId] ?? []).find(p => p.id === pendingInspect.plantingId) ?? null
+    : null;
+  useLayoutEffect(() => {
+    const el = inspectPopoverRef.current;
+    if (el && el.offsetHeight !== inspectH) setInspectH(el.offsetHeight);
+  }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH]);
+
+  // Focus the popover when it opens for a new planting; on close, hand focus
+  // back to the canvas container if it can take it.
+  const inspectedId = pendingInspect?.plantingId ?? null;
+  const hadInspectRef = useRef(false);
+  useEffect(() => {
+    if (inspectedId) {
+      hadInspectRef.current = true;
+      inspectPopoverRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (!hadInspectRef.current) return;
+    hadInspectRef.current = false;
+    const container = stageRef.current?.container();
+    if (container && container.tabIndex >= 0) container.focus({ preventScroll: true });
+  }, [inspectedId]);
 
   // Cursor style
   useEffect(() => {
@@ -485,6 +757,37 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // Every marker tween runs through tweenTo so a garden/season switch or
+  // unmount can destroy chains still in flight; each step re-checks that its
+  // node is still on a layer before chaining the next.
+  const tweensRef = useRef<Set<Konva.Tween>>(new Set());
+  const tweenTo = useCallback((
+    node: Konva.Node,
+    config: { duration: number; easing?: (t: number, b: number, c: number, d: number) => number; [attr: string]: unknown },
+    onFinish?: () => void,
+  ) => {
+    const tween: Konva.Tween = new Konva.Tween({
+      ...config,
+      node,
+      onFinish: () => {
+        tweensRef.current.delete(tween);
+        tween.destroy();
+        if (!node.getLayer()) return;
+        onFinish?.();
+      },
+    });
+    tweensRef.current.add(tween);
+    tween.play();
+  }, []);
+
+  useLayoutEffect(() => {
+    const tweens = tweensRef.current;
+    return () => {
+      for (const tween of tweens) tween.destroy();
+      tweens.clear();
+    };
+  }, [gardenId, plantingsLoadedKey]);
+
   // Phase 20: conflict pulse
   const prevConflictedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -499,19 +802,13 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     for (const id of newConflicts) {
       const node = markerCircleRefs.current.get(id);
       if (!node) continue;
-      node.to({
-        scaleX: 1.15, scaleY: 1.15, duration: 0.4,
-        onFinish: () => node.to({
-          scaleX: 1, scaleY: 1, duration: 0.4,
-          onFinish: () => node.to({
-            scaleX: 1.15, scaleY: 1.15, duration: 0.4,
-            onFinish: () => node.to({ scaleX: 1, scaleY: 1, duration: 0.4 }),
-          }),
-        }),
-      });
+      tweenTo(node, { scaleX: 1.15, scaleY: 1.15, duration: 0.4 }, () =>
+        tweenTo(node, { scaleX: 1, scaleY: 1, duration: 0.4 }, () =>
+          tweenTo(node, { scaleX: 1.15, scaleY: 1.15, duration: 0.4 }, () =>
+            tweenTo(node, { scaleX: 1, scaleY: 1, duration: 0.4 }))));
     }
     prevConflictedIdsRef.current = new Set(conflictedIds);
-  }, [conflictedIds]);
+  }, [conflictedIds, tweenTo]);
 
   // Phase 20: beneficial pulse
   useEffect(() => {
@@ -537,11 +834,57 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     if (!hasBeneficial) return;
     const node = markerCircleRefs.current.get(id);
     if (!node) return;
-    node.to({
-      scaleX: 1.12, scaleY: 1.12, duration: 0.4,
-      onFinish: () => node.to({ scaleX: 1, scaleY: 1, duration: 0.4 }),
-    });
-  }, [latestPlacing, conflictedIds, relationshipBetween]);
+    tweenTo(node, { scaleX: 1.12, scaleY: 1.12, duration: 0.4 }, () =>
+      tweenTo(node, { scaleX: 1, scaleY: 1, duration: 0.4 }));
+  }, [latestPlacing, conflictedIds, relationshipBetween, tweenTo]);
+
+  // Phase 50: on load (once per garden + season), show plantings whose stage
+  // changed since last seen: a harvest pulse for stage 5 harvest-ready, an
+  // entrance otherwise. Then record them as displayed. Layout effect so the
+  // entrance's starting opacity is set before the first paint.
+  const stageShownKeysRef = useRef<Set<string>>(new Set());
+  useLayoutEffect(() => {
+    const key = plantingsLoadedKey;
+    // Wait for this garden's beds too: markers only exist once both landed.
+    if (!key || !key.startsWith(`${gardenId}:`) || garden?.id !== gardenId) return;
+    if (stageShownKeysRef.current.has(key)) return; // StrictMode re-run / reload
+    // The key is spent here on purpose, even if no marker is drawn yet (e.g.
+    // its bed hasn't rendered): those plantings stay unpatched and animate on
+    // a later garden/season load, never replayed within this one.
+    stageShownKeysRef.current.add(key);
+
+    const shown: string[] = [];
+    for (const planting of Object.values(plantingsByBedIdRef.current).flat()) {
+      const { anchored, stage, displayedStage } = planting.growth;
+      if (!anchored || stage === displayedStage) continue;
+      const group = markerGroupRefs.current.get(planting.id);
+      if (!group) continue; // not drawn, so not seen
+      shown.push(planting.id);
+
+      if (stage === 5 && isHarvestReady(planting)) {
+        // No brightness circle at the smallest tier; then there is no pulse.
+        const glow = brightnessCircleRefs.current.get(planting.id);
+        if (!glow || REDUCED_MOTION) continue;
+        const pulse = (remaining: number) =>
+          tweenTo(glow, { opacity: 0.24, duration: 0.8, easing: Konva.Easings.EaseInOut }, () =>
+            tweenTo(glow, { opacity: 0.12, duration: 0.8, easing: Konva.Easings.EaseInOut }, () => {
+              if (remaining > 1) pulse(remaining - 1);
+            }));
+        pulse(2);
+      } else {
+        group.opacity(0);
+        if (!REDUCED_MOTION) group.scale({ x: 0.86, y: 0.86 });
+        tweenTo(group, {
+          opacity: 1,
+          ...(REDUCED_MOTION ? {} : { scaleX: 1, scaleY: 1 }),
+          duration: 0.4,
+          easing: Konva.Easings.EaseOut,
+        });
+      }
+    }
+    // Deferred so the state update it triggers lands outside the layout effect.
+    if (shown.length > 0) queueMicrotask(() => onStagesDisplayed?.(shown));
+  }, [plantingsLoadedKey, gardenId, garden?.id, onStagesDisplayed, tweenTo]);
 
   // [ring-diag] observe conflictedIds prop as it reaches the canvas
   useEffect(() => {
@@ -552,6 +895,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [conflictedIds]);
 
   const applyZoom = useCallback((newScale: number, cx: number, cy: number) => {
+    // Popovers are anchored to screen positions; close them rather than drift.
+    setPendingPlacementSynced(null);
+    setPendingInspectSynced(null);
     const stage = stageRef.current;
     if (!stage) return;
     const clamped = Math.min(Math.max(newScale, MIN_SCALE), MAX_SCALE);
@@ -562,7 +908,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     stage.batchDraw();
     setScale(clamped);
     onScaleChange?.(clamped);
-  }, [onScaleChange]);
+  }, [onScaleChange, setPendingPlacementSynced, setPendingInspectSynced]);
 
   // ---- Phase 41: thumbnail capture ----
 
@@ -974,10 +1320,21 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [onCreateBed, onUpdateBedGeometry, onOverlapWarning, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleTouchStart = useCallback((e: Konva.KonvaEventObject<TouchEvent>) => {
+    const touches = e.evt.touches;
+    if (touches.length === 1) {
+      touchGestureRef.current = { startX: touches[0].clientX, startY: touches[0].clientY, multi: false, moved: false };
+    } else {
+      touchGestureRef.current = { startX: 0, startY: 0, multi: true, moved: false };
+    }
     handleMouseDown(e as unknown as Konva.KonvaEventObject<MouseEvent>);
   }, [handleMouseDown]);
 
   const handleTouchMove = useCallback((e: Konva.KonvaEventObject<TouchEvent>) => {
+    const g = touchGestureRef.current;
+    const t = e.evt.touches[0];
+    if (g && t && !g.moved && Math.hypot(t.clientX - g.startX, t.clientY - g.startY) > TAP_SLOP_PX) {
+      g.moved = true;
+    }
     handleMouseMove(e as unknown as Konva.KonvaEventObject<MouseEvent>);
   }, [handleMouseMove]);
 
@@ -996,15 +1353,15 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const isPanning = panActive || spaceHeld;
 
     // Close any open popovers if user clicks elsewhere on canvas
-    if (pendingPlacementRef.current || pendingRemovalRef.current) {
+    if (pendingPlacementRef.current || pendingInspectRef.current) {
       setPendingPlacementSynced(null);
-      setPendingRemovalSynced(null);
+      setPendingInspectSynced(null);
       return;
     }
 
     if (isPanning) return;
 
-    // Freeform polygon in progress: always handle polygon, skip placement/removal
+    // Freeform polygon in progress: always handle polygon, skip placement/inspection
     if (mode === 'freeform' && freeformPtsRef.current.length > 0) {
       const now = Date.now();
       const isDbl = now - lastClickTimeRef.current < 300;
@@ -1061,11 +1418,12 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         }
       }
       // Armed but click didn't land inside the target bed — no-op.
-      // Never fall through to selection or marker-removal while armed.
+      // Never fall through to selection or marker inspection while armed.
       return;
     }
 
-    // Marker hit check for removal (only when not armed)
+    // Marker hit check for inspection (only when not armed). Only the current
+    // plantings are considered.
     if (!armed) {
       let nearest: Planting | null = null;
       let nearestDist = MARKER_HIT_RADIUS;
@@ -1088,7 +1446,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         const screenPos = center
           ? stage.getAbsoluteTransform().point(center)
           : { x: p.x, y: p.y };
-        setPendingRemovalSynced({ planting: nearest, screenX: screenPos.x, screenY: screenPos.y });
+        setPendingInspectSynced({ plantingId: nearest.id, bedId: nearest.bedId, screenX: screenPos.x, screenY: screenPos.y });
         return;
       }
     }
@@ -1106,11 +1464,38 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     const hit = hitTestBeds(w, bedsRef.current);
     onSelectBed(hit ?? null);
-  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingRemovalSynced]);
+  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingInspectSynced]);
 
-  const handleTap = useCallback((e: Konva.KonvaEventObject<Event>) => {
-    handleClick(e as unknown as Konva.KonvaEventObject<MouseEvent>);
+  // Mouse click. Skipped right after a tap: a browser may emulate mouse events
+  // after touchend, which would run the same press a second time (opening the
+  // popover on tap, then closing it on the emulated click).
+  const handleStageClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (Date.now() - lastTapAtRef.current < TAP_CLICK_DEDUPE_MS) return;
+    handleClick(e);
   }, [handleClick]);
+
+  // Tap. A tap that ended a pan or a two-finger gesture only closes popovers
+  // (and clears the post-gesture flags handleClick would have consumed); it
+  // never inspects a marker or changes bed selection.
+  const handleTap = useCallback((e: Konva.KonvaEventObject<Event>) => {
+    lastTapAtRef.current = Date.now();
+    const g = touchGestureRef.current;
+    if (g && (g.multi || g.moved)) {
+      resizeDoneRef.current = false;
+      moveDoneRef.current = false;
+      gridCreateDoneRef.current = false;
+      setPendingPlacementSynced(null);
+      setPendingInspectSynced(null);
+      return;
+    }
+    handleClick(e as unknown as Konva.KonvaEventObject<MouseEvent>);
+  }, [handleClick, setPendingPlacementSynced, setPendingInspectSynced]);
+
+  const handleStageDragStart = useCallback((e: Konva.KonvaEventObject<DragEvent>) => {
+    if (e.target !== e.target.getStage()) return;
+    setPendingPlacementSynced(null);
+    setPendingInspectSynced(null);
+  }, [setPendingPlacementSynced, setPendingInspectSynced]);
 
   const handleDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
     const stage = e.target.getStage(); if (!stage) return;
@@ -1212,43 +1597,135 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     );
   })();
 
-  // Build removal popover
-  const removalPopover = (() => {
-    if (!pendingRemoval) return null;
-    const popW = 200;
-    const popH = 110;
-    let left = pendingRemoval.screenX + 12;
-    if (left + popW > size.w - 8) left = pendingRemoval.screenX - popW - 12;
-    let top = pendingRemoval.screenY - popH / 2;
+  // Build inspection popover (Phase 50)
+  const inspectPopover = (() => {
+    if (!pendingInspect || !inspectedPlanting) return null;
+    const planting = inspectedPlanting;
+    const name = planting.commonName ?? planting._commonName ?? 'Plant';
+    const { anchored, stage } = planting.growth;
+    const key = seedParam(planting);
+    const ready = isHarvestReady(planting);
+
+    const popW = 232;
+    const popH = inspectH;
+    let left = pendingInspect.screenX + 12;
+    if (left + popW > size.w - 8) left = pendingInspect.screenX - popW - 12;
+    if (left < 8) left = 8;
+    let top = pendingInspect.screenY - popH / 2;
     if (top < 8) top = 8;
     if (top + popH > size.h - 8) top = size.h - popH - 8;
+    top = Math.max(8, top);
+
+    const markHarvested = async () => {
+      if (!onMarkHarvested || harvestBusy) return;
+      setHarvestBusy(true);
+      setHarvestError(null);
+      // Ignore the result if the popover was closed or moved on meanwhile.
+      const stillOpen = () => pendingInspectRef.current?.plantingId === planting.id;
+      try {
+        await onMarkHarvested(planting);
+        if (stillOpen()) setHarvestBusy(false);
+      } catch {
+        if (!stillOpen()) return;
+        setHarvestBusy(false);
+        setHarvestError("Couldn't mark as harvested. Try again.");
+      }
+    };
 
     return (
-      <div style={{
-        position: 'absolute', left, top, width: popW,
-        background: '#faf7f2', border: '1px solid #d8ceba', borderRadius: 10,
-        boxShadow: '0 4px 24px rgba(0,0,0,0.22)', padding: 16, zIndex: 30,
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-      }}>
-        <div style={{ fontSize: 13, color: '#2c3e2c', marginBottom: 12, fontWeight: 500 }}>
-          {pendingRemoval.planting._commonName ?? 'Remove plant?'}
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+      <div
+        ref={inspectPopoverRef}
+        role="dialog"
+        aria-label={name}
+        tabIndex={-1}
+        style={{
+          outline: 'none',
+          position: 'absolute', left, top, width: popW, boxSizing: 'border-box',
+          background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-lg)',
+          boxShadow: 'var(--shadow-lg)', padding: 'var(--sp-1) var(--sp-1) var(--sp-3) var(--sp-4)', zIndex: 30,
+          fontFamily: 'var(--font-ui)', color: 'var(--c-text)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 700, overflowWrap: 'anywhere' }}>
+            {name}
+          </div>
           <button
-            onClick={() => setPendingRemovalSynced(null)}
-            style={{ flex: 1, padding: '7px', borderRadius: 6, border: '1px solid #d8ceba', background: 'transparent', cursor: 'pointer', fontSize: 12 }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => {
-              onConfirmRemoval(pendingRemoval.planting);
-              setPendingRemovalSynced(null);
+            type="button"
+            aria-label="Close"
+            onClick={() => setPendingInspectSynced(null)}
+            style={{
+              ...popoverButtonStyle, padding: 0, border: 'none', background: 'transparent',
+              color: 'var(--c-text-2)', fontSize: 20, lineHeight: 1,
             }}
-            style={{ flex: 1, padding: '7px', borderRadius: 6, border: 'none', background: '#c04040', color: '#fff', cursor: 'pointer', fontSize: 12 }}
           >
-            Remove
+            ×
           </button>
+        </div>
+
+        <div style={{ paddingRight: 'var(--sp-3)' }}>
+          {anchored && stage ? (
+            <div style={{ fontSize: 13, color: 'var(--c-text-2)' }}>
+              <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>{STAGE_NAMES[stage]}</div>
+              {planting.plantingDate && <div>Planted {shortDate(planting.plantingDate)}</div>}
+            </div>
+          ) : (
+            <div style={{ fontSize: 13, color: 'var(--c-text-2)' }}>
+              <p style={{ margin: 0 }}>Mark it sown in the planting guide to track its growth.</p>
+              <Link
+                to={key ? `/guide?open=${key}&season=${planting.season}` : '/guide'}
+                style={popoverLinkStyle}
+              >
+                Planting guide
+              </Link>
+            </div>
+          )}
+
+          {stage === 5 && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
+              {key && (
+                <Link
+                  to={`/harvest?log=new&gardenId=${planting.gardenId}&seed=${key}`}
+                  style={{ ...popoverLinkStyle, alignSelf: 'flex-start' }}
+                >
+                  Log harvest
+                </Link>
+              )}
+              {ready && onMarkHarvested && (
+                <button
+                  type="button"
+                  onClick={markHarvested}
+                  disabled={harvestBusy}
+                  style={{
+                    ...popoverButtonStyle, border: 'none',
+                    background: 'var(--c-primary)', color: 'var(--c-text-on-primary)',
+                    opacity: harvestBusy ? 0.6 : 1, cursor: harvestBusy ? 'default' : 'pointer',
+                  }}
+                >
+                  {harvestBusy ? 'Saving…' : 'Mark as harvested'}
+                </button>
+              )}
+              {harvestError && (
+                <div role="alert" style={{ fontSize: 12, color: 'var(--c-danger)' }}>{harvestError}</div>
+              )}
+            </div>
+          )}
+
+          {!isMobile && (
+            <button
+              type="button"
+              onClick={() => {
+                onConfirmRemoval(planting);
+                setPendingInspectSynced(null);
+              }}
+              style={{
+                ...popoverButtonStyle, width: '100%', marginTop: 'var(--sp-3)',
+                border: '1px solid var(--c-border)', background: 'transparent', color: 'var(--c-danger)',
+              }}
+            >
+              Remove plant
+            </button>
+          )}
         </div>
       </div>
     );
@@ -1261,6 +1738,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         width={size.w}
         height={size.h}
         draggable={panActive || spaceHeld}
+        onDragStart={handleStageDragStart}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
@@ -1268,7 +1746,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        onClick={handleClick}
+        onClick={handleStageClick}
         onTap={handleTap}
         onDblClick={handleDblClick}
       >
@@ -1294,13 +1772,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
               const bw = cols * GRID_PX;
               const bh = rows * GRID_PX;
 
-              const cellLines: ReactNode[] = [];
-              for (let col = 1; col < cols; col++) {
-                cellLines.push(<Line key={`vc${col}`} points={[col * GRID_PX, 0, col * GRID_PX, bh]} stroke="#b8d0ba" strokeWidth={0.5} />);
-              }
-              for (let row = 1; row < rows; row++) {
-                cellLines.push(<Line key={`hr${row}`} points={[0, row * GRID_PX, bw, row * GRID_PX]} stroke="#b8d0ba" strokeWidth={0.5} />);
-              }
+              const cellLines = gridCellLines(cols, rows, '#b8d0ba');
 
               const gridFill = isMoveOverlapping ? 'rgba(200,80,80,0.4)'
                 : isPlacing ? 'rgba(45,106,79,0.18)'
@@ -1370,6 +1842,31 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           })}
         </Layer>
 
+        {/* Layer 2b: past-season overlay. Read-only: listening off, kept out of
+            bedsRef / plantingsByBedIdRef so JS hit-testing never sees it, plain
+            markers (no refs) so no animation or displayed-stage PATCH, and not a
+            thumb-* layer so it never reaches the garden thumbnail. */}
+        {overlayBeds.length > 0 && (
+          <Layer name="season-overlay" listening={false}>
+            {overlayBeds.map(bed => <OverlayBed key={bed.id} bed={bed} />)}
+            {overlayBeds.map(bed => (overlayPlantingsByBedId[bed.id] ?? []).map(planting => {
+              const center = markerWorldCenter(planting, bed);
+              if (!center) return null;
+              return (
+                <PlantingMarker
+                  key={planting.id}
+                  planting={planting}
+                  x={center.x}
+                  y={center.y}
+                  // Plain markers ignore scale; a constant keeps the memo on zoom.
+                  scale={1}
+                  plain={OVERLAY_MARKER_PLAIN}
+                />
+              );
+            }))}
+          </Layer>
+        )}
+
         {/* Layer 3: planting markers (visual only — clicks resolved in JS) */}
         <Layer name="thumb-markers" listening={false}>
           {beds.map(bed => {
@@ -1381,47 +1878,17 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             return plantings.map(planting => {
               const center = markerWorldCenter(planting, bed);
               if (!center) return null;
-              const cx = center.x + offsetX;
-              const cy = center.y + offsetY;
-              const seedId = planting.cambiumSeedId ?? planting.seedId ?? planting.id;
-              const color = markerColor(seedId);
-              const label = markerLabel(planting);
-
+              const id = planting.id;
               return (
-                <Group key={planting.id}>
-                  <Circle
-                    ref={node => {
-                      if (node) markerCircleRefs.current.set(planting.id, node);
-                      else markerCircleRefs.current.delete(planting.id);
-                    }}
-                    x={cx} y={cy} radius={MARKER_RADIUS} fill={color} opacity={0.88}
-                  />
-                  {(conflictedIds?.has(planting.id)) && (
-                    <Circle
-                      ref={node => {
-                        if (node) ringCircleRefs.current.set(planting.id, node);
-                        else ringCircleRefs.current.delete(planting.id);
-                      }}
-                      x={cx} y={cy}
-                      radius={MARKER_RADIUS + 3}
-                      fill="transparent"
-                      stroke="#C88A2A"
-                      strokeWidth={2}
-                      listening={false}
-                    />
-                  )}
-                  <Text
-                    text={label}
-                    x={cx - MARKER_RADIUS}
-                    y={cy - 5}
-                    width={MARKER_RADIUS * 2}
-                    fontSize={8}
-                    align="center"
-                    fill="#fff"
-                    fontStyle="bold"
-                    listening={false}
-                  />
-                </Group>
+                <PlantingMarker
+                  key={id}
+                  planting={planting}
+                  x={center.x + offsetX}
+                  y={center.y + offsetY}
+                  scale={scale}
+                  conflicted={conflictedIds?.has(id) ?? false}
+                  registerRef={registerMarkerRef}
+                />
               );
             });
           })}
@@ -1639,7 +2106,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       </Stage>
 
       {placementPopover}
-      {removalPopover}
+      {inspectPopover}
     </div>
   );
 });

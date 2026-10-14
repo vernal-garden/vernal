@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../lib/api';
+import { currentSeasonPacific } from '../lib/guideDates';
 
 export interface BedGrid {
   x: number;
@@ -45,25 +46,40 @@ export interface Garden {
   beds: Bed[];
 }
 
-export function useGarden(id: string | null) {
+// season defaults to the current Pacific-year season; pass a past season to
+// load that season's layout with the same code.
+export function useGarden(id: string | null, season: number = currentSeasonPacific()) {
   const [garden, setGarden] = useState<Garden | null>(null);
   const [beds, setBeds] = useState<Bed[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  // `${id}:${season}` of the last completed load; lets callers tell "loaded"
+  // apart from "not fetched yet" (e.g. a past-season overlay with no beds).
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  // `${id}:${season}` the current error belongs to.
+  const [errorKey, setErrorKey] = useState<string | null>(null);
   const bedsRef = useRef<Bed[]>([]);
+  // Latest load wins: stale responses (season/garden changed mid-fetch, or the
+  // id went null) are ignored.
+  const requestRef = useRef(0);
 
   const syncBeds = useCallback((next: Bed[]) => {
     bedsRef.current = next;
     setBeds(next);
   }, []);
 
-  const load = useCallback(async () => {
-    if (!id) return;
+  // Resolves to the loaded beds, or null when the load failed or was superseded.
+  const load = useCallback(async (): Promise<Bed[] | null> => {
+    if (!id) return null;
+    const req = ++requestRef.current;
     setLoading(true);
     setError(null);
+    setErrorKey(null);
     try {
-      const res = await api.get<Garden>(`/api/gardens/${id}`);
+      const res = await api.get<Garden>(`/api/gardens/${id}?season=${season}`);
+      if (req !== requestRef.current) return null;
+      const loadedBeds = res ? res.beds : [];
       if (res) {
         setGarden(res);
         syncBeds(res.beds);
@@ -71,17 +87,26 @@ export function useGarden(id: string | null) {
         setGarden(null);
         syncBeds([]);
       }
+      setLoadedKey(`${id}:${season}`);
+      return loadedBeds;
     } catch (e) {
+      if (req !== requestRef.current) return null;
       setError(e instanceof Error ? e.message : 'Failed to load garden');
+      setErrorKey(`${id}:${season}`);
+      return null;
     } finally {
-      setLoading(false);
+      if (req === requestRef.current) setLoading(false);
     }
-  }, [id, syncBeds]);
+  }, [id, season, syncBeds]);
 
   useEffect(() => {
     if (!id) {
       setGarden(null);
       syncBeds([]);
+      setLoadedKey(null);
+      requestRef.current += 1;
+      setLoading(false);
+      setErrorKey(null);
       return;
     }
     load();
@@ -94,7 +119,7 @@ export function useGarden(id: string | null) {
     const optimistic: Bed = {
       id: tempId,
       gardenId: id,
-      season: new Date().getFullYear(),
+      season,
       type: payload.type,
       label: payload.label,
       grid: payload.type === 'grid' ? payload.grid : null,
@@ -105,7 +130,7 @@ export function useGarden(id: string | null) {
     };
     syncBeds([...bedsRef.current, optimistic]);
     try {
-      const bed = await api.post<Bed>(`/api/gardens/${id}/beds`, payload);
+      const bed = await api.post<Bed>(`/api/gardens/${id}/beds`, { ...payload, season });
       if (!bed) throw new Error('No bed returned');
       syncBeds(bedsRef.current.map(b => b.id === tempId ? bed : b));
       return bed;
@@ -114,7 +139,7 @@ export function useGarden(id: string | null) {
       setMutationError(e instanceof Error ? e.message : 'Failed to create bed');
       return null;
     }
-  }, [id, syncBeds]);
+  }, [id, season, syncBeds]);
 
   const updateBed = useCallback(async (bedId: string, payload: UpdateBedPayload): Promise<void> => {
     if (!id) return;
@@ -153,5 +178,5 @@ export function useGarden(id: string | null) {
     }
   }, [id, syncBeds]);
 
-  return { garden, beds, loading, error, mutationError, reload: load, createBed, updateBed, deleteBed };
+  return { garden, beds, loading, error, errorKey, mutationError, loadedKey, reload: load, createBed, updateBed, deleteBed };
 }
