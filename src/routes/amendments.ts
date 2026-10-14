@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
 import { isNumericId } from '../lib/validation';
+import { invalidateMetrics } from '../lib/metricsCache';
 
 export const amendmentsNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/amendments
 export const amendmentsFlatRouter   = Router({ mergeParams: true }); // /api/amendments/:id
@@ -202,6 +203,7 @@ amendmentsNestedRouter.post('/', async (req: Request, res: Response): Promise<vo
       }
 
       await client.query('COMMIT');
+      invalidateMetrics(accountId);
 
       const log = await fetchLogById(logId, accountId);
       res.status(201).json(log ? formatLog(log) : { id: logId });
@@ -330,6 +332,7 @@ amendmentsFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<
       }
 
       await client.query('COMMIT');
+      invalidateMetrics(accountId);
 
       const log = await fetchLogById(amendmentId, accountId);
       res.json(log ? formatLog(log) : {});
@@ -365,6 +368,7 @@ amendmentsFlatRouter.delete('/:id', async (req: Request, res: Response): Promise
       res.status(404).json({ error: 'Amendment not found' });
       return;
     }
+    invalidateMetrics(accountId);
     res.status(204).send();
   } catch (err) {
     console.error(err);

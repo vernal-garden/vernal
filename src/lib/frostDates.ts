@@ -1,6 +1,8 @@
 // Zone-based frost date estimates for the Planting Guide (Phase 45). Used only
 // when the account has no frost dates of its own.
 
+import { applySeasonYear, type FrostContext } from './plantingSchedule';
+
 export interface FrostEstimate {
   lastSpringFrost: string | null;
   firstFallFrost: string | null;
@@ -40,5 +42,30 @@ export function estimateFrostDates(zone: string, season: number): FrostEstimate 
     firstFallFrost: `${season}-${fall}`,
     frostFree: false,
     parsed: true,
+  };
+}
+
+// The frost dates a garden's windows are computed from for a season: the
+// account's own dates (moved onto the season's year) when it has a last spring
+// frost date, otherwise the garden zone's estimate.
+export function resolveFrostContext(
+  accountFrost: { last: string; first: string | null } | null,
+  zone: string,
+  season: number,
+): FrostContext & { firstFallFrost: string | null } {
+  if (accountFrost) {
+    return {
+      lastSpringFrost: applySeasonYear(accountFrost.last, season),
+      firstFallFrost: accountFrost.first ? applySeasonYear(accountFrost.first, season) : null,
+      frostSource: 'account_frost',
+      frostFree: false,
+    };
+  }
+  const est = estimateFrostDates(zone, season);
+  return {
+    lastSpringFrost: est.lastSpringFrost,
+    firstFallFrost: est.firstFallFrost,
+    frostSource: est.parsed && !est.frostFree ? 'zone_estimate' : null,
+    frostFree: est.frostFree,
   };
 }

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
 import { isNumericId } from '../lib/validation';
+import { invalidateMetrics } from '../lib/metricsCache';
 
 export const soilNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/soil-readings
 export const soilFlatRouter   = Router({ mergeParams: true }); // /api/soil-readings/:id
@@ -152,6 +153,7 @@ soilNestedRouter.post('/', async (req: Request, res: Response): Promise<void> =>
        nitrogenVal, phosphorusVal, potassiumVal, notesVal],
     );
 
+    invalidateMetrics(accountId);
     res.status(201).json(formatReading(rows[0]));
   } catch (err) {
     console.error(err);
@@ -247,6 +249,7 @@ soilFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<void> 
       vals,
     );
 
+    invalidateMetrics(accountId);
     res.json(formatReading(rows[0]));
   } catch (err) {
     console.error(err);
@@ -274,6 +277,7 @@ soilFlatRouter.delete('/:id', async (req: Request, res: Response): Promise<void>
       res.status(404).json({ error: 'Reading not found' });
       return;
     }
+    invalidateMetrics(accountId);
     res.status(204).send();
   } catch (err) {
     console.error(err);

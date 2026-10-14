@@ -56,3 +56,8 @@
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* App-level overlays (feedback button, merge prompt, update banner) never print. */
+@media print {
+  [data-print-hide] { display: none !important; }
+}

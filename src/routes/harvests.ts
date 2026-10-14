@@ -6,6 +6,8 @@ import { requireAuth, requireSession, requireSupporter } from '../middleware/aut
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
 import { currentSeason, isIsoDate } from '../lib/plantingSchedule';
+import { seasonOf } from '../lib/season';
+import { invalidateMetrics } from '../lib/metricsCache';
 import { recomputeHarvestableCount } from '../lib/gardenBadges';
 import { getPresignedUploadUrl, deleteFromR2 } from '../lib/r2';
 import { logger } from '../lib/logger';
@@ -147,10 +149,6 @@ function seedKeyWhere(key: SeedKey, param: string, alias = ''): string {
   return key.kind === 'seed'
     ? `${alias}seed_id = ${param}`
     : `${alias}seed_id IS NULL AND ${alias}cambium_seed_id = ${param}`;
-}
-
-function seasonOf(date: string): number {
-  return Number(date.slice(0, 4));
 }
 
 function likePattern(q: string): string {
@@ -829,6 +827,7 @@ router.post('/', writeLimiter, async (req: Request, res: Response) => {
 
     const entry = await fetchEntry(client, inserted[0].id, session);
     await client.query('COMMIT');
+    if (session.account) invalidateMetrics(session.account.id);
     return res.status(201).json(formatEntry(entry!));
   } catch (err) {
     await rollback(client);
@@ -939,6 +938,7 @@ router.patch('/:id', writeLimiter, async (req: Request, res: Response) => {
 
     const entry = await fetchEntry(client, id, session);
     await client.query('COMMIT');
+    if (session.account) invalidateMetrics(session.account.id);
     return res.json(formatEntry(entry!));
   } catch (err) {
     await rollback(client);
@@ -967,6 +967,7 @@ router.delete('/:id', writeLimiter, async (req: Request, res: Response) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Harvest not found' });
 
     for (const photo of rows[0].photos) deletePhotoObject(photo.key);
+    if (session.account) invalidateMetrics(session.account.id);
     return res.status(204).send();
   } catch (err) {
     logger.error('DELETE /api/harvests/:id failed', err);
@@ -1066,6 +1067,7 @@ router.post('/:id/photos', ...photoGuards, async (req: Request, res: Response) =
 
     const entry = await fetchEntry(client, id, session);
     await client.query('COMMIT');
+    if (session.account) invalidateMetrics(session.account.id);
     return res.json(formatEntry(entry!));
   } catch (err) {
     await rollback(client);
@@ -1110,6 +1112,7 @@ router.delete('/:id/photos', ...photoGuards, async (req: Request, res: Response)
     await client.query('COMMIT');
 
     deletePhotoObject(key);
+    if (session.account) invalidateMetrics(session.account.id);
     return res.json(formatEntry(entry!));
   } catch (err) {
     await rollback(client);

@@ -4,9 +4,9 @@ import { db } from '../lib/db';
 import { requireAuth, requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
-import { estimateFrostDates } from '../lib/frostDates';
+import { resolveFrostContext } from '../lib/frostDates';
+import { invalidateMetrics } from '../lib/metricsCache';
 import {
-  applySeasonYear,
   computeWindows,
   currentSeason,
   isIsoDate,
@@ -183,7 +183,7 @@ router.get('/', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Garden not found' });
     }
 
-    let accountFrost: { last: string | null; first: string | null } | null = null;
+    let accountFrost: { last: string; first: string | null } | null = null;
     if (accountId !== null) {
       const { rows } = await db.query<{ last: string | null; first: string | null }>(
         `SELECT to_char(last_spring_frost_date, 'YYYY-MM-DD') AS last,
@@ -191,27 +191,12 @@ router.get('/', async (req: Request, res: Response) => {
          FROM accounts WHERE id = $1`,
         [accountId],
       );
-      if (rows[0]?.last) accountFrost = rows[0];
+      if (rows[0]?.last) accountFrost = { last: rows[0].last, first: rows[0].first };
     }
 
     const frostByGarden = new Map<string, FrostContext & { firstFallFrost: string | null }>();
     for (const g of gardens) {
-      if (accountFrost) {
-        frostByGarden.set(g.id, {
-          lastSpringFrost: applySeasonYear(accountFrost.last as string, season),
-          firstFallFrost: accountFrost.first ? applySeasonYear(accountFrost.first, season) : null,
-          frostSource: 'account_frost',
-          frostFree: false,
-        });
-      } else {
-        const est = estimateFrostDates(g.zone, season);
-        frostByGarden.set(g.id, {
-          lastSpringFrost: est.lastSpringFrost,
-          firstFallFrost: est.firstFallFrost,
-          frostSource: est.parsed && !est.frostFree ? 'zone_estimate' : null,
-          frostFree: est.frostFree,
-        });
-      }
+      frostByGarden.set(g.id, resolveFrostContext(accountFrost, g.zone, season));
     }
 
     const gardenIds = gardens.map((g) => Number(g.id));
@@ -430,6 +415,7 @@ router.put('/overrides', requireAuth, writeLimiter, async (req: Request, res: Re
     }
 
     await client.query('COMMIT');
+    invalidateMetrics(accountId);
     return res.json({ overrides: allNull ? null : merged });
   } catch (err) {
     if (client) await rollback(client);
@@ -528,6 +514,7 @@ router.put('/done', writeLimiter, async (req: Request, res: Response) => {
     }
 
     await client.query('COMMIT');
+    if (session.account) invalidateMetrics(session.account.id);
     return res.json({
       sowingEventId: result?.id ?? null,
       markedDoneAt: result?.marked_done_at ?? null,

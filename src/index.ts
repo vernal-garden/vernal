@@ -26,6 +26,7 @@ import feedbackRouter from './routes/feedback';
 import plantingGuideRouter from './routes/plantingGuide';
 import harvestsRouter from './routes/harvests';
 import microFeedbackRouter from './routes/microFeedback';
+import metricsRouter from './routes/metrics';
 import { sessionMiddleware } from './middleware/session';
 import { requestMetricsMiddleware } from './lib/requestMetrics';
 import { initPassport, passport } from './lib/oauth/index';
@@ -112,6 +113,7 @@ app.use('/api/feedback', feedbackRouter);
 app.use('/api/planting-guide', plantingGuideRouter);
 app.use('/api/harvests', harvestsRouter);
 app.use('/api/micro-feedback', microFeedbackRouter);
+app.use('/api/metrics', metricsRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 

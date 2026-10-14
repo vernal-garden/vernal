@@ -31,6 +31,7 @@ function UpdateBanner({ onReload, onHeightChange }: UpdateBannerProps) {
   return (
     <div
       ref={ref}
+      data-print-hide
       style={{
         position: 'fixed',
         bottom: 'var(--shell-bottom, 0px)',
