@@ -102,3 +102,30 @@ export async function setPlantingHarvestReady(plantingId: string): Promise<void>
     [plantingId],
   );
 }
+
+// Promote an account to admin (role is only settable via the admin API otherwise).
+export async function setAccountRole(accountId: string, role: 'user' | 'admin'): Promise<void> {
+  await getPool().query('UPDATE accounts SET role = $2 WHERE id = $1', [accountId, role]);
+}
+
+// Move a guest session's expiry. `signedCookie` is the raw _vernal_sid cookie
+// value ("<token>.<sig>", possibly URL-encoded). `interval` is a Postgres
+// interval literal evaluated against now(), e.g. '4 days 23 hours'.
+export async function setGuestExpiry(signedCookie: string, interval: string): Promise<void> {
+  const token = decodeURIComponent(signedCookie).split('.')[0];
+  const result = await getPool().query(
+    `UPDATE guest_sessions SET expires_at = now() + $2::interval WHERE token = $1`,
+    [token, interval],
+  );
+  if (result.rowCount !== 1) throw new Error('setGuestExpiry: guest session not found');
+}
+
+// The moderation queue row for a seed that has been submitted as a contribution.
+export async function getModerationItemId(seedId: number): Promise<number> {
+  const result = await getPool().query<{ id: number }>(
+    `SELECT id FROM moderation_items WHERE seed_id = $1 AND type = 'new_seed' ORDER BY id DESC LIMIT 1`,
+    [seedId],
+  );
+  if (result.rows.length === 0) throw new Error(`No moderation item for seed ${seedId}`);
+  return result.rows[0].id;
+}

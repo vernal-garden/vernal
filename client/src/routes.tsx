@@ -23,6 +23,7 @@ import WeatherPage from './pages/WeatherPage';
 import AmendmentPage from './pages/AmendmentPage';
 import AccountPage from './pages/AccountPage';
 import EmailConfirmPage from './pages/EmailConfirmPage';
+import AboutPage from './pages/AboutPage';
 import NotFoundPage from './pages/NotFoundPage';
 
 const withErrorBoundary = (route: RouteObject): RouteObject => ({ ...route, errorElement: <RouteErrorBoundary /> });
@@ -58,6 +59,14 @@ const shellRoutes: RouteObject[] = [
     element: (
       <ProtectedRoute>
         <PlantingGuidePage />
+      </ProtectedRoute>
+    ),
+  },
+  {
+    path: '/about',
+    element: (
+      <ProtectedRoute>
+        <AboutPage />
       </ProtectedRoute>
     ),
   },

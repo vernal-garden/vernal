@@ -135,6 +135,14 @@ export async function purgeExpiredGuests(): Promise<{ affected: number }> {
   return { affected: (guestsResult.rowCount ?? 0) + (tokensResult.rowCount ?? 0) };
 }
 
+// Read notifications are kept 90 days; unread ones are never purged.
+export async function purgeReadNotifications(): Promise<{ affected: number }> {
+  const result = await db.query(
+    `DELETE FROM notifications WHERE read_at IS NOT NULL AND read_at < NOW() - INTERVAL '90 days'`,
+  );
+  return { affected: result.rowCount ?? 0 };
+}
+
 export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
   const result = await db.query(
     `DELETE FROM accounts WHERE deletion_scheduled_at + INTERVAL '30 days' < NOW()`,
@@ -203,6 +211,7 @@ export async function runNightlyJob(): Promise<void> {
     ['deriveGrowth', deriveGrowth],
     ['refreshGardenBadges', refreshGardenBadges],
     ['purgeExpiredGuests', purgeExpiredGuests],
+    ['purgeReadNotifications', purgeReadNotifications],
     ['purgeScheduledAccounts', purgeScheduledAccounts],
     ['checkSubscriptionDowngrades', checkSubscriptionDowngrades],
     ['purgeExpiredExports', purgeExpiredExports],

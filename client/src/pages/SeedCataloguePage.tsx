@@ -84,12 +84,18 @@ export default function SeedCataloguePage() {
   // ?open=seed:<id> | cambium:<id> — open that seed's overlay once the first
   // page has loaded, then drop the param. Unknown ids are ignored.
   const [searchParams, setSearchParams] = useSearchParams();
-  const openHandled = useRef(false);
+  const handledOpen = useRef<string | null>(null);
   useEffect(() => {
-    if (openHandled.current || loading) return;
-    openHandled.current = true;
+    if (loading) return;
     const param = searchParams.get('open');
-    if (param === null) return;
+    // Forget the last handled link once the param is gone, so the same (or a
+    // new) ?open= can fire again while the page stays mounted.
+    if (param === null) {
+      handledOpen.current = null;
+      return;
+    }
+    if (handledOpen.current === param) return;
+    handledOpen.current = param;
     const next = new URLSearchParams(searchParams);
     next.delete('open');
     setSearchParams(next, { replace: true });

@@ -1,5 +1,6 @@
 import { Link, matchPath, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import NotificationBell from '../NotificationBell';
 import { BackIcon } from './icons';
 
 // Height of the bar itself, excluding the top safe-area inset.
@@ -20,6 +21,7 @@ export const ROUTE_TITLES: Record<string, string> = {
   '/weather': 'Weather',
   '/harvest': 'Harvest',
   '/account': 'Account',
+  '/about': 'About',
   [SOIL_PATTERN]: 'Soil',
   [AMENDMENTS_PATTERN]: 'Amendments',
   [HARVEST_DETAIL_PATTERN]: 'Harvest',
@@ -61,26 +63,30 @@ export default function MobileTopBar() {
 
   let right;
   if (state.kind === 'loading') {
-    right = <div aria-hidden="true" style={SQUARE_44} />;
+    // Same footprint as bell + avatar so the title doesn't shift when auth resolves.
+    right = <div aria-hidden="true" style={{ ...SQUARE_44, width: 44 * 2 + 8 }} />;
   } else if (account) {
     const initial = (account.email ?? '?').charAt(0).toUpperCase();
     right = (
-      <Link
-        to="/account"
-        aria-label="Account"
-        style={{
-          ...SQUARE_44,
-          borderRadius: 'var(--r-full)',
-          background: 'var(--c-primary-subtle)',
-          color: 'var(--c-primary-dark)',
-          fontFamily: 'var(--font-ui)',
-          fontSize: 16,
-          fontWeight: 600,
-          textDecoration: 'none',
-        }}
-      >
-        {initial}
-      </Link>
+      <>
+        <NotificationBell />
+        <Link
+          to="/account"
+          aria-label="Account"
+          style={{
+            ...SQUARE_44,
+            borderRadius: 'var(--r-full)',
+            background: 'var(--c-primary-subtle)',
+            color: 'var(--c-primary-dark)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 16,
+            fontWeight: 600,
+            textDecoration: 'none',
+          }}
+        >
+          {initial}
+        </Link>
+      </>
     );
   } else {
     right = (

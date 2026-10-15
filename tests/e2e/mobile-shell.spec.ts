@@ -116,7 +116,17 @@ test.describe('signed in', () => {
     await expectTouchTargets(topBar(page));
   });
 
-  test('canvas toolbar sits above the tab bar', async ({ page }) => {
+  test('top bar shows the notification bell and every control stays 44x44', async ({ page }) => {
+    await page.goto('/gardens');
+    const bell = topBar(page).getByTestId('notification-bell');
+    await expect(bell).toBeVisible();
+    await expectTouchTargets(topBar(page));
+    const box = await bell.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+  });
+
+  test('canvas toolbar sits above the tab bar',async ({ page }) => {
     await page.goto('/');
     const zoomIn = page.getByRole('button', { name: 'Zoom in' });
     await expect(zoomIn).toBeVisible();
