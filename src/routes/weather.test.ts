@@ -166,15 +166,100 @@ describe('access control', () => {
     expect(res.status).toBe(401);
   });
 
-  it('free account → 402 upgrade_required', async () => {
+  // Read-only paid data: listing connections is open to free accounts;
+  // live data and creation stay Supporter-only (see the free-account block below).
+  it('free account → 200 on GET /connections', async () => {
     const res = await freeAgent.get('/api/weather/connections');
-    expect(res.status).toBe(402);
-    expect(res.body.upgrade_required).toBe(true);
+    expect(res.status).toBe(200);
   });
 
   it('supporter passes', async () => {
     const res = await supporterAgent.get('/api/weather/connections');
     expect(res.status).toBe(200);
+  });
+});
+
+// ── Free account: read-only paid data ────────────────────────────────────────
+
+describe('free account — view and delete own connections', () => {
+  let freeAccountId: number;
+
+  // One primary per account (unique index), so only the first insert is primary.
+  async function insertConnection(accountId: number, stationId: string): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO weather_connections (account_id, provider, credentials, station_id, is_primary)
+       VALUES ($1, 'pws_tempest', $2, $3,
+               NOT EXISTS (SELECT 1 FROM weather_connections WHERE account_id = $1 AND is_primary))
+       RETURNING id`,
+      [accountId, JSON.stringify({ enc: 'not-decrypted-by-these-routes' }), stationId],
+    );
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    const { rows } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1',
+      ['weather-free@example.com'],
+    );
+    freeAccountId = rows[0].id;
+  });
+
+  it('GET /connections → 200 listing the connection, without credentials', async () => {
+    const id = await insertConnection(freeAccountId, 'lapsed-station-1');
+    const res = await freeAgent.get('/api/weather/connections');
+    expect(res.status).toBe(200);
+    const conn = res.body.data.find((c: { id: unknown }) => String(c.id) === String(id));
+    expect(conn).toBeDefined();
+    expect(conn.stationId).toBe('lapsed-station-1');
+    expect(conn).not.toHaveProperty('credentials');
+  });
+
+  it('DELETE /connections/:id → 204 and the row is gone', async () => {
+    const id = await insertConnection(freeAccountId, 'lapsed-station-2');
+    const res = await freeAgent.delete(`/api/weather/connections/${id}`);
+    expect(res.status).toBe(204);
+    const { rowCount } = await pool.query('SELECT 1 FROM weather_connections WHERE id = $1', [id]);
+    expect(rowCount).toBe(0);
+  });
+
+  it('402 upgrade_required on GET /current, GET /history, POST /connections, POST /test-connection', async () => {
+    const fetchMock = routedFetchMock({ tempest: tempestFetchResponse() });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const routes: Array<[string, () => request.Test]> = [
+      ['GET /current', () => freeAgent.get('/api/weather/current')],
+      ['GET /history', () => freeAgent.get('/api/weather/history')],
+      [
+        'POST /connections',
+        () =>
+          freeAgent.post('/api/weather/connections').send({
+            provider: 'pws_tempest',
+            credentials: { accessToken: 'tok' },
+            stationId: 'new-station',
+          }),
+      ],
+      [
+        'POST /test-connection',
+        () =>
+          freeAgent.post('/api/weather/test-connection').send({
+            provider: 'pws_tempest',
+            credentials: { accessToken: 'tok' },
+            stationId: 'new-station',
+          }),
+      ],
+    ];
+    for (const [label, send] of routes) {
+      const r = await send();
+      expect(r.status, label).toBe(402);
+      expect(r.body.upgrade_required, label).toBe(true);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const { rowCount } = await pool.query(
+      'SELECT 1 FROM weather_connections WHERE account_id = $1 AND station_id = $2',
+      [freeAccountId, 'new-station'],
+    );
+    expect(rowCount).toBe(0);
   });
 });
 

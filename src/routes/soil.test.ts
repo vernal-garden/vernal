@@ -100,10 +100,11 @@ describe('guest → 401', () => {
 // ── Free account guard ───────────────────────────────────────────────────────
 
 describe('free account → 402', () => {
-  it('GET returns 402 with upgrade_required', async () => {
+  // Read-only paid data: free accounts may GET (and DELETE) their own records,
+  // so a free account on someone else's garden now gets the ownership 404.
+  it('GET on another account\'s garden returns 404 (not 402)', async () => {
     const res = await freeAgent.get(`/api/gardens/${gardenId}/soil-readings`);
-    expect(res.status).toBe(402);
-    expect(res.body.upgrade_required).toBe(true);
+    expect(res.status).toBe(404);
   });
 
   it('POST returns 402', async () => {
@@ -120,10 +121,86 @@ describe('free account → 402', () => {
     expect(res.body.upgrade_required).toBe(true);
   });
 
-  it('DELETE returns 402', async () => {
+  it('DELETE of a reading it does not own returns 404 (not 402)', async () => {
     const res = await freeAgent.delete('/api/soil-readings/1');
+    expect(res.status).toBe(404);
+  });
+});
+
+// ── Free account: read-only paid data ────────────────────────────────────────
+
+describe('free account — view and delete own soil readings', () => {
+  let ownerAgent: ReturnType<typeof request.agent>;
+  let ownerGardenId: string;
+  let ownerBedId: string;
+  let ownerAccountId: number;
+
+  async function insertReading(accountId: number, gId: string, bId: string, testDate: string) {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO soil_readings (user_id, garden_id, bed_id, test_date, ph)
+       VALUES ($1, $2, $3, $4, 6.4)
+       RETURNING id::text`,
+      [accountId, gId, bId, testDate],
+    );
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    ownerAccountId = await createUser('soil-lapsed@example.com', 'free');
+    ownerAgent = await loginAgent('soil-lapsed@example.com');
+    ownerGardenId = await createGarden(ownerAgent);
+    ownerBedId = await createBed(ownerGardenId);
+  });
+
+  it('GET list → 200 and includes the reading', async () => {
+    const id = await insertReading(ownerAccountId, ownerGardenId, ownerBedId, '2026-05-01');
+    const res = await ownerAgent.get(`/api/gardens/${ownerGardenId}/soil-readings`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((r: { id: string }) => r.id)).toContain(id);
+  });
+
+  it('DELETE own reading → 204 and the row is gone', async () => {
+    const id = await insertReading(ownerAccountId, ownerGardenId, ownerBedId, '2026-05-02');
+    const res = await ownerAgent.delete(`/api/soil-readings/${id}`);
+    expect(res.status).toBe(204);
+    const { rowCount } = await pool.query('SELECT 1 FROM soil_readings WHERE id = $1', [id]);
+    expect(rowCount).toBe(0);
+  });
+
+  it('POST create → 402 upgrade_required', async () => {
+    const res = await ownerAgent.post(`/api/gardens/${ownerGardenId}/soil-readings`).send({
+      bedId: ownerBedId, testDate: '2026-05-03', ph: 6.5,
+    });
     expect(res.status).toBe(402);
     expect(res.body.upgrade_required).toBe(true);
+  });
+
+  it('PATCH own reading → 402 upgrade_required, row unchanged', async () => {
+    const id = await insertReading(ownerAccountId, ownerGardenId, ownerBedId, '2026-05-04');
+    const res = await ownerAgent.patch(`/api/soil-readings/${id}`).send({ ph: 7.2 });
+    expect(res.status).toBe(402);
+    expect(res.body.upgrade_required).toBe(true);
+    const { rows } = await pool.query<{ ph: string }>('SELECT ph FROM soil_readings WHERE id = $1', [id]);
+    expect(Number(rows[0].ph)).toBe(6.4);
+  });
+
+  it('guest → 401 on GET list', async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    const res = await guest.get(`/api/gardens/${ownerGardenId}/soil-readings`);
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE another account\'s reading → 404 and the row survives', async () => {
+    const { rows } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1',
+      ['soil-other@example.com'],
+    );
+    const id = await insertReading(rows[0].id, otherGardenId, otherBedId, '2026-05-05');
+    const res = await ownerAgent.delete(`/api/soil-readings/${id}`);
+    expect(res.status).toBe(404);
+    const { rowCount } = await pool.query('SELECT 1 FROM soil_readings WHERE id = $1', [id]);
+    expect(rowCount).toBe(1);
   });
 });
 

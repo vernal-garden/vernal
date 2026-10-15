@@ -5,6 +5,7 @@ import { get, post, patch, del, ApiError } from '../lib/api';
 import { track } from '../lib/track';
 import { todayPacific } from '../lib/guideDates';
 import UpgradePrompt from '../components/UpgradePrompt';
+import UpgradeBanner from '../components/UpgradeBanner';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -154,7 +155,8 @@ function ReadingRow({
 }: {
   reading: SoilReading;
   amendments: AmendmentLog[];
-  onEdit: (r: SoilReading) => void;
+  // Omitted for read-only (free account) views: no Edit button.
+  onEdit?: (r: SoilReading) => void;
   onDelete: (r: SoilReading) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -228,15 +230,17 @@ function ReadingRow({
             </div>
           )}
 
-          <button
-            onClick={(e) => { e.stopPropagation(); onEdit(reading); }}
-            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px' }}
-          >
-            Edit
-          </button>
+          {onEdit && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(reading); }}
+              style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', marginRight: 'var(--sp-2)' }}
+            >
+              Edit
+            </button>
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(reading); }}
-            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', marginLeft: 'var(--sp-2)', color: 'var(--c-danger)' }}
+            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', color: 'var(--c-danger)' }}
           >
             Delete
           </button>
@@ -325,7 +329,7 @@ function PerBedView({
   readings: SoilReading[];
   amendments: AmendmentLog[];
   onBack: () => void;
-  onEdit: (r: SoilReading) => void;
+  onEdit?: (r: SoilReading) => void;
   onDelete: (r: SoilReading) => void;
 }) {
   // Amendments for this specific bed
@@ -532,7 +536,7 @@ type ConfirmState =
 
 export default function SoilPage() {
   const { gardenId } = useParams<{ gardenId: string }>();
-  const { account }  = useAuth();
+  const { account, isAccount } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [garden,     setGarden]     = useState<GardenDetail | null>(null);
@@ -549,9 +553,13 @@ export default function SoilPage() {
   useEffect(() => { bedParamRef.current = searchParams.get('bed'); }, [searchParams]);
 
   const isSupporter = account?.subscriptionTier === 'supporter';
+  // Free accounts can view and delete readings logged while a Supporter, but
+  // not add or edit. Guests never fetch.
+  const readOnly = isAccount && !isSupporter;
+  const canLoad  = isSupporter || readOnly;
 
   const load = useCallback(async () => {
-    if (!gardenId) return;
+    if (!gardenId || !canLoad) return;
     setLoading(true);
     try {
       const [g, r, a] = await Promise.all([
@@ -569,7 +577,7 @@ export default function SoilPage() {
     } finally {
       setLoading(false);
     }
-  }, [gardenId]);
+  }, [gardenId, canLoad]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -595,13 +603,13 @@ export default function SoilPage() {
     }
   }
 
-  if (!isSupporter) {
-    return (
-      <div style={{ padding: 'var(--sp-6)' }}>
-        <UpgradePrompt gateKey="soil" />
-      </div>
-    );
-  }
+  const upgradePrompt = (
+    <div style={{ padding: 'var(--sp-6)' }}>
+      <UpgradePrompt gateKey="soil" />
+    </div>
+  );
+
+  if (!canLoad) return upgradePrompt;
 
   if (loading) {
     return (
@@ -610,6 +618,9 @@ export default function SoilPage() {
       </div>
     );
   }
+
+  // A free account with no paid-era readings sees the plain gate.
+  if (readOnly && readings.length === 0) return upgradePrompt;
 
   const beds = garden?.beds ?? [];
 
@@ -631,13 +642,17 @@ export default function SoilPage() {
         <h1 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 24, color: 'var(--c-text)' }}>
           Soil Readings
         </h1>
-        <button
-          onClick={() => setForm({ open: true, mode: 'add' })}
-          style={saveSt}
-        >
-          + Log reading
-        </button>
+        {!readOnly && (
+          <button
+            onClick={() => setForm({ open: true, mode: 'add' })}
+            style={saveSt}
+          >
+            + Log reading
+          </button>
+        )}
       </div>
+
+      {readOnly && <UpgradeBanner gateKey="soil" />}
 
       {/* All-beds landing */}
       {view.kind === 'all-beds' && (
@@ -655,7 +670,7 @@ export default function SoilPage() {
           readings={byBedId[currentBed.id] ?? []}
           amendments={amendments}
           onBack={backToAllBeds}
-          onEdit={(r) => setForm({ open: true, mode: 'edit', reading: r })}
+          onEdit={readOnly ? undefined : (r) => setForm({ open: true, mode: 'edit', reading: r })}
           onDelete={(r) => setConfirm({ open: true, entry: r })}
         />
       )}

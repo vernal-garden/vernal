@@ -7,8 +7,8 @@ import { invalidateMetrics } from '../lib/metricsCache';
 export const amendmentsNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/amendments
 export const amendmentsFlatRouter   = Router({ mergeParams: true }); // /api/amendments/:id
 
-amendmentsNestedRouter.use(requireAuth, requireSupporter);
-amendmentsFlatRouter.use(requireAuth, requireSupporter);
+amendmentsNestedRouter.use(requireAuth);
+amendmentsFlatRouter.use(requireAuth);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -114,7 +114,7 @@ amendmentsNestedRouter.get('/', async (req: Request, res: Response): Promise<voi
 
 // ── POST /api/gardens/:gardenId/amendments ────────────────────────────────────
 
-amendmentsNestedRouter.post('/', async (req: Request, res: Response): Promise<void> => {
+amendmentsNestedRouter.post('/', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
@@ -221,7 +221,7 @@ amendmentsNestedRouter.post('/', async (req: Request, res: Response): Promise<vo
 
 // ── PATCH /api/amendments/:id ─────────────────────────────────────────────────
 
-amendmentsFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<void> => {
+amendmentsFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId   = req.session!.account!.id;
   const amendmentId = req.params.id as string;
 

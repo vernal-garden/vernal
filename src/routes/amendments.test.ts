@@ -119,10 +119,11 @@ describe('guest → 401', () => {
 // ── Free account guard ────────────────────────────────────────────────────────
 
 describe('free account → 402', () => {
-  it('GET returns 402 with upgrade_required', async () => {
+  // Read-only paid data: free accounts may GET (and DELETE) their own records,
+  // so a free account on someone else's garden now gets the ownership 404.
+  it('GET on another account\'s garden returns 404 (not 402)', async () => {
     const res = await freeAgent.get(`/api/gardens/${gardenId}/amendments`);
-    expect(res.status).toBe(402);
-    expect(res.body.upgrade_required).toBe(true);
+    expect(res.status).toBe(404);
   });
 
   it('POST returns 402', async () => {
@@ -139,10 +140,99 @@ describe('free account → 402', () => {
     expect(res.body.upgrade_required).toBe(true);
   });
 
-  it('DELETE returns 402', async () => {
+  it('DELETE of an amendment it does not own returns 404 (not 402)', async () => {
     const res = await freeAgent.delete('/api/amendments/1');
+    expect(res.status).toBe(404);
+  });
+});
+
+// ── Free account: read-only paid data ─────────────────────────────────────────
+
+describe('free account — view and delete own amendments', () => {
+  let ownerAgent:     ReturnType<typeof request.agent>;
+  let ownerAccountId: number;
+  let ownerGardenId:  string;
+  let ownerBedId:     string;
+
+  async function insertLog(accountId: number, gId: string, bId: string, productName: string) {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO amendment_logs (user_id, garden_id, application_date, product_name, amendment_type)
+       VALUES ($1, $2, '2026-05-01', $3, 'lime')
+       RETURNING id::text`,
+      [accountId, gId, productName],
+    );
+    await pool.query(
+      'INSERT INTO amendment_log_beds (amendment_log_id, bed_id) VALUES ($1, $2)',
+      [rows[0].id, bId],
+    );
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    ownerAccountId = await createUser('amend-lapsed@example.com', 'free');
+    ownerAgent     = await loginAgent('amend-lapsed@example.com');
+    ownerGardenId  = await createGarden(ownerAgent);
+    ownerBedId     = await createBed(ownerGardenId, 'Lapsed Bed');
+  });
+
+  it('GET list → 200 and includes the amendment', async () => {
+    const id = await insertLog(ownerAccountId, ownerGardenId, ownerBedId, 'Old Lime');
+    const res = await ownerAgent.get(`/api/gardens/${ownerGardenId}/amendments`);
+    expect(res.status).toBe(200);
+    const log = res.body.data.find((l: { id: string }) => l.id === id);
+    expect(log).toBeDefined();
+    expect(log.bedIds).toEqual([ownerBedId]);
+  });
+
+  it('DELETE own amendment → 204 and the row is gone', async () => {
+    const id = await insertLog(ownerAccountId, ownerGardenId, ownerBedId, 'To Delete');
+    const res = await ownerAgent.delete(`/api/amendments/${id}`);
+    expect(res.status).toBe(204);
+    const { rowCount } = await pool.query('SELECT 1 FROM amendment_logs WHERE id = $1', [id]);
+    expect(rowCount).toBe(0);
+  });
+
+  it('POST create → 402 upgrade_required', async () => {
+    const res = await ownerAgent.post(`/api/gardens/${ownerGardenId}/amendments`).send({
+      bedIds: [ownerBedId], applicationDate: '2026-05-02', productName: 'New', amendmentType: 'lime',
+    });
     expect(res.status).toBe(402);
     expect(res.body.upgrade_required).toBe(true);
+  });
+
+  it('PATCH own amendment → 402 upgrade_required, row unchanged', async () => {
+    const id = await insertLog(ownerAccountId, ownerGardenId, ownerBedId, 'Keep Me');
+    const res = await ownerAgent.patch(`/api/amendments/${id}`).send({ productName: 'Changed' });
+    expect(res.status).toBe(402);
+    expect(res.body.upgrade_required).toBe(true);
+    const { rows } = await pool.query<{ product_name: string }>(
+      'SELECT product_name FROM amendment_logs WHERE id = $1',
+      [id],
+    );
+    expect(rows[0].product_name).toBe('Keep Me');
+  });
+
+  it('guest → 401 on GET list', async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    const res = await guest.get(`/api/gardens/${ownerGardenId}/amendments`);
+    expect(res.status).toBe(401);
+  });
+
+  it('DELETE another account\'s amendment → 404 and the row survives', async () => {
+    const { rows } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1',
+      ['amend-other@example.com'],
+    );
+    const { rows: beds } = await pool.query<{ id: number }>(
+      'SELECT id FROM beds WHERE garden_id = $1 LIMIT 1',
+      [otherGardenId],
+    );
+    const id = await insertLog(rows[0].id, otherGardenId, String(beds[0].id), 'Theirs');
+    const res = await ownerAgent.delete(`/api/amendments/${id}`);
+    expect(res.status).toBe(404);
+    const { rowCount } = await pool.query('SELECT 1 FROM amendment_logs WHERE id = $1', [id]);
+    expect(rowCount).toBe(1);
   });
 });
 
