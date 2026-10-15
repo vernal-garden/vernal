@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { Pool } from 'pg';
 
-vi.mock('../lib/r2', () => ({
+vi.mock('../lib/r2', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2')>()),
   uploadToR2: vi.fn(),
   getPresignedDownloadUrl: vi.fn(),
   deleteFromR2: vi.fn(),
@@ -564,7 +565,91 @@ describe('refreshGardenBadges', () => {
 });
 
 describe('purgeExpiredGuests', () => {
-  beforeEach(resetDb);
+  const BASE = 'https://cdn.example.com';
+  let savedBaseUrl: string | undefined;
+
+  beforeEach(async () => {
+    await resetDb();
+    deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
+    savedBaseUrl = process.env.R2_PUBLIC_BASE_URL;
+    process.env.R2_PUBLIC_BASE_URL = BASE;
+  });
+
+  afterEach(() => {
+    if (savedBaseUrl === undefined) delete process.env.R2_PUBLIC_BASE_URL;
+    else process.env.R2_PUBLIC_BASE_URL = savedBaseUrl;
+  });
+
+  async function createGuestWithThumbnail(
+    token: string,
+    opts: { migratedToAccountId?: number } = {},
+  ): Promise<{ sessionId: string; gardenId: number }> {
+    const { rows: sessions } = await pool.query<{ id: string }>(
+      `INSERT INTO guest_sessions (token, expires_at, migrated_at, account_id)
+       VALUES ($1, NOW() - INTERVAL '1 day',
+               CASE WHEN $2::int IS NULL THEN NULL ELSE NOW() END, $2::int)
+       RETURNING id`,
+      [token, opts.migratedToAccountId ?? null],
+    );
+    const sessionId = sessions[0].id;
+    const { rows: gardens } = await pool.query<{ id: number }>(
+      `INSERT INTO gardens (guest_session_id, name, style, zone)
+       VALUES ($1, 'Guest garden', 'grid', '7a') RETURNING id`,
+      [sessionId],
+    );
+    const gardenId = gardens[0].id;
+    await pool.query(`UPDATE gardens SET thumbnail_url = $1 WHERE id = $2`, [
+      `${BASE}/garden-thumbnails/${gardenId}/x.png`,
+      gardenId,
+    ]);
+    return { sessionId, gardenId };
+  }
+
+  async function sessionIds(): Promise<string[]> {
+    const { rows } = await pool.query<{ id: string }>('SELECT id FROM guest_sessions');
+    return rows.map((r) => r.id);
+  }
+
+  async function gardenIds(): Promise<number[]> {
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM gardens');
+    return rows.map((r) => r.id);
+  }
+
+  it('deletes the thumbnail of an expired guest before the session', async () => {
+    const { sessionId, gardenId } = await createGuestWithThumbnail('nightly-guest-thumb');
+
+    const { affected } = await purgeExpiredGuests();
+
+    expect(affected).toBe(1);
+    expect(deleteFromR2Mock).toHaveBeenCalledTimes(1);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(`garden-thumbnails/${gardenId}/x.png`);
+    expect(await sessionIds()).not.toContain(sessionId);
+    expect(await gardenIds()).not.toContain(gardenId);
+  });
+
+  it('keeps an expired guest whose thumbnail delete fails', async () => {
+    const { sessionId, gardenId } = await createGuestWithThumbnail('nightly-guest-fail');
+    deleteFromR2Mock.mockRejectedValueOnce(new Error('R2 down'));
+
+    const { affected } = await purgeExpiredGuests();
+
+    expect(affected).toBe(0);
+    expect(await sessionIds()).toContain(sessionId);
+    expect(await gardenIds()).toContain(gardenId);
+  });
+
+  it('does not touch a migrated guest session or its thumbnail', async () => {
+    const ownerId = await createAccount();
+    const { sessionId, gardenId } = await createGuestWithThumbnail('nightly-guest-migrated', {
+      migratedToAccountId: ownerId,
+    });
+
+    await purgeExpiredGuests();
+
+    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+    expect(await sessionIds()).toContain(sessionId);
+    expect(await gardenIds()).toContain(gardenId);
+  });
 
   it('deletes expired non-migrated sessions but keeps expired migrated sessions', async () => {
     const ownerId = await createAccount();
@@ -619,7 +704,53 @@ describe('purgeReadNotifications', () => {
 });
 
 describe('purgeScheduledAccounts', () => {
-  beforeEach(resetDb);
+  const BASE = 'https://cdn.example.com';
+  let savedBaseUrl: string | undefined;
+
+  beforeEach(async () => {
+    await resetDb();
+    deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
+    exportsBucketMock.mockReset().mockReturnValue('test-exports');
+    savedBaseUrl = process.env.R2_PUBLIC_BASE_URL;
+    process.env.R2_PUBLIC_BASE_URL = BASE;
+  });
+
+  afterEach(() => {
+    if (savedBaseUrl === undefined) delete process.env.R2_PUBLIC_BASE_URL;
+    else process.env.R2_PUBLIC_BASE_URL = savedBaseUrl;
+  });
+
+  async function createSeedPhoto(seedId: number, key: string): Promise<void> {
+    await pool.query(
+      `INSERT INTO seed_photos (seed_id, storage_url, r2_key) VALUES ($1, $2, $3)`,
+      [seedId, `${BASE}/${key}`, key],
+    );
+  }
+
+  async function createHarvestEntry(gardenId: number, keys: string[]): Promise<void> {
+    const photos = keys.map((key) => ({ key, url: `${BASE}/${key}` }));
+    await pool.query(`INSERT INTO harvest_entries (garden_id, photos) VALUES ($1, $2::jsonb)`, [
+      gardenId,
+      JSON.stringify(photos),
+    ]);
+  }
+
+  async function setThumbnail(gardenId: number, url: string): Promise<void> {
+    await pool.query(`UPDATE gardens SET thumbnail_url = $1 WHERE id = $2`, [url, gardenId]);
+  }
+
+  async function createExportJob(accountId: number, status = 'complete'): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO data_export_jobs (account_id, status) VALUES ($1, $2) RETURNING id`,
+      [accountId, status],
+    );
+    return rows[0].id;
+  }
+
+  async function accountIds(): Promise<number[]> {
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM accounts');
+    return rows.map((r) => r.id);
+  }
 
   it('deletes accounts 31 days past their scheduled deletion but keeps ones 29 days past', async () => {
     const idPastGrace = await createAccount({ deletionScheduledAtDaysAgo: 31 });
@@ -627,10 +758,99 @@ describe('purgeScheduledAccounts', () => {
 
     await purgeScheduledAccounts();
 
-    const { rows } = await pool.query<{ id: number }>('SELECT id FROM accounts');
-    const ids = rows.map((r) => r.id);
+    const ids = await accountIds();
     expect(ids).not.toContain(idPastGrace);
     expect(ids).toContain(idWithinGrace);
+  });
+
+  it('deletes seed photos, owned thumbnails and complete exports before the account', async () => {
+    const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const seedId = await createPersonalSeed(accountId, 60);
+    await createSeedPhoto(seedId, 'seed-photos/a.jpg');
+    await createSeedPhoto(seedId, 'seed-photos/b.jpg');
+    const gardenId = await createGarden(accountId);
+    await setThumbnail(gardenId, `${BASE}/garden-thumbnails/${gardenId}/x.png`);
+    const jobId = await createExportJob(accountId);
+    await createExportJob(accountId, 'failed');
+
+    const { affected } = await purgeScheduledAccounts();
+
+    expect(affected).toBe(1);
+    expect(deleteFromR2Mock).toHaveBeenCalledTimes(4);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith('seed-photos/a.jpg', undefined);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith('seed-photos/b.jpg', undefined);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(
+      `garden-thumbnails/${gardenId}/x.png`,
+      undefined,
+    );
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(
+      `exports/${accountId}/${jobId}.zip`,
+      'test-exports',
+    );
+    expect(await accountIds()).not.toContain(accountId);
+  });
+
+  it('deletes every harvest photo in the account gardens', async () => {
+    const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const gardenId = await createGarden(accountId);
+    await createHarvestEntry(gardenId, ['harvest-photos/1.jpg', 'harvest-photos/2.jpg']);
+
+    const { affected } = await purgeScheduledAccounts();
+
+    expect(affected).toBe(1);
+    expect(deleteFromR2Mock).toHaveBeenCalledTimes(2);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith('harvest-photos/1.jpg', undefined);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith('harvest-photos/2.jpg', undefined);
+    expect(exportsBucketMock).not.toHaveBeenCalled();
+    expect(await accountIds()).not.toContain(accountId);
+  });
+
+  it('does not delete a thumbnail outside the garden own prefix', async () => {
+    const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const gardenId = await createGarden(accountId);
+    await setThumbnail(gardenId, `${BASE}/garden-thumbnails/${gardenId + 1000}/x.png`);
+
+    const { affected } = await purgeScheduledAccounts();
+
+    expect(affected).toBe(1);
+    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+    expect(await accountIds()).not.toContain(accountId);
+  });
+
+  it('keeps an account whose object delete fails and still purges others', async () => {
+    const failingId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const seedId = await createPersonalSeed(failingId, 60);
+    await createSeedPhoto(seedId, 'seed-photos/ok.jpg');
+    await createSeedPhoto(seedId, 'seed-photos/boom.jpg');
+    const emptyId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    deleteFromR2Mock.mockImplementation(async (key: string) => {
+      if (key === 'seed-photos/boom.jpg') throw new Error('R2 unavailable');
+    });
+
+    const { affected } = await purgeScheduledAccounts();
+
+    expect(affected).toBe(1);
+    const ids = await accountIds();
+    expect(ids).toContain(failingId);
+    expect(ids).not.toContain(emptyId);
+    const { rows } = await pool.query<{ r2_key: string }>(
+      'SELECT r2_key FROM seed_photos ORDER BY r2_key',
+    );
+    expect(rows.map((r) => r.r2_key)).toEqual(['seed-photos/boom.jpg', 'seed-photos/ok.jpg']);
+  });
+
+  it('does not touch the files of an account still within its grace period', async () => {
+    const accountId = await createAccount({ deletionScheduledAtDaysAgo: 29 });
+    const seedId = await createPersonalSeed(accountId, 60);
+    await createSeedPhoto(seedId, 'seed-photos/keep.jpg');
+    const gardenId = await createGarden(accountId);
+    await createHarvestEntry(gardenId, ['harvest-photos/keep.jpg']);
+
+    const { affected } = await purgeScheduledAccounts();
+
+    expect(affected).toBe(0);
+    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+    expect(await accountIds()).toContain(accountId);
   });
 });
 

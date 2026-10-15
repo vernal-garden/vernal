@@ -1,6 +1,6 @@
 import { db } from '../lib/db';
 import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
-import { deleteFromR2, exportsBucket } from '../lib/r2';
+import { deleteFromR2, exportsBucket, ownedThumbnailKey } from '../lib/r2';
 import { logger } from '../lib/logger';
 import { exportKey } from '../lib/exportWorker';
 import { harvestableCountSql } from '../lib/gardenBadges';
@@ -125,14 +125,66 @@ export async function refreshGardenBadges(): Promise<{ affected: number }> {
   return { affected: result.rowCount ?? 0 };
 }
 
+// Deletes expired, unmigrated guest sessions after deleting the garden
+// thumbnails they saved to R2 (guests can't upload anything else). If a
+// thumbnail delete fails the session row is kept: its cascade would delete the
+// gardens that record the keys, so tomorrow's run could never find them again.
+// Also deletes expired password reset tokens.
 export async function purgeExpiredGuests(): Promise<{ affected: number }> {
-  const guestsResult = await db.query(
-    `DELETE FROM guest_sessions WHERE expires_at < NOW() AND migrated_at IS NULL`,
+  const { rows: sessions } = await db.query<{ id: string }>(
+    `SELECT id FROM guest_sessions WHERE expires_at < NOW() AND migrated_at IS NULL`,
   );
+
+  let guestsAffected = 0;
+  if (sessions.length > 0) {
+    const sessionIds = sessions.map((s) => s.id);
+    const { rows: gardens } = await db.query<{
+      id: number;
+      guest_session_id: string;
+      thumbnail_url: string | null;
+    }>(
+      `SELECT id, guest_session_id, thumbnail_url FROM gardens
+       WHERE guest_session_id = ANY($1::uuid[]) AND thumbnail_url IS NOT NULL`,
+      [sessionIds],
+    );
+    const keysBySession = new Map<string, string[]>();
+    for (const garden of gardens) {
+      const key = ownedThumbnailKey(garden.thumbnail_url, String(garden.id));
+      if (!key) continue;
+      const keys = keysBySession.get(garden.guest_session_id) ?? [];
+      keys.push(key);
+      keysBySession.set(garden.guest_session_id, keys);
+    }
+
+    const purgeable: string[] = [];
+    for (const id of sessionIds) {
+      let key: string | undefined;
+      try {
+        for (const k of keysBySession.get(id) ?? []) {
+          key = k;
+          await deleteFromR2(k);
+        }
+        purgeable.push(id);
+      } catch (err) {
+        logger.warn('Could not delete R2 object for expired guest; keeping session', {
+          sessionId: id,
+          key,
+          errMsg: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    if (purgeable.length > 0) {
+      const result = await db.query('DELETE FROM guest_sessions WHERE id = ANY($1::uuid[])', [
+        purgeable,
+      ]);
+      guestsAffected = result.rowCount ?? 0;
+    }
+  }
+
   const tokensResult = await db.query(
     `DELETE FROM password_reset_tokens WHERE expires_at < NOW()`,
   );
-  return { affected: (guestsResult.rowCount ?? 0) + (tokensResult.rowCount ?? 0) };
+  return { affected: guestsAffected + (tokensResult.rowCount ?? 0) };
 }
 
 // Read notifications are kept 90 days; unread ones are never purged.
@@ -143,10 +195,77 @@ export async function purgeReadNotifications(): Promise<{ affected: number }> {
   return { affected: result.rowCount ?? 0 };
 }
 
-export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
-  const result = await db.query(
-    `DELETE FROM accounts WHERE deletion_scheduled_at + INTERVAL '30 days' < NOW()`,
+// Every R2 object an account owns: seed photos, harvest photos and garden
+// thumbnails in the default bucket, and complete export ZIPs in the exports
+// bucket. exportsBucket() is only called when the account has such an export.
+async function accountStorageKeys(
+  accountId: number,
+): Promise<Array<{ key: string; bucket?: string }>> {
+  const { rows: photos } = await db.query<{ key: string }>(
+    `SELECT sp.r2_key AS key
+     FROM seed_photos sp
+     JOIN seeds s ON s.id = sp.seed_id
+     WHERE s.owner_id = $1
+     UNION ALL
+     SELECT jsonb_array_elements(h.photos) ->> 'key' AS key
+     FROM harvest_entries h
+     JOIN gardens g ON g.id = h.garden_id
+     WHERE g.owner_id = $1`,
+    [accountId],
   );
+  const { rows: gardens } = await db.query<{ id: number; thumbnail_url: string | null }>(
+    `SELECT id, thumbnail_url FROM gardens WHERE owner_id = $1 AND thumbnail_url IS NOT NULL`,
+    [accountId],
+  );
+  const { rows: exports } = await db.query<{ id: number }>(
+    `SELECT id FROM data_export_jobs WHERE account_id = $1 AND status = 'complete'`,
+    [accountId],
+  );
+
+  const keys: Array<{ key: string; bucket?: string }> = [];
+  for (const { key } of photos) {
+    if (key) keys.push({ key });
+  }
+  for (const garden of gardens) {
+    const key = ownedThumbnailKey(garden.thumbnail_url, String(garden.id));
+    if (key) keys.push({ key });
+  }
+  if (exports.length > 0) {
+    const bucket = exportsBucket();
+    for (const job of exports) keys.push({ key: exportKey(accountId, job.id), bucket });
+  }
+  return keys;
+}
+
+// Deletes accounts 30 days past their scheduled deletion, after deleting every
+// R2 object they own. If any object delete fails (or the exports bucket is
+// misconfigured) the account row is kept: its cascade would delete the rows
+// that record the keys, so tomorrow's run could never find them again.
+export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
+  const { rows } = await db.query<{ id: number }>(
+    `SELECT id FROM accounts WHERE deletion_scheduled_at + INTERVAL '30 days' < NOW()`,
+  );
+
+  const purgeable: number[] = [];
+  for (const { id } of rows) {
+    let key: string | undefined;
+    try {
+      for (const object of await accountStorageKeys(id)) {
+        key = object.key;
+        await deleteFromR2(object.key, object.bucket);
+      }
+      purgeable.push(id);
+    } catch (err) {
+      logger.warn('Could not delete R2 object for purged account; keeping account', {
+        accountId: id,
+        key,
+        errMsg: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (purgeable.length === 0) return { affected: 0 };
+
+  const result = await db.query('DELETE FROM accounts WHERE id = ANY($1::int[])', [purgeable]);
   return { affected: result.rowCount ?? 0 };
 }
 

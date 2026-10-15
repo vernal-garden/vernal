@@ -138,3 +138,20 @@ export async function deleteFromR2(key: string, bucket?: string): Promise<void> 
     }),
   );
 }
+
+// True for the plain Errors these helpers throw when R2 env vars are missing.
+export function isR2ConfigError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.message.startsWith('R2 not configured') || err.message.endsWith('is not set.'))
+  );
+}
+
+// The R2 key of a thumbnail this garden owns, or null for any other URL
+// (including one stored under another garden's prefix).
+export function ownedThumbnailKey(url: string | null, gardenId: string): string | null {
+  const base = process.env.R2_PUBLIC_BASE_URL?.replace(/\/$/, '');
+  if (!url || !base) return null;
+  const prefix = `${base}/garden-thumbnails/${gardenId}/`;
+  return url.startsWith(prefix) ? url.slice(base.length + 1) : null;
+}
