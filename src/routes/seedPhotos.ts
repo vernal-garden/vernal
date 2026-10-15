@@ -4,7 +4,7 @@ import { db } from '../lib/db';
 import { requireSupporter } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
-import { getPresignedUploadUrl, deleteFromR2 } from '../lib/r2';
+import { getPresignedUploadUrl, deleteFromR2, isR2ConfigError } from '../lib/r2';
 import { logger } from '../lib/logger';
 
 // Mounted by seeds.ts at /api/seeds/:id/photos, after its router.use(requireAuth).
@@ -52,14 +52,6 @@ function parseNotes(v: unknown): { notes: string | null } | { error: string } {
     return { error: `Notes must be ${MAX_NOTES_LENGTH} characters or fewer.` };
   }
   return { notes: trimmed || null };
-}
-
-// getPresignedUploadUrl throws plain Errors when R2 env vars are missing.
-function isR2ConfigError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.message.startsWith('R2 not configured') || err.message.endsWith('is not set.'))
-  );
 }
 
 function publicBaseUrl(): string | null {

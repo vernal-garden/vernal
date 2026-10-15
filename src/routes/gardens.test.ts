@@ -3,7 +3,8 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 
-vi.mock('../lib/r2', () => ({
+vi.mock('../lib/r2', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2')>()),
   uploadToR2: vi.fn(async (key: string) => `${process.env.R2_PUBLIC_BASE_URL}/${key}`),
   deleteFromR2: vi.fn(async () => {}),
 }));

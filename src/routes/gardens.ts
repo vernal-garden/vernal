@@ -5,7 +5,7 @@ import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
 import { currentSeason } from '../lib/season';
-import { uploadToR2, deleteFromR2 } from '../lib/r2';
+import { uploadToR2, deleteFromR2, isR2ConfigError, ownedThumbnailKey } from '../lib/r2';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -107,23 +107,6 @@ function formatBed(row: BedRow) {
 // ── Thumbnail helpers ─────────────────────────────────────────────────────────
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-// uploadToR2 throws plain Errors when R2 env vars are missing.
-function isR2ConfigError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.message.startsWith('R2 not configured') || err.message.endsWith('is not set.'))
-  );
-}
-
-// The R2 key of a thumbnail this garden owns, or null for any other URL
-// (including one stored under another garden's prefix).
-function ownedThumbnailKey(url: string | null, gardenId: string): string | null {
-  const base = process.env.R2_PUBLIC_BASE_URL?.replace(/\/$/, '');
-  if (!url || !base) return null;
-  const prefix = `${base}/garden-thumbnails/${gardenId}/`;
-  return url.startsWith(prefix) ? url.slice(base.length + 1) : null;
-}
 
 // Fire-and-forget: a failed R2 delete leaves an orphan object, never a failed request.
 function deleteThumbnailObject(key: string): void {
