@@ -4,7 +4,15 @@ export type ContributionStatus = 'private' | 'pending' | 'approved' | 'rejected'
 
 // ── Browse list cards ─────────────────────────────────────────────────────────
 
-export interface CommunityCard {
+// Growing summary shown on the mobile list row. Present only when the list
+// endpoint returns it (personal seeds do; the community list does not yet).
+interface CardGrowingSummary {
+  maturityDaysMin?: number | null;
+  maturityDaysMax?: number | null;
+  spacingInches?: number | null;
+}
+
+export interface CommunityCard extends CardGrowingSummary {
   kind: 'community';
   id: string;
   commonName: string;
@@ -15,7 +23,7 @@ export interface CommunityCard {
   ratingCount: number;
 }
 
-export interface PersonalCard {
+export interface PersonalCard extends CardGrowingSummary {
   kind: 'personal';
   id: string;
   commonName: string;

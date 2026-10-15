@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { get, post, del, ApiError } from '../../lib/api';
 import { useSignOut } from '../../hooks/useSignOut';
+import ResponsiveDialog from '../shell/ResponsiveDialog';
 import type { AccountData } from './types';
 import {
   cardSt,
@@ -37,47 +38,15 @@ function DeleteAccountDialog({ onClose, onDeleted }: { onClose: () => void; onDe
   }
 
   return (
-    <div
-      style={{
-        position: 'fixed', inset: 0, zIndex: 400,
-        background: 'rgba(42,35,24,0.55)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: '0 16px',
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        style={{
-          background: 'var(--c-surface)',
-          borderRadius: 'var(--r-xl)',
-          boxShadow: 'var(--shadow-lg)',
-          width: '100%',
-          maxWidth: 440,
-          padding: 'var(--sp-6)',
-          fontFamily: 'var(--font-ui)',
-        }}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Confirm account deletion"
-      >
-        <h2 style={{ margin: '0 0 var(--sp-3)', fontFamily: 'var(--font-display)', fontSize: 20, color: 'var(--c-text)' }}>
-          Delete your account?
-        </h2>
-        <p style={bodyTextSt}>
-          This schedules deletion of your account and all its data in 30 days. Type <strong>delete</strong> to
-          confirm.
-        </p>
-        <input
-          type="text"
-          value={confirmText}
-          onChange={(e) => setConfirmText(e.target.value)}
-          style={{ ...inputSt, marginTop: 'var(--sp-3)' }}
-          autoFocus
-        />
-
-        {error && <p style={errorTextSt}>{error}</p>}
-
-        <div style={{ display: 'flex', gap: 'var(--sp-3)', marginTop: 'var(--sp-5)' }}>
+    <ResponsiveDialog
+      open
+      // Don't let Escape or a backdrop click dismiss mid-request.
+      onClose={deleting ? () => {} : onClose}
+      title="Delete your account?"
+      ariaLabel="Confirm account deletion"
+      footerLayout="start"
+      footer={
+        <>
           <button
             type="button"
             onClick={handleConfirm}
@@ -89,9 +58,23 @@ function DeleteAccountDialog({ onClose, onDeleted }: { onClose: () => void; onDe
           <button type="button" onClick={onClose} disabled={deleting} style={secondaryButtonSt}>
             Cancel
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <p style={bodyTextSt}>
+        This schedules deletion of your account and all its data in 30 days. Type <strong>delete</strong> to
+        confirm.
+      </p>
+      <input
+        type="text"
+        value={confirmText}
+        onChange={(e) => setConfirmText(e.target.value)}
+        style={{ ...inputSt, marginTop: 'var(--sp-3)' }}
+        autoFocus
+      />
+
+      {error && <p style={errorTextSt}>{error}</p>}
+    </ResponsiveDialog>
   );
 }
 

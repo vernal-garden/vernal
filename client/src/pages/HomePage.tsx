@@ -16,6 +16,7 @@ import CanvasToolbar from '../components/canvas/CanvasToolbar';
 import type { CanvasMode, SeasonOverlayStatus } from '../components/canvas/CanvasToolbar';
 import { CanvasHomeButton } from '../components/canvas/CanvasHomeButton';
 import PlantPicker from '../components/canvas/PlantPicker';
+import MobileCanvasControls from '../components/canvas/MobileCanvasControls';
 import SeedForm from '../components/catalogue/SeedForm';
 import type { PersonalSeedDetail } from '../types/catalogue';
 import { useCompanions } from '../hooks/useCompanions';
@@ -318,6 +319,19 @@ export default function HomePage() {
     else if (fresh !== selectedBed) setSelectedBed(fresh);
   }, [beds, selectedBed]);
 
+  // Phase 53: the mobile canvas is view-only. Entering it (e.g. a window
+  // narrowed past the breakpoint) drops any editing state.
+  useEffect(() => {
+    if (!isMobile) return;
+    setSelectedBed(null);
+    setPickerOpen(false);
+    setArmedSeed(null);
+    setBedManagerOpen(false);
+    setPendingMode(null);
+    setPanActive(false);
+    setNewSeedFormOpen(false);
+  }, [isMobile]);
+
   // Close picker when bed deselects
   useEffect(() => {
     if (!selectedBed) {
@@ -552,7 +566,8 @@ export default function HomePage() {
     && resolvedId != null
     && gardenLoadedKey === `${resolvedId}:${currentSeason}`
     && gardenSeasons.loadedGardenId === resolvedId;
-  const showNewSeasonPrompt = emptyStateReady && latestEarlierSeason != null && !carryDismissed;
+  // No carry-forward card on the view-only mobile canvas.
+  const showNewSeasonPrompt = !isMobile && emptyStateReady && latestEarlierSeason != null && !carryDismissed;
 
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh', background: '#f8f4eb', overflow: 'hidden' }}>
@@ -560,7 +575,7 @@ export default function HomePage() {
       <GardenCanvas
         ref={canvasRef}
         beds={beds}
-        selectedBedId={selectedBed?.id ?? null}
+        selectedBedId={isMobile ? null : selectedBed?.id ?? null}
         onSelectBed={handleSelectBed}
         onDoubleBed={handleDoubleBed}
         onScaleChange={setScale}
@@ -575,7 +590,7 @@ export default function HomePage() {
         plantingsLoading={plantingsLoading}
         plantingsLoadedKey={plantingsLoadedKey}
         onStagesDisplayed={markStagesDisplayed}
-        armedSeed={armedSeed}
+        armedSeed={isMobile ? null : armedSeed}
         onConfirmPlacement={handleConfirmPlacement}
         onConfirmRemoval={handleConfirmRemoval}
         onMarkHarvested={handleMarkHarvested}
@@ -586,6 +601,7 @@ export default function HomePage() {
         relationshipBetween={relationshipBetween}
         overlayBeds={overlayBeds}
         overlayPlantingsByBedId={overlayPlantingsByBedId}
+        bedsLoadedKey={gardenLoadedKey}
       />
 
       {/* Phase 50: new-season prompt (in place of the empty-beds instruction) */}
@@ -671,8 +687,38 @@ export default function HomePage() {
         </div>
       )}
 
+      {/* Empty-beds overlay, mobile: no call to action, editing is desktop-only */}
+      {isMobile && emptyStateReady && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          pointerEvents: 'none',
+          padding: 'var(--sp-4)',
+          paddingTop: 'calc(var(--sp-4) + var(--shell-top, 0px))',
+          paddingBottom: 'calc(var(--sp-4) + var(--shell-bottom, 0px))',
+        }}>
+          <div style={{
+            maxWidth: 320,
+            background: 'var(--c-surface)',
+            border: '1px solid var(--c-border)',
+            borderRadius: 'var(--r-lg)',
+            padding: 'var(--sp-4) var(--sp-5)',
+            boxShadow: 'var(--shadow-md)',
+            fontFamily: 'var(--font-ui)',
+            textAlign: 'center',
+            lineHeight: 1.5,
+          }}>
+            <p style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 15, color: 'var(--c-text)' }}>
+              Place your first bed to start planning.
+            </p>
+            <p style={{ margin: 'var(--sp-1) 0 0', fontSize: 13, color: 'var(--c-text-2)' }}>
+              Garden editing is available on desktop.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Empty-beds overlay */}
-      {emptyStateReady && !showNewSeasonPrompt && (
+      {!isMobile && emptyStateReady && !showNewSeasonPrompt && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
           <div style={{
             background: 'rgba(250, 247, 242, 0.88)',
@@ -695,7 +741,7 @@ export default function HomePage() {
       )}
 
       {/* Placing banner */}
-      {armedSeed && selectedBed && (
+      {!isMobile && armedSeed && selectedBed && (
         <div style={{
           position: 'fixed', top: 'calc(16px + var(--shell-top, 0px))', left: '50%', transform: 'translateX(-50%)',
           background: '#1c3a28', color: '#d4edda', borderRadius: 8,
@@ -720,7 +766,7 @@ export default function HomePage() {
       )}
 
       {/* Mode-switch confirm */}
-      {pendingMode && (
+      {!isMobile && pendingMode && (
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 50,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -755,8 +801,21 @@ export default function HomePage() {
       {/* Home anchor */}
       <CanvasHomeButton />
 
-      {/* Toolbar */}
-      {resolvedId && (
+      {/* Mobile: view-only controls in place of the toolbar */}
+      {isMobile && resolvedId && (
+        <MobileCanvasControls
+          currentSeason={currentSeason}
+          earlierSeasons={earlierSeasons}
+          overlaySeason={overlaySeason}
+          overlayStatus={overlayStatus}
+          onOverlaySeasonChange={showSeasonOverlay}
+          onZoomIn={handleZoomIn}
+          onZoomOut={handleZoomOut}
+        />
+      )}
+
+      {/* Toolbar (desktop only) */}
+      {!isMobile && resolvedId && (
         <CanvasToolbar
           scale={scale}
           onZoomIn={handleZoomIn}
@@ -782,7 +841,7 @@ export default function HomePage() {
       )}
 
       {/* Bed detail panel (hidden when picker is open) */}
-      {selectedBed && !pickerOpen && (
+      {!isMobile && selectedBed && !pickerOpen && (
         <BedDetailPanel
           bed={selectedBed}
           plantingCount={plantingsByBedId[selectedBed.id]?.length ?? 0}
@@ -797,7 +856,7 @@ export default function HomePage() {
       )}
 
       {/* Plant picker */}
-      {pickerOpen && selectedBed && garden && (
+      {!isMobile && pickerOpen && selectedBed && garden && (
         <PlantPicker
           garden={garden}
           bed={selectedBed}
@@ -813,7 +872,7 @@ export default function HomePage() {
         />
       )}
 
-      {newSeedFormOpen && (
+      {!isMobile && newSeedFormOpen && (
         <SeedForm
           mode="add"
           onClose={() => setNewSeedFormOpen(false)}
@@ -830,7 +889,7 @@ export default function HomePage() {
       )}
 
       {/* Bed manager */}
-      {bedManagerOpen && resolvedId && (
+      {!isMobile && bedManagerOpen && resolvedId && (
         <BedManager
           beds={beds}
           plantingsByBedId={plantingsByBedId}

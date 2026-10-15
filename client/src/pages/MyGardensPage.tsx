@@ -141,7 +141,7 @@ export default function MyGardensPage() {
 
         {/* Loading state */}
         {loading && (
-          <div className="gardens-grid" style={gridStyle}>
+          <div className="gardens-grid m-grid-shrink" style={gridStyle}>
             {[1, 2, 3].map(i => <SkeletonCard key={i} />)}
           </div>
         )}
@@ -186,7 +186,7 @@ export default function MyGardensPage() {
 
         {/* Populated state */}
         {!loading && !error && displayGardens.length > 0 && (
-          <div className="gardens-grid" style={gridStyle}>
+          <div className="gardens-grid m-grid-shrink" style={gridStyle}>
             {displayGardens.map(g => (
               <GardenCard
                 key={g.id}

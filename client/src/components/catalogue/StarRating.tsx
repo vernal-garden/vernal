@@ -8,6 +8,8 @@ interface Props {
   onChange?: (rating: number | null) => void;
   size?: number;
   label?: string;
+  /** Mobile: give each interactive star a 44x44 hit area. */
+  touchTarget?: boolean;
 }
 
 export default function StarRating({
@@ -17,6 +19,7 @@ export default function StarRating({
   onChange,
   size = 18,
   label,
+  touchTarget = false,
 }: Props) {
   const [hovered, setHovered] = useState<number | null>(null);
 
@@ -45,8 +48,9 @@ export default function StarRating({
             tabIndex={interactive ? 0 : undefined}
             aria-label={interactive ? `${star} star${star !== 1 ? 's' : ''}` : undefined}
             onClick={() => handleClick(star)}
-            onMouseEnter={() => { if (interactive) setHovered(star); }}
-            onMouseLeave={() => { if (interactive) setHovered(null); }}
+            // Mouse only: a touch tap fires enter without a matching leave, which would stick the hover fill.
+            onPointerEnter={(e) => { if (interactive && e.pointerType === 'mouse') setHovered(star); }}
+            onPointerLeave={(e) => { if (interactive && e.pointerType === 'mouse') setHovered(null); }}
             onKeyDown={(e) => { if (interactive && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); handleClick(star); } }}
             style={{
               cursor: interactive ? 'pointer' : 'default',
@@ -55,6 +59,9 @@ export default function StarRating({
               fontSize: size,
               lineHeight: 1,
               userSelect: 'none',
+              ...(interactive && touchTarget
+                ? { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' }
+                : {}),
             }}
           >
             {filled ? '★' : half ? <span style={{ opacity: 0.45 }}>★</span> : '☆'}

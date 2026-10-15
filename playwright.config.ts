@@ -33,7 +33,10 @@ export default defineConfig({
     {
       name: 'mobile',
       use: { ...devices['Pixel 7'] },
-      testMatch: /mobile-.*\.spec\.ts/,
+      // mobile-*.spec.ts run here only. feedback-clearance.spec.ts runs in
+      // BOTH projects (chromium doesn't ignore it): it resizes the viewport
+      // itself, and on a Pixel 7 it also covers the touch/mobile-UA context.
+      testMatch: /(mobile-.*|feedback-clearance)\.spec\.ts/,
     },
   ],
   webServer: [

@@ -1,5 +1,5 @@
 // client/src/pages/SeedCataloguePage.tsx
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { get } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
@@ -10,6 +10,9 @@ import { useFamilies } from '../hooks/useFamilies';
 import type { BrowseCard } from '../types/catalogue';
 import type { CatalogueSource } from '../hooks/useCatalogueBrowse';
 import SeedForm from '../components/catalogue/SeedForm';
+import SeedListRow from '../components/catalogue/SeedListRow';
+import BottomSheet from '../components/shell/BottomSheet';
+import { useIsMobile } from '../hooks/useIsMobile';
 import type { CatalogueSeedDetail, PersonalSeedDetail } from '../types/catalogue';
 
 // Builds the card the detail overlay needs from a fetched seed, for a
@@ -34,11 +37,13 @@ async function fetchCard(kind: 'personal' | 'community', id: string): Promise<Br
 
 // ── Chip button ───────────────────────────────────────────────────────────────
 
-function Chip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function Chip({ label, active, onClick, large = false }: { label: string; active: boolean; onClick: () => void; large?: boolean }) {
   return (
     <button
       onClick={onClick}
       style={{
+        // `large` is the mobile filter-sheet size: a 44px touch target.
+        ...(large ? { minHeight: 44, minWidth: 44 } : {}),
         padding: '5px 14px',
         borderRadius: 'var(--r-full)',
         border: active ? '1.5px solid var(--c-primary)' : '1px solid var(--c-border)',
@@ -62,6 +67,10 @@ function Chip({ label, active, onClick }: { label: string; active: boolean; onCl
 export default function SeedCataloguePage() {
   const { isGuest } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  // Leaving mobile closes the sheet so it doesn't pop back open on return.
+  useEffect(() => { if (!isMobile) setFilterSheetOpen(false); }, [isMobile]);
 
   // Guests are locked to 'cambium'
   const [source, setSource] = useState<CatalogueSource>('cambium');
@@ -132,11 +141,128 @@ export default function SeedCataloguePage() {
 
   const isNoResults = !loading && cards.length === 0 && (rawQ !== '' || family !== '');
 
+  // Mobile "Filter" button badge: a family filter, plus a non-default source.
+  const activeFilterCount = (family !== '' ? 1 : 0) + (effectiveSource !== 'cambium' ? 1 : 0);
+
+  // Mobile touch-target floor for the page's text buttons (desktop unchanged).
+  const mobileTarget: CSSProperties = isMobile ? { minHeight: 44, minWidth: 44 } : {};
+
+  const sourceChips = (large: boolean) => sourceOptions.map(opt => (
+    <Chip
+      key={opt.value}
+      label={opt.label}
+      large={large}
+      active={effectiveSource === opt.value}
+      onClick={() => {
+        if (!isGuest) {
+          setSource(opt.value);
+          setFamily('');
+        }
+      }}
+    />
+  ));
+
+  const familyChips = (large: boolean) => [
+    <Chip key="" label="All families" large={large} active={family === ''} onClick={() => setFamily('')} />,
+    ...families.map(f => (
+      <Chip
+        key={f.family}
+        label={f.family}
+        large={large}
+        active={family === f.family}
+        onClick={() => setFamily(family === f.family ? '' : f.family)}
+      />
+    )),
+  ];
+
+  const sheetHeadingStyle: CSSProperties = {
+    margin: '0 0 var(--sp-2)', fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 600,
+    color: 'var(--c-text-3)', textTransform: 'uppercase', letterSpacing: '0.06em',
+  };
+
   return (
     <div style={{ minHeight: '100vh', background: 'var(--c-bg)', display: 'flex', flexDirection: 'column' }}>
 
-      <main style={{ flex: 1, maxWidth: 1280, width: '100%', margin: '0 auto', padding: 'var(--sp-6) var(--sp-5)' }}>
+      <main style={{ flex: 1, maxWidth: 1280, width: '100%', boxSizing: isMobile ? 'border-box' : undefined, margin: '0 auto', padding: isMobile ? '0 0 var(--sp-6)' : 'var(--sp-6) var(--sp-5)' }}>
 
+        {/* The mobile top bar shows the title as plain text, so keep a page heading for AT. */}
+        {isMobile && <h1 className="sr-only">Seed Catalogue</h1>}
+
+        {isMobile && (
+          // Sticky search + Filter, pinned under the mobile top bar.
+          <div
+            style={{
+              position: 'sticky', top: 'var(--shell-top)', zIndex: 10,
+              display: 'flex', alignItems: 'center', gap: 'var(--sp-2)',
+              padding: 'var(--sp-3) var(--sp-4)',
+              background: 'var(--c-bg)',
+              borderBottom: '1px solid var(--c-border-subtle)',
+            }}
+          >
+            <input
+              type="search"
+              value={rawQ}
+              onChange={e => setRawQ(e.target.value)}
+              placeholder="Search by name or family…"
+              style={{
+                flex: 1, minWidth: 0, minHeight: 44, boxSizing: 'border-box',
+                padding: '0 var(--sp-3)',
+                fontFamily: 'var(--font-ui)', fontSize: 16,
+                background: 'var(--c-surface)', color: 'var(--c-text)',
+                border: '1px solid var(--c-border)', borderRadius: 'var(--r-lg)',
+                outline: 'none',
+              }}
+              aria-label="Search seeds"
+            />
+            <button
+              type="button"
+              onClick={() => setFilterSheetOpen(true)}
+              aria-label="Filter"
+              aria-describedby={activeFilterCount > 0 ? 'catalogue-filter-count' : undefined}
+              aria-haspopup="dialog"
+              style={{
+                flexShrink: 0, minHeight: 44, minWidth: 44,
+                display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-1)',
+                padding: '0 var(--sp-3)',
+                background: activeFilterCount > 0 ? 'var(--c-primary-subtle)' : 'var(--c-surface)',
+                color: activeFilterCount > 0 ? 'var(--c-primary-dark)' : 'var(--c-text-2)',
+                border: activeFilterCount > 0 ? '1.5px solid var(--c-primary)' : '1px solid var(--c-border)',
+                borderRadius: 'var(--r-lg)',
+                fontFamily: 'var(--font-ui)', fontSize: 14, fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Filter
+              {activeFilterCount > 0 && (
+                <span
+                  aria-hidden="true"
+                  style={{
+                    minWidth: 'var(--sp-5)', height: 'var(--sp-5)', padding: '0 var(--sp-1)', boxSizing: 'border-box',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    borderRadius: 'var(--r-full)',
+                    background: 'var(--c-primary)', color: 'var(--c-text-on-primary)',
+                    fontSize: 12, fontWeight: 600,
+                  }}
+                >
+                  {activeFilterCount}
+                </span>
+              )}
+              {activeFilterCount > 0 && (
+                <span id="catalogue-filter-count" className="sr-only">
+                  {activeFilterCount} active filter{activeFilterCount !== 1 ? 's' : ''}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
+
+        {isMobile && (
+          <p style={{ margin: 0, padding: 'var(--sp-2) var(--sp-4)', fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-text-3)' }}>
+            {loading ? 'Loading…' : `${total.toLocaleString()} seed${total !== 1 ? 's' : ''}`}
+          </p>
+        )}
+
+        {!isMobile && (<>
         {/* Page header */}
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 'var(--sp-5)', gap: 'var(--sp-4)', flexWrap: 'wrap' }}>
           <div>
@@ -209,41 +335,22 @@ export default function SeedCataloguePage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', marginBottom: 'var(--sp-5)' }}>
           {/* Source chips */}
           <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-            {sourceOptions.map(opt => (
-              <Chip
-                key={opt.value}
-                label={opt.label}
-                active={effectiveSource === opt.value}
-                onClick={() => {
-                  if (!isGuest) {
-                    setSource(opt.value);
-                    setFamily('');
-                  }
-                }}
-              />
-            ))}
+            {sourceChips(false)}
           </div>
           {/* Family chips */}
           {families.length > 0 && (
             <div style={{ display: 'flex', gap: 'var(--sp-1)', flexWrap: 'wrap' }}>
-              <Chip label="All families" active={family === ''} onClick={() => setFamily('')} />
-              {families.map(f => (
-                <Chip
-                  key={f.family}
-                  label={f.family}
-                  active={family === f.family}
-                  onClick={() => setFamily(family === f.family ? '' : f.family)}
-                />
-              ))}
+              {familyChips(false)}
             </div>
           )}
         </div>
+        </>)}
 
         {/* Error */}
         {error && !loading && (
           <div style={{ textAlign: 'center', color: 'var(--c-danger)', padding: 'var(--sp-7) 0' }}>
             {error}.{' '}
-            <button onClick={refetch} style={{ background: 'none', border: 'none', color: 'var(--c-primary)', cursor: 'pointer', fontFamily: 'var(--font-ui)', fontSize: 14 }}>
+            <button onClick={refetch} style={{ ...mobileTarget, background: 'none', border: 'none', color: 'var(--c-primary)', cursor: 'pointer', fontFamily: 'var(--font-ui)', fontSize: 14 }}>
               Retry
             </button>
           </div>
@@ -264,9 +371,12 @@ export default function SeedCataloguePage() {
               Your catalogue is empty.
             </h2>
             <p style={{ margin: 0, color: 'var(--c-text-2)', fontFamily: 'var(--font-ui)', fontSize: 15, maxWidth: 340 }}>
-              Add seeds you grow, or browse what the Cambium community has shared.
+              {isMobile
+                ? 'Browse what the Cambium community has shared.'
+                : 'Add seeds you grow, or browse what the Cambium community has shared.'}
             </p>
             <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', justifyContent: 'center' }}>
+              {!isMobile && (
               <button
                 onClick={() => setSeedFormOpen(true)}
                 style={{
@@ -283,9 +393,11 @@ export default function SeedCataloguePage() {
               >
                 Add a seed
               </button>
+              )}
               <button
                 onClick={() => setSource('cambium')}
                 style={{
+                  ...mobileTarget,
                   padding: '9px 18px', background: 'transparent', color: 'var(--c-text-2)',
                   border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)',
                   fontFamily: 'var(--font-ui)', fontSize: 14, cursor: 'pointer',
@@ -299,14 +411,29 @@ export default function SeedCataloguePage() {
 
         {/* No-results state */}
         {!loading && !error && isNoResults && (
-          <div style={{ textAlign: 'center', padding: 'var(--sp-7) 0', color: 'var(--c-text-3)', fontFamily: 'var(--font-ui)', fontSize: 15 }}>
+          <div style={{ textAlign: 'center', padding: isMobile ? 'var(--sp-7) var(--sp-4)' : 'var(--sp-7) 0', color: 'var(--c-text-3)', fontFamily: 'var(--font-ui)', fontSize: 15 }}>
             No seeds found for &ldquo;{[rawQ, family].filter(Boolean).join(' + ')}&rdquo;. Try a different search or clear the filters.
           </div>
         )}
 
-        {/* Grid */}
+        {/* Grid (desktop) / one-column list (mobile) */}
         {!loading && !error && cards.length > 0 && (
           <>
+            {isMobile ? (
+              <ul
+                role="list"
+                aria-label="Seeds"
+                style={{ listStyle: 'none', margin: 0, padding: 0, background: 'var(--c-surface)', borderTop: '1px solid var(--c-border-subtle)' }}
+              >
+                {cards.map(card => (
+                  <SeedListRow
+                    key={`${card.kind}-${card.id}`}
+                    card={card}
+                    onClick={() => handleCardClick(card)}
+                  />
+                ))}
+              </ul>
+            ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4" style={{ gap: 'var(--sp-4)' }}>
               {cards.map(card => (
                 <SeedCard
@@ -316,6 +443,7 @@ export default function SeedCataloguePage() {
                 />
               ))}
             </div>
+            )}
 
             {/* Load more */}
             {hasMore && (
@@ -324,6 +452,7 @@ export default function SeedCataloguePage() {
                   onClick={loadMore}
                   disabled={loadingMore}
                   style={{
+                    ...mobileTarget,
                     padding: '10px 28px',
                     background: 'transparent',
                     color: 'var(--c-primary)',
@@ -362,7 +491,29 @@ export default function SeedCataloguePage() {
         />
       )}
 
-      {seedFormOpen && (
+      {isMobile && (
+        <BottomSheet open={isMobile && filterSheetOpen} onClose={() => setFilterSheetOpen(false)} title="Filters">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)', padding: 'var(--sp-2) var(--sp-4) var(--sp-5)' }}>
+            <section>
+              <h3 style={sheetHeadingStyle}>Source</h3>
+              <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                {sourceChips(true)}
+              </div>
+            </section>
+            {families.length > 0 && (
+              <section>
+                <h3 style={sheetHeadingStyle}>Family</h3>
+                <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                  {familyChips(true)}
+                </div>
+              </section>
+            )}
+          </div>
+        </BottomSheet>
+      )}
+
+      {/* Add-seed form is desktop-only: never rendered on mobile. */}
+      {!isMobile && seedFormOpen && (
         <SeedForm
           mode="add"
           onClose={() => setSeedFormOpen(false)}

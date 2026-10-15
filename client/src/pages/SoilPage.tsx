@@ -7,6 +7,7 @@ import { todayPacific } from '../lib/guideDates';
 import UpgradePrompt from '../components/UpgradePrompt';
 import UpgradeBanner from '../components/UpgradeBanner';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import ResponsiveDialog from '../components/shell/ResponsiveDialog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -394,8 +395,6 @@ function EntryForm({ beds, defaultBedId, gardenId, initial, onSaved, onCancel }:
   const [error,  setError]  = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const isWide = window.matchMedia('(min-width: 1024px)').matches;
-
   async function handleSave() {
     const phVal = parseFloat(form.ph);
     if (!form.ph || isNaN(phVal) || phVal < 0 || phVal > 14) {
@@ -429,91 +428,78 @@ function EntryForm({ beds, defaultBedId, gardenId, initial, onSaved, onCancel }:
     }
   }
 
-  const overlay: React.CSSProperties = {
-    position: 'fixed', inset: 0, zIndex: 300,
-    background: 'rgba(42,35,24,0.55)',
-    display: 'flex',
-    alignItems:     isWide ? 'center'    : 'flex-end',
-    justifyContent: isWide ? 'center'    : 'stretch',
-  };
-
-  const panel: React.CSSProperties = isWide
-    ? { background: 'var(--c-surface)', borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-lg)', width: '100%', maxWidth: 460, padding: 'var(--sp-6)' }
-    : { background: 'var(--c-surface)', borderRadius: 'var(--r-xl) var(--r-xl) 0 0', boxShadow: 'var(--shadow-lg)', width: '100%', padding: 'var(--sp-5) var(--sp-5) var(--sp-7)' };
-
   return (
-    <div style={overlay} onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div style={panel}>
-        <h3 style={{ margin: '0 0 var(--sp-4)', fontFamily: 'var(--font-display)', fontSize: 18, color: 'var(--c-text)' }}>
-          {isEdit ? 'Edit reading' : 'Log soil reading'}
-        </h3>
-
-        <label style={labelSt}>Bed</label>
-        <select
-          value={form.bedId}
-          onChange={(e) => setForm(f => ({ ...f, bedId: e.target.value }))}
-          style={inputSt}
-        >
-          {beds.map(b => (
-            <option key={b.id} value={b.id}>{b.label || `Bed ${b.id}`}</option>
-          ))}
-        </select>
-
-        <label style={labelSt}>Test date</label>
-        <input
-          type="date"
-          value={form.testDate}
-          onChange={(e) => setForm(f => ({ ...f, testDate: e.target.value }))}
-          style={inputSt}
-        />
-
-        <label style={labelSt}>
-          pH <span style={{ color: 'var(--c-danger)' }}>*</span>
-        </label>
-        <input
-          type="number" step="0.1" min="0" max="14"
-          placeholder="e.g. 6.5"
-          value={form.ph}
-          onChange={(e) => setForm(f => ({ ...f, ph: e.target.value }))}
-          style={inputSt}
-        />
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
-          {(['nitrogen', 'phosphorus', 'potassium'] as const).map((key, idx) => (
-            <div key={key}>
-              <label style={labelSt}>{['N (ppm)', 'P (ppm)', 'K (ppm)'][idx]}</label>
-              <input
-                type="number" min="0" placeholder="opt."
-                value={form[key]}
-                onChange={(e) => setForm(f => ({ ...f, [key]: e.target.value }))}
-                style={{ ...inputSt, marginBottom: 0 }}
-              />
-            </div>
-          ))}
-        </div>
-
-        <label style={labelSt}>Notes</label>
-        <textarea
-          rows={2}
-          value={form.notes}
-          onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))}
-          style={{ ...inputSt, resize: 'vertical' }}
-        />
-
-        {error && (
-          <p style={{ color: 'var(--c-danger)', fontSize: 13, fontFamily: 'var(--font-ui)', margin: '0 0 var(--sp-3)' }}>
-            {error}
-          </p>
-        )}
-
-        <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
+    <ResponsiveDialog
+      open
+      onClose={onCancel}
+      title={isEdit ? 'Edit reading' : 'Log soil reading'}
+      footer={
+        <>
           <button onClick={onCancel} style={cancelSt}>Cancel</button>
           <button onClick={handleSave} disabled={saving} style={saveSt}>
             {saving ? 'Saving…' : 'Save'}
           </button>
-        </div>
+        </>
+      }
+    >
+      <label style={labelSt}>Bed</label>
+      <select
+        value={form.bedId}
+        onChange={(e) => setForm(f => ({ ...f, bedId: e.target.value }))}
+        style={inputSt}
+      >
+        {beds.map(b => (
+          <option key={b.id} value={b.id}>{b.label || `Bed ${b.id}`}</option>
+        ))}
+      </select>
+
+      <label style={labelSt}>Test date</label>
+      <input
+        type="date"
+        value={form.testDate}
+        onChange={(e) => setForm(f => ({ ...f, testDate: e.target.value }))}
+        style={inputSt}
+      />
+
+      <label style={labelSt}>
+        pH <span style={{ color: 'var(--c-danger)' }}>*</span>
+      </label>
+      <input
+        type="number" step="0.1" min="0" max="14"
+        placeholder="e.g. 6.5"
+        value={form.ph}
+        onChange={(e) => setForm(f => ({ ...f, ph: e.target.value }))}
+        style={inputSt}
+      />
+
+      <div className="m-grid-shrink" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
+        {(['nitrogen', 'phosphorus', 'potassium'] as const).map((key, idx) => (
+          <div key={key}>
+            <label style={labelSt}>{['N (ppm)', 'P (ppm)', 'K (ppm)'][idx]}</label>
+            <input
+              type="number" min="0" placeholder="opt."
+              value={form[key]}
+              onChange={(e) => setForm(f => ({ ...f, [key]: e.target.value }))}
+              style={{ ...inputSt, marginBottom: 0 }}
+            />
+          </div>
+        ))}
       </div>
-    </div>
+
+      <label style={labelSt}>Notes</label>
+      <textarea
+        rows={2}
+        value={form.notes}
+        onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))}
+        style={{ ...inputSt, resize: 'vertical' }}
+      />
+
+      {error && (
+        <p style={{ color: 'var(--c-danger)', fontSize: 13, fontFamily: 'var(--font-ui)', margin: '0 0 var(--sp-3)' }}>
+          {error}
+        </p>
+      )}
+    </ResponsiveDialog>
   );
 }
 

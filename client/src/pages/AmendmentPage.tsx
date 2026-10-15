@@ -7,6 +7,8 @@ import { addDays, todayPacific } from '../lib/guideDates';
 import UpgradePrompt from '../components/UpgradePrompt';
 import UpgradeBanner from '../components/UpgradeBanner';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
+import { useIsMobile } from '../hooks/useIsMobile';
+import ResponsiveDialog from '../components/shell/ResponsiveDialog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -352,7 +354,7 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
   const [error,  setError]  = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const isWide = window.matchMedia('(min-width: 1024px)').matches;
+  const isMobile = useIsMobile();
   const byHand = form.amountUnit === 'by hand';
 
   function toggleBed(bedId: string) {
@@ -401,154 +403,142 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
     }
   }
 
-  const overlay: React.CSSProperties = {
-    position: 'fixed', inset: 0, zIndex: 300,
-    background: 'rgba(42,35,24,0.55)',
-    display: 'flex',
-    alignItems:     isWide ? 'center'   : 'flex-end',
-    justifyContent: isWide ? 'center'   : 'stretch',
-  };
-
-  const panel: React.CSSProperties = isWide
-    ? { background: 'var(--c-surface)', borderRadius: 'var(--r-xl)', boxShadow: 'var(--shadow-lg)', width: '100%', maxWidth: 500, padding: 'var(--sp-6)', maxHeight: '90vh', overflowY: 'auto' }
-    : { background: 'var(--c-surface)', borderRadius: 'var(--r-xl) var(--r-xl) 0 0', boxShadow: 'var(--shadow-lg)', width: '100%', padding: 'var(--sp-5) var(--sp-5) var(--sp-7)', maxHeight: '90vh', overflowY: 'auto' };
-
   return (
-    <div style={overlay} onClick={e => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div style={panel}>
-        <h3 style={{ margin: '0 0 var(--sp-4)', fontFamily: 'var(--font-display)', fontSize: 18, color: 'var(--c-text)' }}>
-          {isEdit ? 'Edit amendment' : 'Log amendment'}
-        </h3>
-
-        {/* Bed multi-select */}
-        <label style={labelSt}>
-          Beds <span style={{ color: 'var(--c-danger)' }}>*</span>
-        </label>
-        <div style={{ marginBottom: 'var(--sp-3)' }}>
-          <button
-            type="button"
-            onClick={selectAllBeds}
-            style={{ ...cancelSt, fontSize: 12, padding: '3px 10px', marginBottom: 'var(--sp-2)' }}
-          >
-            All beds
-          </button>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
-            {beds.map(b => {
-              const checked = form.bedIds.includes(b.id);
-              return (
-                <label
-                  key={b.id}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '4px 10px', borderRadius: 'var(--r-md)',
-                    border: `1px solid ${checked ? 'var(--c-primary)' : 'var(--c-border)'}`,
-                    background: checked ? 'var(--c-primary-subtle)' : 'transparent',
-                    cursor: 'pointer', fontSize: 13, fontFamily: 'var(--font-ui)',
-                    color: checked ? 'var(--c-primary)' : 'var(--c-text-2)',
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleBed(b.id)}
-                    style={{ margin: 0 }}
-                  />
-                  {b.label || `Bed ${b.id}`}
-                </label>
-              );
-            })}
-          </div>
-        </div>
-
-        <label style={labelSt}>Application date</label>
-        <input
-          type="date"
-          value={form.applicationDate}
-          onChange={e => setForm(f => ({ ...f, applicationDate: e.target.value }))}
-          style={inputSt}
-        />
-
-        <label style={labelSt}>
-          Product name <span style={{ color: 'var(--c-danger)' }}>*</span>
-        </label>
-        <input
-          type="text"
-          placeholder="e.g. Garden Tone 3-4-4"
-          value={form.productName}
-          onChange={e => setForm(f => ({ ...f, productName: e.target.value }))}
-          style={inputSt}
-        />
-
-        <label style={labelSt}>
-          Amendment type <span style={{ color: 'var(--c-danger)' }}>*</span>
-        </label>
-        <select
-          value={form.amendmentType}
-          onChange={e => setForm(f => ({ ...f, amendmentType: e.target.value }))}
-          style={inputSt}
-        >
-          <option value="">Select type…</option>
-          {AMENDMENT_TYPES.map(t => (
-            <option key={t} value={t}>{TYPE_LABELS[t]}</option>
-          ))}
-        </select>
-
-        {/* Amount + unit */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
-          <div>
-            <label style={labelSt}>Amount</label>
-            <input
-              type="number" min="0" step="any"
-              placeholder={byHand ? '—' : 'e.g. 2.5'}
-              disabled={byHand}
-              value={form.amount}
-              onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
-              style={{ ...inputSt, marginBottom: 0, opacity: byHand ? 0.4 : 1 }}
-            />
-          </div>
-          <div>
-            <label style={labelSt}>Unit</label>
-            <select
-              value={form.amountUnit}
-              onChange={e => setForm(f => ({ ...f, amountUnit: e.target.value, amount: e.target.value === 'by hand' ? '' : f.amount }))}
-              style={{ ...inputSt, marginBottom: 0 }}
-            >
-              {AMOUNT_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
-            </select>
-          </div>
-        </div>
-
-        <label style={labelSt}>Application method</label>
-        <input
-          type="text"
-          placeholder="e.g. Side-dress, broadcast, foliar spray"
-          value={form.applicationMethod}
-          onChange={e => setForm(f => ({ ...f, applicationMethod: e.target.value }))}
-          style={inputSt}
-        />
-
-        <label style={labelSt}>Notes</label>
-        <textarea
-          rows={2}
-          value={form.notes}
-          onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-          style={{ ...inputSt, resize: 'vertical' }}
-        />
-
-        {error && (
-          <p style={{ color: 'var(--c-danger)', fontSize: 13, fontFamily: 'var(--font-ui)', margin: '0 0 var(--sp-3)' }}>
-            {error}
-          </p>
-        )}
-
-        <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
+    <ResponsiveDialog
+      open
+      onClose={onCancel}
+      title={isEdit ? 'Edit amendment' : 'Log amendment'}
+      footer={
+        <>
           <button onClick={onCancel} style={cancelSt}>Cancel</button>
           <button onClick={handleSave} disabled={saving} style={saveSt}>
             {saving ? 'Saving…' : 'Save'}
           </button>
+        </>
+      }
+    >
+      {/* Bed multi-select */}
+      <label style={labelSt}>
+        Beds <span style={{ color: 'var(--c-danger)' }}>*</span>
+      </label>
+      <div style={{ marginBottom: 'var(--sp-3)' }}>
+        <button
+          type="button"
+          onClick={selectAllBeds}
+          style={{ ...cancelSt, fontSize: 12, padding: '3px 10px', marginBottom: 'var(--sp-2)', ...(isMobile && { minHeight: 44 }) }}
+        >
+          All beds
+        </button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
+          {beds.map(b => {
+            const checked = form.bedIds.includes(b.id);
+            return (
+              <label
+                key={b.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '4px 10px', borderRadius: 'var(--r-md)',
+                  ...(isMobile && { minHeight: 44 }),
+                  border: `1px solid ${checked ? 'var(--c-primary)' : 'var(--c-border)'}`,
+                  background: checked ? 'var(--c-primary-subtle)' : 'transparent',
+                  cursor: 'pointer', fontSize: 13, fontFamily: 'var(--font-ui)',
+                  color: checked ? 'var(--c-primary)' : 'var(--c-text-2)',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleBed(b.id)}
+                  style={{ margin: 0 }}
+                />
+                {b.label || `Bed ${b.id}`}
+              </label>
+            );
+          })}
         </div>
       </div>
-    </div>
+
+      <label style={labelSt}>Application date</label>
+      <input
+        type="date"
+        value={form.applicationDate}
+        onChange={e => setForm(f => ({ ...f, applicationDate: e.target.value }))}
+        style={inputSt}
+      />
+
+      <label style={labelSt}>
+        Product name <span style={{ color: 'var(--c-danger)' }}>*</span>
+      </label>
+      <input
+        type="text"
+        placeholder="e.g. Garden Tone 3-4-4"
+        value={form.productName}
+        onChange={e => setForm(f => ({ ...f, productName: e.target.value }))}
+        style={inputSt}
+      />
+
+      <label style={labelSt}>
+        Amendment type <span style={{ color: 'var(--c-danger)' }}>*</span>
+      </label>
+      <select
+        value={form.amendmentType}
+        onChange={e => setForm(f => ({ ...f, amendmentType: e.target.value }))}
+        style={inputSt}
+      >
+        <option value="">Select type…</option>
+        {AMENDMENT_TYPES.map(t => (
+          <option key={t} value={t}>{TYPE_LABELS[t]}</option>
+        ))}
+      </select>
+
+      {/* Amount + unit */}
+      <div className="m-grid-shrink" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
+        <div>
+          <label style={labelSt}>Amount</label>
+          <input
+            type="number" min="0" step="any"
+            placeholder={byHand ? '—' : 'e.g. 2.5'}
+            disabled={byHand}
+            value={form.amount}
+            onChange={e => setForm(f => ({ ...f, amount: e.target.value }))}
+            style={{ ...inputSt, marginBottom: 0, opacity: byHand ? 0.4 : 1 }}
+          />
+        </div>
+        <div>
+          <label style={labelSt}>Unit</label>
+          <select
+            value={form.amountUnit}
+            onChange={e => setForm(f => ({ ...f, amountUnit: e.target.value, amount: e.target.value === 'by hand' ? '' : f.amount }))}
+            style={{ ...inputSt, marginBottom: 0 }}
+          >
+            {AMOUNT_UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <label style={labelSt}>Application method</label>
+      <input
+        type="text"
+        placeholder="e.g. Side-dress, broadcast, foliar spray"
+        value={form.applicationMethod}
+        onChange={e => setForm(f => ({ ...f, applicationMethod: e.target.value }))}
+        style={inputSt}
+      />
+
+      <label style={labelSt}>Notes</label>
+      <textarea
+        rows={2}
+        value={form.notes}
+        onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+        style={{ ...inputSt, resize: 'vertical' }}
+      />
+
+      {error && (
+        <p style={{ color: 'var(--c-danger)', fontSize: 13, fontFamily: 'var(--font-ui)', margin: '0 0 var(--sp-3)' }}>
+          {error}
+        </p>
+      )}
+    </ResponsiveDialog>
   );
 }
 
