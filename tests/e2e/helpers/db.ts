@@ -86,8 +86,21 @@ export async function closePool(): Promise<void> {
 
 // Flip an account between free and supporter mid-test. The session's tier is
 // read from the database on every request, so the next request sees it.
-export async function setSubscriptionTier(accountId: string, tier: 'free' | 'supporter'): Promise<void> {
-  await getPool().query('UPDATE accounts SET subscription_tier = $2 WHERE id = $1', [accountId, tier]);
+export async function setSubscriptionTier(
+  accountId: string,
+  tier: 'free' | 'supporter',
+  billing?: { interval: 'monthly' | 'annual' | 'lifetime' | null; stripeSubscriptionId?: string | null },
+): Promise<void> {
+  if (!billing) {
+    await getPool().query('UPDATE accounts SET subscription_tier = $2 WHERE id = $1', [accountId, tier]);
+    return;
+  }
+  await getPool().query(
+    `UPDATE accounts
+        SET subscription_tier = $2, subscription_interval = $3, stripe_subscription_id = $4
+      WHERE id = $1`,
+    [accountId, tier, billing.interval, billing.stripeSubscriptionId ?? null],
+  );
 }
 
 // Growth fields are written by the nightly job; tests set them directly. Stage
@@ -118,6 +131,51 @@ export async function setGuestExpiry(signedCookie: string, interval: string): Pr
     [token, interval],
   );
   if (result.rowCount !== 1) throw new Error('setGuestExpiry: guest session not found');
+}
+
+// Moderation queue rows, inserted directly. `createdAt` is a Postgres interval
+// literal subtracted from now() (e.g. '2 hours'), so tests can order items
+// deterministically. resetTestDb's TRUNCATE ... CASCADE on accounts clears
+// moderation_items and feedback_submissions (both reference accounts).
+export async function createModerationCorrection(opts: {
+  cambiumSeedId: number; submittedBy: string | null; correctionText: string; createdAt?: string;
+}): Promise<number> {
+  const result = await getPool().query<{ id: number }>(
+    `INSERT INTO moderation_items (type, cambium_seed_id, submitted_by, content, created_at)
+     VALUES ('correction', $1, $2, $3, now() - $4::interval) RETURNING id`,
+    [opts.cambiumSeedId, opts.submittedBy, JSON.stringify({ correctionText: opts.correctionText }),
+     opts.createdAt ?? '0 seconds'],
+  );
+  return result.rows[0].id;
+}
+
+// A new-seed submission for a personal seed; also marks the seed's
+// contribution as pending, as the real submit flow does.
+export async function createModerationNewSeed(opts: {
+  seedId: number; submittedBy: string | null; content: Record<string, unknown>; createdAt?: string;
+}): Promise<number> {
+  await getPool().query(`UPDATE seeds SET contribution_status = 'pending' WHERE id = $1`, [opts.seedId]);
+  const result = await getPool().query<{ id: number }>(
+    `INSERT INTO moderation_items (type, seed_id, submitted_by, content, created_at)
+     VALUES ('new_seed', $1, $2, $3, now() - $4::interval) RETURNING id`,
+    [opts.seedId, opts.submittedBy, JSON.stringify(opts.content), opts.createdAt ?? '0 seconds'],
+  );
+  return result.rows[0].id;
+}
+
+// A feedback submission; omit userId for a guest. `createdAt` as above.
+export async function createFeedback(opts: {
+  userId?: string | null; category: 'bug' | 'feature_request' | 'general' | 'data_quality';
+  message: string; sourceSurface?: string | null; appVersion?: string | null; createdAt?: string;
+}): Promise<number> {
+  const result = await getPool().query<{ id: number }>(
+    `INSERT INTO feedback_submissions (user_id, category, message, source_surface, app_version,
+       created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, now() - $6::interval, now() - $6::interval) RETURNING id`,
+    [opts.userId ?? null, opts.category, opts.message, opts.sourceSurface ?? null,
+     opts.appVersion ?? null, opts.createdAt ?? '0 seconds'],
+  );
+  return result.rows[0].id;
 }
 
 // The moderation queue row for a seed that has been submitted as a contribution.
