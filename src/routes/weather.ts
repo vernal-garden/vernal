@@ -13,7 +13,7 @@ import { recordUsageEvent } from '../lib/usageEvents';
 import { invalidateMetrics } from '../lib/metricsCache';
 
 const weatherRouter = Router();
-weatherRouter.use(requireAuth, requireSupporter);
+weatherRouter.use(requireAuth);
 
 const IMPLEMENTED_CONNECTION_PROVIDERS = new Set(['pws_tempest']);
 
@@ -64,7 +64,7 @@ function tempestFailureReason(err: unknown): 'auth_failed' | 'not_found' | 'unre
 
 // ── POST /connections ─────────────────────────────────────────────────────────
 
-weatherRouter.post('/connections', async (req: Request, res: Response): Promise<void> => {
+weatherRouter.post('/connections', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const { provider, credentials, stationId, isPrimary } = req.body as Record<string, unknown>;
 
@@ -183,7 +183,7 @@ weatherRouter.delete('/connections/:id', async (req: Request, res: Response): Pr
 
 // ── GET /current ───────────────────────────────────────────────────────────────
 
-weatherRouter.get('/current', async (req: Request, res: Response): Promise<void> => {
+weatherRouter.get('/current', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
 
   try {
@@ -267,7 +267,7 @@ weatherRouter.get('/current', async (req: Request, res: Response): Promise<void>
 
 // ── GET /history ────────────────────────────────────────────────────────────────
 
-weatherRouter.get('/history', async (req: Request, res: Response): Promise<void> => {
+weatherRouter.get('/history', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
 
   try {
@@ -288,7 +288,7 @@ weatherRouter.get('/history', async (req: Request, res: Response): Promise<void>
 
 // ── POST /test-connection ────────────────────────────────────────────────────────
 
-weatherRouter.post('/test-connection', async (req: Request, res: Response): Promise<void> => {
+weatherRouter.post('/test-connection', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const { provider, credentials, stationId } = req.body as Record<string, unknown>;
 
   if (provider !== 'pws_tempest') {

@@ -7,8 +7,8 @@ import { invalidateMetrics } from '../lib/metricsCache';
 export const soilNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/soil-readings
 export const soilFlatRouter   = Router({ mergeParams: true }); // /api/soil-readings/:id
 
-soilNestedRouter.use(requireAuth, requireSupporter);
-soilFlatRouter.use(requireAuth, requireSupporter);
+soilNestedRouter.use(requireAuth);
+soilFlatRouter.use(requireAuth);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ soilNestedRouter.get('/', async (req: Request, res: Response): Promise<void> => 
 
 // ── POST /api/gardens/:gardenId/soil-readings ─────────────────────────────────
 
-soilNestedRouter.post('/', async (req: Request, res: Response): Promise<void> => {
+soilNestedRouter.post('/', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
@@ -163,7 +163,7 @@ soilNestedRouter.post('/', async (req: Request, res: Response): Promise<void> =>
 
 // ── PATCH /api/soil-readings/:id ──────────────────────────────────────────────
 
-soilFlatRouter.patch('/:id', async (req: Request, res: Response): Promise<void> => {
+soilFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const readingId = req.params.id as string;
 

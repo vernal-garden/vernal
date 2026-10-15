@@ -123,7 +123,7 @@ function seedBody(p: Plant): Pick<HarvestInput, 'seedId' | 'cambiumSeedId'> {
 let nextPhotoId = 1;
 
 export default function HarvestEntryForm({ mode, isMobile, defaultGardenId, onClose, onSaved, onDeleted }: Props) {
-  const { isGuest, account } = useAuth();
+  const { isGuest, isAccount, account } = useAuth();
   const requestFeedback = useMicroFeedback();
   const { gardens, loading: gardensLoading } = useGardenList();
   const uid = useId();
@@ -618,16 +618,28 @@ export default function HarvestEntryForm({ mode, isMobile, defaultGardenId, onCl
             />
             {photoMessage && <p role="status" style={{ ...secondaryTextStyle, margin: 'var(--sp-2) 0 0' }}>{photoMessage}</p>}
           </>
-        ) : tierNoticeDismissed ? null : (
-          <TierNotice
-            onDismiss={() => setTierNoticeDismissed(true)}
-            text={
-              isGuest
-                ? 'Photos are part of the Supporter tier. Sign in and become a Supporter to attach photos.'
-                : 'Photos are part of the Supporter tier. Upgrade to attach photos to your harvest entries.'
-            }
-            link={isGuest ? { to: '/login', label: 'Sign in' } : { to: '/account', label: 'Upgrade' }}
-          />
+        ) : (
+          <>
+            {/* Free accounts keep photos added while a Supporter: remove only, no add. */}
+            {isAccount && existingPhotos.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', marginBottom: 'var(--sp-2)' }}>
+                {keptPhotos.map((p) => (
+                  <Thumb key={p.key} url={p.url} onRemove={() => setRemovedKeys((k) => [...k, p.key])} />
+                ))}
+              </div>
+            )}
+            {!tierNoticeDismissed && (
+              <TierNotice
+                onDismiss={() => setTierNoticeDismissed(true)}
+                text={
+                  isGuest
+                    ? 'Photos are part of the Supporter tier. Sign in and become a Supporter to attach photos.'
+                    : 'Photos are part of the Supporter tier. Upgrade to attach photos to your harvest entries.'
+                }
+                link={isGuest ? { to: '/login', label: 'Sign in' } : { to: '/account', label: 'Upgrade' }}
+              />
+            )}
+          </>
         )}
       </div>
     </>

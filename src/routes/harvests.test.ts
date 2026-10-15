@@ -718,7 +718,9 @@ describe('Photos', () => {
       .send({ contentType: 'image/jpeg', size: 1000 });
     expect(free402.status).toBe(402);
     expect((await free.post(`/api/harvests/${entryId}/photos`).send({ key: keyFor(entryId, 1) })).status).toBe(402);
-    expect((await free.delete(`/api/harvests/${entryId}/photos?key=x`)).status).toBe(402);
+    // Photo removal is open to free accounts (read-only paid data); on another
+    // account's entry that is the ownership 404, not 402.
+    expect((await free.delete(`/api/harvests/${entryId}/photos?key=x`)).status).toBe(404);
 
     const guest401 = await guest
       .post(`/api/harvests/${entryId}/photos/upload-url`)
@@ -795,6 +797,42 @@ describe('Photos', () => {
       `/api/harvests/${entryId}/photos?key=${encodeURIComponent(keyFor(entryId, 2))}`,
     );
     expect(missing.status).toBe(404);
+  });
+
+  it('free account can remove a photo from its own entry but not add one', async () => {
+    await createUser('harvest-lapsed@example.com');
+    const lapsed = await loginAgent('harvest-lapsed@example.com');
+    const gardenId = await createGarden(lapsed);
+    const ownId = (await createEntry(lapsed, { gardenId, cambiumSeedId: peaId })).id;
+    // Photos added while the account was a Supporter.
+    const photos = [5, 6].map((n) => ({
+      key: keyFor(ownId, n),
+      url: `${PUBLIC_BASE}/${keyFor(ownId, n)}`,
+    }));
+    await pool.query('UPDATE harvest_entries SET photos = $2::jsonb WHERE id = $1', [
+      ownId,
+      JSON.stringify(photos),
+    ]);
+
+    const removed = await lapsed.delete(
+      `/api/harvests/${ownId}/photos?key=${encodeURIComponent(keyFor(ownId, 5))}`,
+    );
+    expect(removed.status).toBe(200);
+    expect(removed.body.photos.map((p: { key: string }) => p.key)).toEqual([keyFor(ownId, 6)]);
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(keyFor(ownId, 5));
+
+    const uploadUrl = await lapsed
+      .post(`/api/harvests/${ownId}/photos/upload-url`)
+      .send({ contentType: 'image/jpeg', size: 1000 });
+    expect(uploadUrl.status).toBe(402);
+    expect(uploadUrl.body.upgrade_required).toBe(true);
+    expect(getPresignedUploadUrlMock).not.toHaveBeenCalled();
+
+    const attach = await lapsed
+      .post(`/api/harvests/${ownId}/photos`)
+      .send({ key: keyFor(ownId, 7) });
+    expect(attach.status).toBe(402);
+    expect(attach.body.upgrade_required).toBe(true);
   });
 
   it('deleting the entry deletes its photo objects, and a failed R2 delete is not fatal', async () => {

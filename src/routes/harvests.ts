@@ -1079,7 +1079,7 @@ router.post('/:id/photos', ...photoGuards, async (req: Request, res: Response) =
 });
 
 // DELETE /api/harvests/:id/photos?key=
-router.delete('/:id/photos', ...photoGuards, async (req: Request, res: Response) => {
+router.delete('/:id/photos', requireAuth, writeLimiter, async (req: Request, res: Response) => {
   const session = req.session as SessionData;
   const id = req.params.id as string;
   if (!isNumericId(id)) return res.status(400).json({ error: 'Invalid id' });

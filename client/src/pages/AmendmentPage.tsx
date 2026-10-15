@@ -5,6 +5,7 @@ import { get, post, patch, del, ApiError } from '../lib/api';
 import { track } from '../lib/track';
 import { addDays, todayPacific } from '../lib/guideDates';
 import UpgradePrompt from '../components/UpgradePrompt';
+import UpgradeBanner from '../components/UpgradeBanner';
 import ConfirmDeleteDialog from '../components/ConfirmDeleteDialog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -144,7 +145,8 @@ function AmendmentRow({
   log: AmendmentLog;
   beds: Bed[];
   soilReadings: SoilReading[];
-  onEdit: (l: AmendmentLog) => void;
+  // Omitted for read-only (free account) views: no Edit button.
+  onEdit?: (l: AmendmentLog) => void;
   onDelete: (l: AmendmentLog) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -239,15 +241,17 @@ function AmendmentRow({
             </div>
           )}
 
-          <button
-            onClick={e => { e.stopPropagation(); onEdit(log); }}
-            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px' }}
-          >
-            Edit
-          </button>
+          {onEdit && (
+            <button
+              onClick={e => { e.stopPropagation(); onEdit(log); }}
+              style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', marginRight: 'var(--sp-2)' }}
+            >
+              Edit
+            </button>
+          )}
           <button
             onClick={e => { e.stopPropagation(); onDelete(log); }}
-            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', marginLeft: 'var(--sp-2)', color: 'var(--c-danger)' }}
+            style={{ ...cancelSt, fontSize: 12, padding: '4px 12px', color: 'var(--c-danger)' }}
           >
             Delete
           </button>
@@ -563,7 +567,7 @@ type ConfirmState =
 
 export default function AmendmentPage() {
   const { gardenId } = useParams<{ gardenId: string }>();
-  const { account }  = useAuth();
+  const { account, isAccount } = useAuth();
   const [searchParams] = useSearchParams();
 
   const [garden,       setGarden]       = useState<GardenDetail | null>(null);
@@ -603,9 +607,13 @@ export default function AmendmentPage() {
   useEffect(() => { bedParamRef.current = searchParams.get('bed'); }, [searchParams]);
 
   const isSupporter = account?.subscriptionTier === 'supporter';
+  // Free accounts can view and delete amendments logged while a Supporter, but
+  // not add or edit. Guests never fetch.
+  const readOnly = isAccount && !isSupporter;
+  const canLoad  = isSupporter || readOnly;
 
   const load = useCallback(async () => {
-    if (!gardenId) return;
+    if (!gardenId || !canLoad) return;
     setLoading(true);
     try {
       const [g, a, s] = await Promise.all([
@@ -624,7 +632,7 @@ export default function AmendmentPage() {
     } finally {
       setLoading(false);
     }
-  }, [gardenId]);
+  }, [gardenId, canLoad]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -650,13 +658,13 @@ export default function AmendmentPage() {
     load();
   }
 
-  if (!isSupporter) {
-    return (
-      <div style={{ padding: 'var(--sp-6)' }}>
-        <UpgradePrompt gateKey="amendments" />
-      </div>
-    );
-  }
+  const upgradePrompt = (
+    <div style={{ padding: 'var(--sp-6)' }}>
+      <UpgradePrompt gateKey="amendments" />
+    </div>
+  );
+
+  if (!canLoad) return upgradePrompt;
 
   if (loading) {
     return (
@@ -665,6 +673,9 @@ export default function AmendmentPage() {
       </div>
     );
   }
+
+  // A free account with no paid-era amendments sees the plain gate.
+  if (readOnly && amendments.length === 0) return upgradePrompt;
 
   const beds = garden?.beds ?? [];
 
@@ -690,13 +701,17 @@ export default function AmendmentPage() {
         <h1 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 24, color: 'var(--c-text)' }}>
           Amendment Log
         </h1>
-        <button
-          onClick={() => setForm({ open: true, mode: 'add' })}
-          style={saveSt}
-        >
-          + Log amendment
-        </button>
+        {!readOnly && (
+          <button
+            onClick={() => setForm({ open: true, mode: 'add' })}
+            style={saveSt}
+          >
+            + Log amendment
+          </button>
+        )}
       </div>
+
+      {readOnly && <UpgradeBanner gateKey="amendments" />}
 
       {/* Filter bar */}
       <FilterBar
@@ -712,7 +727,9 @@ export default function AmendmentPage() {
       {/* Timeline */}
       {filtered.length === 0 ? (
         <p style={{ fontFamily: 'var(--font-ui)', fontSize: 14, color: 'var(--c-text-3)' }}>
-          No amendments logged yet. Use "+ Log amendment" to get started.
+          {readOnly
+            ? 'No amendments match these filters.'
+            : 'No amendments logged yet. Use "+ Log amendment" to get started.'}
         </p>
       ) : (
         <>
@@ -723,7 +740,7 @@ export default function AmendmentPage() {
                 log={log}
                 beds={beds}
                 soilReadings={soilReadings}
-                onEdit={l => setForm({ open: true, mode: 'edit', log: l })}
+                onEdit={readOnly ? undefined : l => setForm({ open: true, mode: 'edit', log: l })}
                 onDelete={l => setConfirm({ open: true, entry: l })}
               />
             ))}

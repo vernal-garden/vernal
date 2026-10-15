@@ -21,6 +21,21 @@ function relativeSync(iso: string | null): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
+function providerLabel(provider: string): string {
+  return provider === 'pws_tempest' ? 'Tempest WeatherFlow' : provider;
+}
+
+const disconnectBtnSt: React.CSSProperties = {
+  padding: '6px 14px',
+  fontSize: 12,
+  fontFamily: 'var(--font-ui)',
+  border: '1px solid var(--c-danger)',
+  borderRadius: 'var(--r-md)',
+  background: 'transparent',
+  color: 'var(--c-danger)',
+  cursor: 'pointer',
+};
+
 const toggleBtnSt = (active: boolean): React.CSSProperties => ({
   padding: '4px 10px',
   fontSize: 12,
@@ -32,7 +47,7 @@ const toggleBtnSt = (active: boolean): React.CSSProperties => ({
 });
 
 export default function WeatherPage() {
-  const { account } = useAuth();
+  const { account, isAccount } = useAuth();
   const isSupporter = account?.subscriptionTier === 'supporter';
 
   const {
@@ -56,9 +71,41 @@ export default function WeatherPage() {
   const [stationOpen, setStationOpen] = useState(false);
 
   if (!isSupporter) {
+    // A free account can still see and remove a station saved while a Supporter.
+    const saved = isAccount ? connections : [];
     return (
       <div style={{ padding: 'var(--sp-6)' }}>
         <UpgradePrompt gateKey="weather" />
+        {saved.length > 0 && (
+          <div style={{ maxWidth: 480, margin: '0 auto', borderTop: '1px solid var(--c-border-subtle)', paddingTop: 'var(--sp-4)' }}>
+            <h3 style={{ margin: '0 0 var(--sp-3)', fontFamily: 'var(--font-display)', fontSize: 15, color: 'var(--c-text)' }}>
+              {saved.length === 1 ? 'Your saved station' : 'Your saved stations'}
+            </h3>
+            {saved.map((c) => (
+              <div
+                key={c.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 'var(--sp-3)',
+                  padding: 'var(--sp-3)',
+                  border: '1px solid var(--c-border)',
+                  borderRadius: 'var(--r-md)',
+                  marginBottom: 'var(--sp-2)',
+                }}
+              >
+                <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 600, color: 'var(--c-text)' }}>
+                  {providerLabel(c.provider)}
+                  {c.stationId ? ` · Station ${c.stationId}` : ''}
+                </div>
+                <button onClick={() => disconnect(c.id)} style={disconnectBtnSt}>
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -214,26 +261,14 @@ export default function WeatherPage() {
             >
               <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-text-2)' }}>
                 <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>
-                  {c.provider === 'pws_tempest' ? 'Tempest WeatherFlow' : c.provider}
+                  {providerLabel(c.provider)}
                   {c.stationId ? ` · Station ${c.stationId}` : ''}
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--c-text-3)' }}>
                   Last sync: {relativeSync(c.lastSuccessfulSync)}
                 </div>
               </div>
-              <button
-                onClick={() => disconnect(c.id)}
-                style={{
-                  padding: '6px 14px',
-                  fontSize: 12,
-                  fontFamily: 'var(--font-ui)',
-                  border: '1px solid var(--c-danger)',
-                  borderRadius: 'var(--r-md)',
-                  background: 'transparent',
-                  color: 'var(--c-danger)',
-                  cursor: 'pointer',
-                }}
-              >
+              <button onClick={() => disconnect(c.id)} style={disconnectBtnSt}>
                 Disconnect
               </button>
             </div>
