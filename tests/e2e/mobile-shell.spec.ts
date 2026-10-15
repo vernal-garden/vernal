@@ -1,10 +1,12 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
-import { resetTestDb, createTestUser, createTestGarden, closePool } from './helpers/db';
+import { resetTestDb, createTestUser, createTestGarden, setAccountRole, closePool } from './helpers/db';
 
 // Runs only in the 'mobile' (Pixel 7) project — see playwright.config.ts.
 
 const EMAIL = 'mobile-shell@example.com';
 const PASSWORD = 'MobileShell123!';
+const ADMIN_EMAIL = 'mobile-admin@example.com';
+const ADMIN_PASSWORD = 'MobileAdmin123!';
 
 const TAB_ROUTES = [
   { label: 'Gardens', url: '/gardens', title: 'My Gardens' },
@@ -21,13 +23,16 @@ test.beforeAll(async () => {
   const user = await createTestUser({ email: EMAIL, password: PASSWORD, isSupporter: true });
   // A garden keeps '/' from redirecting to /onboarding.
   gardenId = await createTestGarden(user.id, 'Mobile Garden');
+  const admin = await createTestUser({ email: ADMIN_EMAIL, password: ADMIN_PASSWORD });
+  await setAccountRole(admin.id, 'admin');
+  await createTestGarden(admin.id, 'Admin Garden');
 });
 test.afterAll(closePool);
 
-async function signIn(page: Page): Promise<void> {
+async function signIn(page: Page, email = EMAIL, password = PASSWORD): Promise<void> {
   await page.goto('/login');
-  await page.fill('input[type="email"]', EMAIL);
-  await page.fill('input[type="password"]', PASSWORD);
+  await page.fill('input[type="email"]', email);
+  await page.fill('input[type="password"]', password);
   await page.click('button[type="submit"]');
   await expect(page).not.toHaveURL(/\/login/);
 }
@@ -141,6 +146,14 @@ test.describe('signed in', () => {
     expect(tabBarBox).not.toBeNull();
     expect(toolbarBottom).toBeLessThanOrEqual(tabBarBox!.y);
   });
+});
+
+test('admin dashboard shows the desktop-only notice on a phone', async ({ page }) => {
+  await signIn(page, ADMIN_EMAIL, ADMIN_PASSWORD);
+  await page.goto('/admin/seeds');
+  await expect(page).toHaveURL('/admin/seeds');
+  await expect(page.getByText('The admin dashboard is desktop-only.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
 });
 
 test('guest sees Sign in instead of the account link', async ({ page }) => {

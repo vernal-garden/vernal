@@ -1,4 +1,5 @@
-import { createBrowserRouter, type RouteObject } from 'react-router-dom';
+import { lazy, Suspense } from 'react';
+import { createBrowserRouter, Navigate, Outlet, type RouteObject } from 'react-router-dom';
 import ProtectedRoute from './components/ProtectedRoute';
 import GuestRoute from './components/GuestRoute';
 import AccountRoute from './components/AccountRoute';
@@ -25,6 +26,16 @@ import AccountPage from './pages/AccountPage';
 import EmailConfirmPage from './pages/EmailConfirmPage';
 import AboutPage from './pages/AboutPage';
 import NotFoundPage from './pages/NotFoundPage';
+import AdminRoute from './components/admin/AdminRoute';
+import AdminShell from './components/admin/AdminShell';
+
+// Admin pages load on demand so they stay out of the main bundle.
+const AdminSeedsPage = lazy(() => import('./pages/admin/SeedsPage'));
+const AdminModerationPage = lazy(() => import('./pages/admin/ModerationPage'));
+const AdminUsersPage = lazy(() => import('./pages/admin/UsersPage'));
+const AdminFeaturesPage = lazy(() => import('./pages/admin/FeaturesPage'));
+const AdminFeedbackPage = lazy(() => import('./pages/admin/FeedbackPage'));
+const AdminSystemPage = lazy(() => import('./pages/admin/SystemPage'));
 
 const withErrorBoundary = (route: RouteObject): RouteObject => ({ ...route, errorElement: <RouteErrorBoundary /> });
 
@@ -134,6 +145,34 @@ const routes: RouteObject[] = [
   {
     element: <AppShell />,
     children: shellRoutes.map(withErrorBoundary),
+  },
+  {
+    // Admin dashboard: its own desktop layout, outside the app shell.
+    path: '/admin',
+    element: (
+      <AdminRoute>
+        <AdminShell />
+      </AdminRoute>
+    ),
+    children: [
+      {
+        // Pathless layout: the shell stays up while a lazy page loads.
+        element: (
+          <Suspense fallback={<p style={{ margin: 0, color: 'var(--c-text-3)' }}>Loading…</p>}>
+            <Outlet />
+          </Suspense>
+        ),
+        children: [
+          { index: true, element: <Navigate to="seeds" replace /> },
+          { path: 'seeds', element: <AdminSeedsPage /> },
+          { path: 'moderation', element: <AdminModerationPage /> },
+          { path: 'users', element: <AdminUsersPage /> },
+          { path: 'features', element: <AdminFeaturesPage /> },
+          { path: 'feedback', element: <AdminFeedbackPage /> },
+          { path: 'system', element: <AdminSystemPage /> },
+        ].map(withErrorBoundary),
+      },
+    ],
   },
   {
     // Outside the shell: a bare printable page. The static "print" segment
