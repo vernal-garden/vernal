@@ -464,6 +464,85 @@ describe('Phase 37 admin API', () => {
       expect(rows[0].contribution_status).toBe('rejected');
     });
 
+    describe('notifications', () => {
+      async function notificationsFor(accountId: number) {
+        const { rows } = await pool.query<{ type: string; payload: Record<string, unknown> }>(
+          'SELECT type, payload FROM notifications WHERE account_id = $1 ORDER BY id',
+          [accountId],
+        );
+        return rows;
+      }
+
+      beforeAll(async () => {
+        await pool.query('TRUNCATE notifications RESTART IDENTITY');
+      });
+
+      it('approving a new_seed item notifies the submitter', async () => {
+        const seedId = await insertPersonalSeed(userId, 'Theta Kale');
+        const itemId = await insertModerationItem({
+          type: 'new_seed',
+          seedId,
+          submittedBy: userId,
+          content: { commonName: 'Theta Kale' },
+        });
+        await adminAgent.patch(`/api/admin/moderation/${itemId}`).send({ action: 'approve' });
+
+        const rows = await notificationsFor(userId);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].type).toBe('contribution_approved');
+        expect(rows[0].payload).toEqual({ seedId, seedName: 'Theta Kale' });
+      });
+
+      it('rejecting with a note notifies without leaking the note', async () => {
+        await pool.query('TRUNCATE notifications RESTART IDENTITY');
+        const seedId = await insertPersonalSeed(userId, 'Iota Leek');
+        const itemId = await insertModerationItem({
+          type: 'new_seed',
+          seedId,
+          submittedBy: userId,
+          content: {},
+        });
+        await adminAgent
+          .patch(`/api/admin/moderation/${itemId}`)
+          .send({ action: 'reject', note: 'secret-admin-reason' });
+
+        const rows = await notificationsFor(userId);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].type).toBe('contribution_rejected');
+        expect(rows[0].payload).toEqual({ seedId, seedName: 'Iota Leek' });
+        expect(JSON.stringify(rows[0].payload)).not.toContain('secret-admin-reason');
+      });
+
+      it('defer and correction items write no notification', async () => {
+        await pool.query('TRUNCATE notifications RESTART IDENTITY');
+        const seedId = await insertPersonalSeed(userId, 'Kappa Chard');
+        const seedItem = await insertModerationItem({
+          type: 'new_seed',
+          seedId,
+          submittedBy: userId,
+          content: { commonName: 'Kappa Chard' },
+        });
+        await adminAgent.patch(`/api/admin/moderation/${seedItem}`).send({ action: 'defer' });
+
+        const correction = await insertModerationItem({
+          type: 'correction',
+          cambiumSeedId,
+          submittedBy: userId,
+          content: { correctionText: 'x' },
+        });
+        await adminAgent.patch(`/api/admin/moderation/${correction}`).send({ action: 'approve' });
+        const correction2 = await insertModerationItem({
+          type: 'correction',
+          cambiumSeedId,
+          submittedBy: userId,
+          content: { correctionText: 'y' },
+        });
+        await adminAgent.patch(`/api/admin/moderation/${correction2}`).send({ action: 'reject' });
+
+        expect(await notificationsFor(userId)).toHaveLength(0);
+      });
+    });
+
     it('rejects an unknown action and an over-long note with 400', async () => {
       const id = await insertModerationItem({ type: 'correction', cambiumSeedId });
       const bad = await adminAgent.patch(`/api/admin/moderation/${id}`).send({ action: 'delete' });

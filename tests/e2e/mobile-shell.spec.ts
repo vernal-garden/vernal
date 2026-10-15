@@ -116,7 +116,17 @@ test.describe('signed in', () => {
     await expectTouchTargets(topBar(page));
   });
 
-  test('canvas toolbar sits above the tab bar', async ({ page }) => {
+  test('top bar shows the notification bell and every control stays 44x44', async ({ page }) => {
+    await page.goto('/gardens');
+    const bell = topBar(page).getByTestId('notification-bell');
+    await expect(bell).toBeVisible();
+    await expectTouchTargets(topBar(page));
+    const box = await bell.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+  });
+
+  test('canvas toolbar sits above the tab bar',async ({ page }) => {
     await page.goto('/');
     const zoomIn = page.getByRole('button', { name: 'Zoom in' });
     await expect(zoomIn).toBeVisible();
@@ -139,4 +149,33 @@ test('guest sees Sign in instead of the account link', async ({ page }) => {
   await expect(topBar(page).getByText('My Gardens', { exact: true })).toBeVisible();
   await expect(topBar(page).getByRole('link', { name: 'Sign in' })).toBeVisible();
   await expect(topBar(page).getByRole('link', { name: 'Account', exact: true })).toHaveCount(0);
+});
+
+test.describe('guest About link', () => {
+  test('top bar shows About, which goes to /about, and every control stays 44x44', async ({ page }) => {
+    await page.goto('/gardens');
+    const about = topBar(page).getByRole('link', { name: 'About', exact: true });
+    await expect(about).toBeVisible();
+    await expectTouchTargets(topBar(page));
+
+    await about.tap();
+    await expect(page).toHaveURL('/about');
+    await expect(about).toHaveAttribute('aria-current', 'page');
+    await expect(topBar(page).getByText('About', { exact: true }).first()).toBeVisible();
+    await expectTouchTargets(topBar(page));
+  });
+
+  test('at 360px the route title is not clipped', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 780 });
+    for (const { url, title } of [...TAB_ROUTES.filter(({ url }) => url !== '/'), { url: '/about', title: 'About' }]) {
+      await page.goto(url);
+      const heading = topBar(page).getByText(title, { exact: true }).first();
+      await expect(heading).toBeVisible();
+      const { scrollWidth, clientWidth } = await heading.evaluate((el) => ({
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+      }));
+      expect(scrollWidth, `"${title}" is clipped`).toBeLessThanOrEqual(clientWidth);
+    }
+  });
 });

@@ -14,6 +14,7 @@ import {
   deriveGrowth,
   refreshGardenBadges,
   purgeExpiredGuests,
+  purgeReadNotifications,
   purgeScheduledAccounts,
   checkSubscriptionDowngrades,
   purgeExpiredExports,
@@ -583,6 +584,37 @@ describe('purgeExpiredGuests', () => {
     const tokens = rows.map((r) => r.token);
     expect(tokens).not.toContain('nightly-expired-not-migrated');
     expect(tokens).toContain('nightly-expired-migrated');
+  });
+});
+
+describe('purgeReadNotifications', () => {
+  beforeEach(resetDb);
+
+  it('deletes notifications read over 90 days ago, keeping unread and recently read ones', async () => {
+    const accountId = await createAccount();
+    const insert = async (readDaysAgo: number | null, createdDaysAgo: number) => {
+      const { rows } = await pool.query<{ id: number }>(
+        `INSERT INTO notifications (account_id, type, read_at, created_at)
+         VALUES ($1, 'contribution_approved',
+                 CASE WHEN $2::int IS NULL THEN NULL ELSE NOW() - make_interval(days => $2::int) END,
+                 NOW() - make_interval(days => $3::int))
+         RETURNING id`,
+        [accountId, readDaysAgo, createdDaysAgo],
+      );
+      return rows[0].id;
+    };
+    const oldRead = await insert(91, 100);
+    const oldUnread = await insert(null, 100);
+    const recentRead = await insert(10, 20);
+
+    const { affected } = await purgeReadNotifications();
+
+    expect(affected).toBe(1);
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM notifications');
+    const ids = rows.map((r) => r.id);
+    expect(ids).not.toContain(oldRead);
+    expect(ids).toContain(oldUnread);
+    expect(ids).toContain(recentRead);
   });
 });
 

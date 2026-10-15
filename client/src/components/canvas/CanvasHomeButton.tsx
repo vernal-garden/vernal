@@ -11,7 +11,7 @@ export function CanvasHomeButton() {
       to="/gardens"
       style={{
         position: 'fixed',
-        top: 16,
+        top: 'calc(16px + var(--shell-top, 0px))',
         left: 16,
         zIndex: 10,
         display: 'inline-flex',

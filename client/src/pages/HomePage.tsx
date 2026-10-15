@@ -23,6 +23,7 @@ import { useConflicts } from '../hooks/useConflicts';
 import { computeBedOccupancy } from '../lib/crowding';
 import SupporterPromptModal from '../components/SupporterPromptModal';
 import { track } from '../lib/track';
+import { notifyPlantingPlaced } from '../lib/guestBannerEvents';
 import { useMicroFeedback } from '../lib/microFeedback';
 import * as api from '../lib/api';
 import { useIsMobile } from '../hooks/useIsMobile';
@@ -506,6 +507,7 @@ export default function HomePage() {
     const placed = await placePlanting(bedId, payload, seed.commonName);
     if (placed) {
       track('canvas_plant_placed');
+      notifyPlantingPlaced();
       placementWindowTimerRef.current = setTimeout(() => {
         pendingPlacementRef.current = false;
       }, PLACEMENT_CONFLICT_WINDOW_MS);

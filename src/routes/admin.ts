@@ -521,8 +521,13 @@ router.patch('/moderation/:id', async (req, res) => {
 
   try {
     await client.query('BEGIN');
-    const existing = await client.query<{ type: string; status: string; seed_id: number | null }>(
-      'SELECT type, status, seed_id FROM moderation_items WHERE id = $1 FOR UPDATE',
+    const existing = await client.query<{
+      type: string;
+      status: string;
+      seed_id: number | null;
+      submitted_by: number | null;
+    }>(
+      'SELECT type, status, seed_id, submitted_by FROM moderation_items WHERE id = $1 FOR UPDATE',
       [id],
     );
     if (existing.rows.length === 0) {
@@ -555,6 +560,24 @@ router.patch('/moderation/:id', async (req, res) => {
         'UPDATE seeds SET contribution_status = $1, updated_at = NOW() WHERE id = $2',
         [action === 'approve' ? 'approved' : 'rejected', item.seed_id],
       );
+
+      // Tell the contributor. The payload never carries the admin's note.
+      if (item.submitted_by !== null) {
+        await client.query(
+          `INSERT INTO notifications (account_id, type, payload)
+           SELECT $1, $2,
+                  jsonb_build_object('seedId', mi.seed_id,
+                                     'seedName', COALESCE(mi.content->>'commonName', s.common_name))
+           FROM moderation_items mi
+           LEFT JOIN seeds s ON s.id = mi.seed_id
+           WHERE mi.id = $3`,
+          [
+            item.submitted_by,
+            action === 'approve' ? 'contribution_approved' : 'contribution_rejected',
+            id,
+          ],
+        );
+      }
     }
 
     await client.query('COMMIT');

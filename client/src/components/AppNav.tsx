@@ -1,5 +1,6 @@
 // client/src/components/AppNav.tsx
 import { Link, useLocation } from 'react-router-dom';
+import NotificationBell from './NotificationBell';
 
 const NAV_LINKS = [
   { to: '/',          label: 'Gardens' },
@@ -69,6 +70,33 @@ export default function AppNav() {
           </Link>
         );
       })}
+
+      {/* Pushes the bell and About to the right end */}
+      <div style={{ marginLeft: 'auto' }} />
+      <NotificationBell />
+
+      {/* Low-weight */}
+      <Link
+        to="/about"
+        data-testid="nav-about"
+        style={{
+          fontFamily: 'var(--font-ui)',
+          fontSize: 13,
+          fontWeight: 400,
+          color: 'var(--c-text-3)',
+          textDecoration: 'none',
+          display: 'inline-flex',
+          alignItems: 'center',
+          minHeight: 44,
+          padding: '0 var(--sp-3)',
+          borderRadius: 'var(--r-md)',
+          whiteSpace: 'nowrap',
+          flexShrink: 0,
+        }}
+        aria-current={pathname === '/about' ? 'page' : undefined}
+      >
+        About
+      </Link>
     </nav>
   );
 }

@@ -95,7 +95,7 @@ export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, 
 
   return (
     <div style={{
-      position: 'fixed', right: 0, top: 0, bottom: 0, width: 280,
+      position: 'fixed', right: 0, top: 'var(--shell-top, 0px)', bottom: 0, width: 280,
       display: 'flex', flexDirection: 'column',
       background: '#faf7f2', borderLeft: '1px solid #d8ceba',
       boxShadow: '-4px 0 32px rgba(20,40,20,0.12)',

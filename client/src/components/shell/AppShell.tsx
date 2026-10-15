@@ -1,6 +1,7 @@
-import { useLayoutEffect } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import AppNav from '../AppNav';
+import GuestBanner from '../GuestBanner';
 import MicroFeedbackHost from '../MicroFeedbackHost';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import BottomTabBar, { TAB_BAR_HEIGHT } from './BottomTabBar';
@@ -20,11 +21,23 @@ export default function AppShell() {
   const { pathname } = useLocation();
   const isCanvas = pathname === '/';
 
+  const [bannerHeight, setBannerHeight] = useState(0);
+
+  // The guest banner is position:fixed on mobile and on the nav-less desktop
+  // canvas, so only there does it take space that fixed/padded content must
+  // clear. On other desktop pages it sits in normal flow under AppNav and
+  // pushes content down by itself.
+  const bannerFixed = isMobile || isCanvas;
+
   useLayoutEffect(() => {
     const style = document.documentElement.style;
-    style.setProperty('--shell-top', isMobile ? SHELL_TOP_MOBILE : '0px');
+    const base = isMobile ? SHELL_TOP_MOBILE : '0px';
+    style.setProperty(
+      '--shell-top',
+      bannerFixed && bannerHeight > 0 ? `calc(${base} + ${bannerHeight}px)` : base,
+    );
     style.setProperty('--shell-bottom', isMobile ? SHELL_BOTTOM_MOBILE : '0px');
-  }, [isMobile]);
+  }, [isMobile, bannerFixed, bannerHeight]);
 
   useLayoutEffect(() => () => {
     const style = document.documentElement.style;
@@ -36,6 +49,7 @@ export default function AppShell() {
     return (
       <>
         {!isCanvas && <AppNav />}
+        <GuestBanner fixed={isCanvas} top="0px" onHeightChange={setBannerHeight} />
         <Outlet />
         <MicroFeedbackHost />
       </>
@@ -45,6 +59,7 @@ export default function AppShell() {
   return (
     <>
       <MobileTopBar />
+      <GuestBanner fixed top={SHELL_TOP_MOBILE} onHeightChange={setBannerHeight} />
       <main
         style={isCanvas ? undefined : {
           paddingTop: 'var(--shell-top)',

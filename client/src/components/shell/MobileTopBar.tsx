@@ -1,5 +1,6 @@
 import { Link, matchPath, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
+import NotificationBell from '../NotificationBell';
 import { BackIcon } from './icons';
 
 // Height of the bar itself, excluding the top safe-area inset.
@@ -20,6 +21,7 @@ export const ROUTE_TITLES: Record<string, string> = {
   '/weather': 'Weather',
   '/harvest': 'Harvest',
   '/account': 'Account',
+  '/about': 'About',
   [SOIL_PATTERN]: 'Soil',
   [AMENDMENTS_PATTERN]: 'Amendments',
   [HARVEST_DETAIL_PATTERN]: 'Harvest',
@@ -61,49 +63,77 @@ export default function MobileTopBar() {
 
   let right;
   if (state.kind === 'loading') {
-    right = <div aria-hidden="true" style={SQUARE_44} />;
+    // Footprint of the widest right cluster (guest About + Sign in, ~135px measured)
+    // so the title doesn't get cut short when auth resolves.
+    right = <div aria-hidden="true" style={{ ...SQUARE_44, width: 136 }} />;
   } else if (account) {
     const initial = (account.email ?? '?').charAt(0).toUpperCase();
     right = (
-      <Link
-        to="/account"
-        aria-label="Account"
-        style={{
-          ...SQUARE_44,
-          borderRadius: 'var(--r-full)',
-          background: 'var(--c-primary-subtle)',
-          color: 'var(--c-primary-dark)',
-          fontFamily: 'var(--font-ui)',
-          fontSize: 16,
-          fontWeight: 600,
-          textDecoration: 'none',
-        }}
-      >
-        {initial}
-      </Link>
+      <>
+        <NotificationBell />
+        <Link
+          to="/account"
+          aria-label="Account"
+          style={{
+            ...SQUARE_44,
+            borderRadius: 'var(--r-full)',
+            background: 'var(--c-primary-subtle)',
+            color: 'var(--c-primary-dark)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 16,
+            fontWeight: 600,
+            textDecoration: 'none',
+          }}
+        >
+          {initial}
+        </Link>
+      </>
     );
   } else {
     right = (
-      <Link
-        to="/login"
-        style={{
-          minHeight: 44,
-          minWidth: 44,
-          flexShrink: 0,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '0 var(--sp-3)',
-          color: 'var(--c-primary)',
-          fontFamily: 'var(--font-ui)',
-          fontSize: 14,
-          fontWeight: 600,
-          textDecoration: 'none',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        Sign in
-      </Link>
+      <>
+        {/* Low-weight, like AppNav's About link */}
+        <Link
+          to="/about"
+          data-testid="topbar-about"
+          style={{
+            minHeight: 44,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            padding: '0 var(--sp-3)',
+            color: 'var(--c-text-3)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 13,
+            fontWeight: 400,
+            textDecoration: 'none',
+            whiteSpace: 'nowrap',
+          }}
+          aria-current={pathname === '/about' ? 'page' : undefined}
+        >
+          About
+        </Link>
+        <Link
+          to="/login"
+          style={{
+            minHeight: 44,
+            minWidth: 44,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '0 var(--sp-3)',
+            color: 'var(--c-primary)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 14,
+            fontWeight: 600,
+            textDecoration: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Sign in
+        </Link>
+      </>
     );
   }
 

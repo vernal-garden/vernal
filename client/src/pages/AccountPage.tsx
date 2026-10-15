@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { get } from '../lib/api';
 import SubscriptionSettings from '../components/account/SubscriptionSettings';
 import ProfileSettings from '../components/account/ProfileSettings';
@@ -133,6 +134,31 @@ export default function AccountPage() {
 
           {signOutButton('lg:hidden')}
         </div>
+      )}
+
+      {!loading && !error && account && (
+        <Link
+          to="/about"
+          data-testid="account-help-about"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            minHeight: 44,
+            marginTop: 'var(--sp-6)',
+            padding: '0 var(--sp-4)',
+            border: '1px solid var(--c-border-subtle)',
+            borderRadius: 'var(--r-md)',
+            background: 'var(--c-surface)',
+            color: 'var(--c-text)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 14,
+            textDecoration: 'none',
+          }}
+        >
+          Help &amp; About
+          <span aria-hidden="true" style={{ color: 'var(--c-text-3)' }}>›</span>
+        </Link>
       )}
     </div>
   );
