@@ -1,6 +1,7 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import {
-  resetTestDb, createTestUser, createTestGarden, createTestSeed, createTestCambiumSeed, closePool,
+  resetTestDb, createTestUser, createTestGarden, createTestSeed, createTestCambiumSeed,
+  deleteCambiumSeedsLike, closePool,
 } from './helpers/db';
 import { signIn } from './helpers/guide';
 
@@ -12,27 +13,38 @@ const PASSWORD = 'MobileCatalogue123!';
 const DESKTOP_NOTE = 'To add, edit, or suggest a correction, visit Vernal on desktop.';
 
 // cambium.seeds survives resetTestDb, so the names carry a per-run stamp and
-// the list is narrowed to them by search.
-const STAMP = `Mobcat ${Date.now()}`;
+// the list is narrowed to them by search. afterAll deletes every 'Mobcat %'
+// seed, which also clears leftovers from earlier runs.
+const STAMP_PREFIX = 'Mobcat ';
+const STAMP = `${STAMP_PREFIX}${Date.now()}`;
 const CAMBIUM_NAMES = [`${STAMP} Alpha`, `${STAMP} Bravo`, `${STAMP} Charlie`];
 const PERSONAL_NAME = 'Mobile Personal Pepper';
 
 let personalSeedId: number;
+const cambiumIds: number[] = [];
 
 test.beforeAll(async () => {
   await resetTestDb();
   const user = await createTestUser({ email: EMAIL, password: PASSWORD });
   await createTestGarden(user.id, 'Catalogue Garden');
-  for (const name of CAMBIUM_NAMES) await createTestCambiumSeed(name);
+  for (const name of CAMBIUM_NAMES) cambiumIds.push(await createTestCambiumSeed(name));
   personalSeedId = await createTestSeed(user.id, PERSONAL_NAME);
 });
-test.afterAll(closePool);
+test.afterAll(async () => {
+  await deleteCambiumSeedsLike(`${STAMP_PREFIX}%`);
+  await closePool();
+});
 
 test.beforeEach(async ({ page }) => {
   await signIn(page, EMAIL, PASSWORD);
 });
 
 const seedList = (page: Page) => page.getByRole('list', { name: 'Seeds' });
+
+// react-router's history stack index (history.state.idx): equal before an
+// open and after a close means the close left no extra entry behind.
+const historyIdx = (page: Page) =>
+  page.evaluate(() => (window.history.state as { idx?: number } | null)?.idx ?? 0);
 
 async function searchStamped(page: Page): Promise<Locator> {
   await page.goto('/catalogue');
@@ -104,4 +116,53 @@ test('a personal seed opens read-only with the desktop note', async ({ page }) =
   const detail = page.getByRole('dialog', { name: PERSONAL_NAME });
   await expect(detail).toBeVisible();
   await expectReadOnlyDetail(detail);
+  // The one-shot ?open= link becomes the ?seed= param in place.
+  await expect(page).toHaveURL(new RegExp(`[?&]seed=seed(:|%3A)${personalSeedId}$`));
+});
+
+test('back closes the seed detail and stays on the catalogue', async ({ page }) => {
+  const list = await searchStamped(page);
+  const name = CAMBIUM_NAMES[1];
+  await list.getByRole('button', { name: new RegExp(`^${name}`) }).tap();
+  const detail = page.getByRole('dialog', { name });
+  await expect(detail).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`[?&]seed=cambium(:|%3A)${cambiumIds[1]}$`));
+
+  await page.goBack();
+  await expect(detail).toHaveCount(0);
+  const url = new URL(page.url());
+  expect(url.pathname).toBe('/catalogue');
+  expect(url.searchParams.has('seed')).toBe(false);
+  // The search survives: same query, same rows.
+  await expect(page.getByRole('searchbox', { name: 'Search seeds' })).toHaveValue(STAMP);
+  await expect(list.getByRole('listitem')).toHaveCount(CAMBIUM_NAMES.length);
+});
+
+test('closing with X leaves no extra history entry', async ({ page }) => {
+  const list = await searchStamped(page);
+  const before = await historyIdx(page);
+  const name = CAMBIUM_NAMES[2];
+  await list.getByRole('button', { name: new RegExp(`^${name}`) }).tap();
+  const detail = page.getByRole('dialog', { name });
+  await expect(detail).toBeVisible();
+
+  await detail.getByRole('button', { name: 'Close' }).tap();
+  await expect(detail).toHaveCount(0);
+  await expect(page).not.toHaveURL(/[?&]seed=/);
+  expect(await historyIdx(page)).toBe(before);
+  await expect(page.getByRole('searchbox', { name: 'Search seeds' })).toHaveValue(STAMP);
+});
+
+test('a direct ?seed= link opens the seed; X removes the param in place', async ({ page }) => {
+  await page.goto(`/catalogue?seed=cambium:${cambiumIds[0]}`);
+  const detail = page.getByRole('dialog', { name: CAMBIUM_NAMES[0] });
+  await expect(detail).toBeVisible();
+  const before = await historyIdx(page);
+
+  await detail.getByRole('button', { name: 'Close' }).tap();
+  await expect(detail).toHaveCount(0);
+  const url = new URL(page.url());
+  expect(url.pathname).toBe('/catalogue');
+  expect(url.searchParams.has('seed')).toBe(false);
+  expect(await historyIdx(page)).toBe(before);
 });

@@ -437,7 +437,7 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
                 key={b.id}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
-                  padding: '4px 10px', borderRadius: 'var(--r-md)',
+                  padding: isMobile ? '0 10px' : '4px 10px', borderRadius: 'var(--r-md)',
                   ...(isMobile && { minHeight: 44 }),
                   border: `1px solid ${checked ? 'var(--c-primary)' : 'var(--c-border)'}`,
                   background: checked ? 'var(--c-primary-subtle)' : 'transparent',

@@ -78,6 +78,21 @@ export async function createTestCambiumSeed(commonName: string): Promise<number>
   return result.rows[0].id;
 }
 
+// Removes cambium.seeds rows whose common_name matches any of the LIKE
+// patterns (e.g. 'Mobcat %'), for a spec's afterAll since resetTestDb leaves
+// cambium.* alone. A stamp-prefix pattern also clears earlier runs' leftovers.
+// cambium.companions and cambium.seed_ratings go with them (ON DELETE
+// CASCADE); public-schema cambium_seed_id columns have no FK, so nothing
+// blocks the delete. Returns the number of seeds deleted.
+export async function deleteCambiumSeedsLike(...patterns: string[]): Promise<number> {
+  if (patterns.length === 0) return 0;
+  const result = await getPool().query(
+    'DELETE FROM cambium.seeds WHERE common_name LIKE ANY($1::text[])',
+    [patterns],
+  );
+  return result.rowCount ?? 0;
+}
+
 export async function closePool(): Promise<void> {
   if (ended) return;
   ended = true;

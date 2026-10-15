@@ -24,7 +24,8 @@ let gardenId: string;
 // amendment — enough for every page to render its normal content rather than
 // an empty state. The location is put back to 'Test City' (the fixture clears
 // it) so /weather and the /data weather card render their normal forecast
-// layout; that content depends on the live forecast service answering.
+// layout. The forecast service itself is never called: the browser's weather
+// requests are stubbed per test (see stubWeather below).
 test.beforeAll(async () => {
   await resetTestDb();
   const fixture = await createMetricsFixture(EMAIL, PASSWORD, 'Sweep Tomato');
@@ -52,6 +53,63 @@ test.beforeAll(async () => {
   }
 });
 test.afterAll(closePool);
+
+// The server fetches the forecast from an external service, so the browser's
+// own /api calls are stubbed instead. /weather reads /api/weather/current and
+// /api/weather/history; the /data weather card reads `paid.weather` from
+// /api/metrics/dashboard, which is fetched for real and has only that field
+// replaced.
+async function stubWeather(page: Page): Promise<void> {
+  const ymd = (daysAgo: number): string => {
+    const d = new Date(Date.now() - daysAgo * 86_400_000);
+    return d.toISOString().slice(0, 10);
+  };
+  const history = Array.from({ length: 7 }, (_, i) => ({
+    date: ymd(7 - i),
+    tempMaxC: 22 + (i % 3),
+    tempMinC: 11 + (i % 2),
+    precipMm: i === 2 ? 4.2 : 0,
+  }));
+
+  await page.route('**/api/weather/current', route => route.fulfill({
+    json: {
+      readingTimestamp: new Date().toISOString(),
+      temperature: 21.5,
+      humidity: 58,
+      windSpeed: 12,
+      windDirection: 'NW',
+      precipitationToday: 0,
+      uvIndex: 5,
+      pressure: 1015,
+      source: 'public_weather',
+      cached: false,
+    },
+  }));
+  await page.route('**/api/weather/history', route => route.fulfill({
+    json: {
+      data: history,
+      insights: [
+        { kind: 'warming', maxHighC: 24 },
+        { kind: 'steady', minLowC: 11, maxHighC: 24 },
+      ],
+    },
+  }));
+  await page.route('**/api/metrics/dashboard**', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (body.paid) {
+      body.paid.weather = {
+        station: null,
+        locationLabel: 'Test City',
+        units: body.paid.weather?.units ?? 'imperial',
+        week: { minLowC: 11, maxHighC: 24, precipMm: 4.2, days: 7 },
+        insights: [{ kind: 'warming', maxHighC: 24 }],
+        historyUnavailable: false,
+      };
+    }
+    await route.fulfill({ response, json: body });
+  });
+}
 
 interface PageAudit {
   scrollWidth: number;
@@ -166,6 +224,7 @@ test.describe('signed in', () => {
   for (const { path, title } of SIGNED_IN) {
     test(`${title} page fits the width and has 44px targets`, async ({ page }) => {
       const url = path();
+      await stubWeather(page);
       await page.goto(url);
       await expect.poll(() => new URL(page.url()).pathname).toBe(url);
       await expect(page.getByRole('banner').getByText(title, { exact: true }).first()).toBeVisible();
@@ -173,6 +232,16 @@ test.describe('signed in', () => {
         // The mobile canvas chrome, editing note included, is part of the sweep.
         await expect(page.getByRole('button', { name: 'Zoom in' })).toBeVisible();
         await expect(page.getByRole('note', { name: 'Editing note' })).toBeVisible();
+      }
+      if (url === '/weather') {
+        // Guard against sweeping the error/empty state if the stub breaks.
+        await expect(page.getByRole('heading', { name: 'Past 7 days' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Growing insights' })).toBeVisible();
+        await expect(page.getByText('Temperature', { exact: true })).toBeVisible();
+      }
+      if (url === '/data') {
+        const card = page.getByRole('region', { name: 'Weather' });
+        await expect(card.getByText(/this week/)).toBeVisible();
       }
       await sweep(page, url);
     });

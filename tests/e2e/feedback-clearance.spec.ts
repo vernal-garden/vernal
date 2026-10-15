@@ -1,6 +1,6 @@
 import { test, expect, request, type Page } from '@playwright/test';
 import {
-  resetTestDb, createTestUser, createTestGarden, createTestCambiumSeed, createCambiumCompanion, closePool,
+  resetTestDb, createTestUser, createTestGarden, createTestCambiumSeed, createCambiumCompanion, deleteCambiumSeedsLike, closePool,
 } from './helpers/db';
 import { currentSeason, signIn } from './helpers/guide';
 import { createGridBedAt } from './helpers/canvasStage';
@@ -49,7 +49,11 @@ test.beforeAll(async () => {
     await api.dispose();
   }
 });
-test.afterAll(closePool);
+// The stamp-less patterns also clear seeds left by earlier runs.
+test.afterAll(async () => {
+  await deleteCambiumSeedsLike('Clearance Bean %', 'Clearance Onion %');
+  await closePool();
+});
 
 interface Clearance {
   fab: { left: number; top: number; right: number; bottom: number } | null;

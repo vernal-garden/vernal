@@ -996,14 +996,6 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     if (shown.length > 0) queueMicrotask(() => onStagesDisplayed?.(shown));
   }, [plantingsLoadedKey, gardenId, garden?.id, onStagesDisplayed, tweenTo]);
 
-  // [ring-diag] observe conflictedIds prop as it reaches the canvas
-  useEffect(() => {
-    console.log('[ring-diag][canvas] conflictedIds prop', {
-      size: conflictedIds?.size ?? 0,
-      ids: conflictedIds ? [...conflictedIds] : null,
-    });
-  }, [conflictedIds]);
-
   const applyZoom = useCallback((newScale: number, cx: number, cy: number) => {
     // Popovers are anchored to screen positions; close them rather than drift.
     setPendingPlacementSynced(null);

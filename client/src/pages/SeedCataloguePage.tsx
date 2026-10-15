@@ -1,6 +1,6 @@
 // client/src/pages/SeedCataloguePage.tsx
 import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { get } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import SeedCard from '../components/catalogue/SeedCard';
@@ -15,8 +15,26 @@ import BottomSheet from '../components/shell/BottomSheet';
 import { useIsMobile } from '../hooks/useIsMobile';
 import type { CatalogueSeedDetail, PersonalSeedDetail } from '../types/catalogue';
 
+// The open seed lives in the URL as ?seed=<key>, so browser/Android back
+// closes the detail instead of leaving the catalogue. The key matches the
+// one-shot ?open= deep link format: "seed:<id>" for a personal seed,
+// "cambium:<id>" for a community (Cambium) seed.
+type SeedKind = BrowseCard['kind'];
+
+function seedKey(card: { kind: SeedKind; id: string }): string {
+  return `${card.kind === 'personal' ? 'seed' : 'cambium'}:${card.id}`;
+}
+
+function parseSeedKey(value: string | null): { kind: SeedKind; id: string } | null {
+  const m = value === null ? null : /^(seed|cambium):(\d+)$/.exec(value);
+  return m ? { kind: m[1] === 'seed' ? 'personal' : 'community', id: m[2] } : null;
+}
+
+// Set on the history entry an in-app open pushes; closing then pops it.
+interface SeedPushedState { seedPushed?: boolean }
+
 // Builds the card the detail overlay needs from a fetched seed, for a
-// ?open= deep link to a seed that isn't in the loaded page.
+// ?seed= link to a seed that isn't in the loaded page.
 async function fetchCard(kind: 'personal' | 'community', id: string): Promise<BrowseCard | null> {
   if (kind === 'community') {
     const d = await get<CatalogueSeedDetail>(`/api/catalogue/seeds/${id}`);
@@ -86,41 +104,88 @@ export default function SeedCataloguePage() {
   const { families } = useFamilies();
   const [seedFormOpen, setSeedFormOpen] = useState(false);
 
+  // ── Open seed <-> ?seed= ────────────────────────────────────────────────────
+  // Filters and search stay in component state, so adding or removing ?seed=
+  // never re-fetches the list or resets them (and no ScrollRestoration runs,
+  // so the scroll position is kept).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const seedParam = searchParams.get('seed');
+  const seedPushed = (location.state as SeedPushedState | null)?.seedPushed === true;
+
+  // Latest values for the param effect, without re-running it on every list change.
+  const cardsRef = useRef(cards);
+  cardsRef.current = cards;
+  const openCardRef = useRef(openCard);
+  openCardRef.current = openCard;
+
+  // Opening pushes a history entry, so back closes the overlay.
   const handleCardClick = useCallback((card: BrowseCard) => {
     setOpenCard(card);
-  }, []);
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set('seed', seedKey(card));
+      return next;
+    }, { state: { seedPushed: true } satisfies SeedPushedState, preventScrollReset: true });
+  }, [setSearchParams]);
 
-  // ?open=seed:<id> | cambium:<id> — open that seed's overlay once the first
-  // page has loaded, then drop the param. Unknown ids are ignored.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const handledOpen = useRef<string | null>(null);
+  // Removes ?seed= in place (deep link, reload, or an unknown seed).
+  const dropSeedParam = useCallback(() => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.delete('seed');
+      return next;
+    }, { replace: true, preventScrollReset: true });
+  }, [setSearchParams]);
+
+  // X / Escape / delete. An in-app open is undone with a history pop so no
+  // dangling entry is left; a directly loaded ?seed= is removed with replace.
+  // `closing` stops a double Escape from popping two entries.
+  const closing = useRef(false);
+  useEffect(() => { closing.current = false; }, [seedParam]);
+  const closeOverlay = useCallback(() => {
+    if (closing.current) return;
+    closing.current = true;
+    if (seedPushed) navigate(-1);
+    else dropSeedParam();
+  }, [seedPushed, navigate, dropSeedParam]);
+
+  // Resolve the card for ?seed=: the clicked card, else the loaded list, else
+  // fetch it. An unknown or inaccessible seed drops the param.
   useEffect(() => {
-    if (loading) return;
-    const param = searchParams.get('open');
-    // Forget the last handled link once the param is gone, so the same (or a
-    // new) ?open= can fire again while the page stays mounted.
-    if (param === null) {
-      handledOpen.current = null;
+    const parsed = parseSeedKey(seedParam);
+    if (!parsed) {
+      setOpenCard(null);
+      if (seedParam !== null) dropSeedParam();
       return;
     }
-    if (handledOpen.current === param) return;
-    handledOpen.current = param;
-    const next = new URLSearchParams(searchParams);
-    next.delete('open');
-    setSearchParams(next, { replace: true });
-
-    const m = /^(seed|cambium):(\d+)$/.exec(param);
-    if (!m) return;
-    const kind = m[1] === 'seed' ? 'personal' : 'community';
-    const loaded = cards.find(c => c.kind === kind && c.id === m[2]);
+    const current = openCardRef.current;
+    if (current && seedKey(current) === seedParam) return;
+    const loaded = cardsRef.current.find(c => c.kind === parsed.kind && c.id === parsed.id);
     if (loaded) {
       setOpenCard(loaded);
       return;
     }
-    fetchCard(kind, m[2])
-      .then(card => { if (card) setOpenCard(card); })
-      .catch(() => { /* unknown or inaccessible seed: do nothing */ });
-  }, [loading, cards, searchParams, setSearchParams]);
+    let cancelled = false;
+    fetchCard(parsed.kind, parsed.id)
+      .then(card => { if (!cancelled) { if (card) setOpenCard(card); else dropSeedParam(); } })
+      .catch(() => { if (!cancelled) dropSeedParam(); });
+    return () => { cancelled = true; };
+  }, [seedParam, dropSeedParam]);
+
+  // ?open=seed:<id> | cambium:<id> (NotificationBell, PlantSchedule): a
+  // one-shot link, converted in place to ?seed=. Unknown values are dropped.
+  useEffect(() => {
+    const open = searchParams.get('open');
+    if (open === null) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('open');
+    if (parseSeedKey(open)) next.set('seed', open);
+    setSearchParams(next, { replace: true, preventScrollReset: true });
+  }, [searchParams, setSearchParams]);
+
+  // Rendered from the param: hidden the moment ?seed= goes (e.g. on back).
+  const shownCard = openCard && seedParam !== null && seedKey(openCard) === seedParam ? openCard : null;
 
   // ── Source chip definitions ────────────────────────────────────────────────
   const sourceOptions: { value: CatalogueSource; label: string }[] = isGuest
@@ -474,10 +539,10 @@ export default function SeedCataloguePage() {
       </main>
 
       {/* Detail overlay */}
-      {openCard && (
+      {shownCard && (
         <SeedDetailOverlay
-          card={openCard}
-          onClose={() => setOpenCard(null)}
+          card={shownCard}
+          onClose={closeOverlay}
           onDetailUpdated={(seed) => {
             setOpenCard(prev =>
               prev ? { ...prev, commonName: seed.commonName, scientificName: seed.scientificName, plantFamily: seed.plantFamily } : prev
@@ -485,7 +550,7 @@ export default function SeedCataloguePage() {
             refetch();
           }}
           onDeleted={() => {
-            setOpenCard(null);
+            closeOverlay();
             refetch();
           }}
         />
