@@ -150,3 +150,32 @@ test('guest sees Sign in instead of the account link', async ({ page }) => {
   await expect(topBar(page).getByRole('link', { name: 'Sign in' })).toBeVisible();
   await expect(topBar(page).getByRole('link', { name: 'Account', exact: true })).toHaveCount(0);
 });
+
+test.describe('guest About link', () => {
+  test('top bar shows About, which goes to /about, and every control stays 44x44', async ({ page }) => {
+    await page.goto('/gardens');
+    const about = topBar(page).getByRole('link', { name: 'About', exact: true });
+    await expect(about).toBeVisible();
+    await expectTouchTargets(topBar(page));
+
+    await about.tap();
+    await expect(page).toHaveURL('/about');
+    await expect(about).toHaveAttribute('aria-current', 'page');
+    await expect(topBar(page).getByText('About', { exact: true }).first()).toBeVisible();
+    await expectTouchTargets(topBar(page));
+  });
+
+  test('at 360px the route title is not clipped', async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 780 });
+    for (const { url, title } of [...TAB_ROUTES.filter(({ url }) => url !== '/'), { url: '/about', title: 'About' }]) {
+      await page.goto(url);
+      const heading = topBar(page).getByText(title, { exact: true }).first();
+      await expect(heading).toBeVisible();
+      const { scrollWidth, clientWidth } = await heading.evaluate((el) => ({
+        scrollWidth: el.scrollWidth,
+        clientWidth: el.clientWidth,
+      }));
+      expect(scrollWidth, `"${title}" is clipped`).toBeLessThanOrEqual(clientWidth);
+    }
+  });
+});

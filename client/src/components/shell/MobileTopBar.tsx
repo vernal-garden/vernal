@@ -63,8 +63,9 @@ export default function MobileTopBar() {
 
   let right;
   if (state.kind === 'loading') {
-    // Same footprint as bell + avatar so the title doesn't shift when auth resolves.
-    right = <div aria-hidden="true" style={{ ...SQUARE_44, width: 44 * 2 + 8 }} />;
+    // Footprint of the widest right cluster (guest About + Sign in, ~135px measured)
+    // so the title doesn't get cut short when auth resolves.
+    right = <div aria-hidden="true" style={{ ...SQUARE_44, width: 136 }} />;
   } else if (account) {
     const initial = (account.email ?? '?').charAt(0).toUpperCase();
     right = (
@@ -90,26 +91,49 @@ export default function MobileTopBar() {
     );
   } else {
     right = (
-      <Link
-        to="/login"
-        style={{
-          minHeight: 44,
-          minWidth: 44,
-          flexShrink: 0,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '0 var(--sp-3)',
-          color: 'var(--c-primary)',
-          fontFamily: 'var(--font-ui)',
-          fontSize: 14,
-          fontWeight: 600,
-          textDecoration: 'none',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        Sign in
-      </Link>
+      <>
+        {/* Low-weight, like AppNav's About link */}
+        <Link
+          to="/about"
+          data-testid="topbar-about"
+          style={{
+            minHeight: 44,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            padding: '0 var(--sp-3)',
+            color: 'var(--c-text-3)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 13,
+            fontWeight: 400,
+            textDecoration: 'none',
+            whiteSpace: 'nowrap',
+          }}
+          aria-current={pathname === '/about' ? 'page' : undefined}
+        >
+          About
+        </Link>
+        <Link
+          to="/login"
+          style={{
+            minHeight: 44,
+            minWidth: 44,
+            flexShrink: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '0 var(--sp-3)',
+            color: 'var(--c-primary)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 14,
+            fontWeight: 600,
+            textDecoration: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Sign in
+        </Link>
+      </>
     );
   }
 
