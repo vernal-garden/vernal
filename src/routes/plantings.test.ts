@@ -624,7 +624,7 @@ describe('Phase 50: growth.stage / displayedStage / anchored', () => {
   beforeAll(async () => {
     const a = await agent
       .post(`/api/gardens/${gardenId}/beds/${gridBedId}/plantings`)
-      .send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 2, y: 5 } });
+      .send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 1, y: 5 } });
     stagedId = a.body.id;
     const b = await agent
       .post(`/api/gardens/${gardenId}/beds/${gridBedId}/plantings`)
@@ -753,5 +753,178 @@ describe('Phase 50: PATCH /api/gardens/:gardenId/plantings/displayed-stage', () 
       const res = await agent.patch(stageUrl()).send({ plantingIds: [p1, bad] });
       expect(res.status).toBe(400);
     }
+  });
+});
+
+// ── Phase 54: one planting per grid cell, same-plant merge ───────────────────
+
+describe('Phase 54: one planting per cell', () => {
+  let bedId: string;
+  let bedCounter = 0;
+  const plantingsUrl = () => `/api/gardens/${gardenId}/beds/${bedId}/plantings`;
+
+  async function freshGridBed(): Promise<string> {
+    const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({
+      type: 'grid',
+      label: `P54 Bed ${++bedCounter}`,
+      grid: { x: 0, y: 0, cols: 4, rows: 4 },
+    });
+    return res.body.id as string;
+  }
+
+  async function linkedPersonalSeed(sourceId: number | null, name: string): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO seeds (owner_id, common_name, origin, contribution_status, cambium_source_id)
+       VALUES ($1, $2, $3, 'private', $4) RETURNING id`,
+      [accountId, name, sourceId === null ? 'user_created' : 'cambium_imported', sourceId],
+    );
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    bedId = await freshGridBed();
+  });
+
+  it('merges a same-plant placement: 4 + 12 = 16, date unchanged', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    const first = await agent.post(url).send({
+      cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 0 }, quantity: 4, plantingDate: '2026-03-01',
+    });
+    expect(first.status).toBe(201);
+    expect(first.body.merged).toBe(false);
+
+    const second = await agent.post(url).send({
+      cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 0 }, quantity: 12, plantingDate: '2026-04-09',
+    });
+    expect(second.status).toBe(200);
+    expect(second.body.merged).toBe(true);
+    expect(second.body.id).toBe(first.body.id);
+    expect(second.body.quantity).toBe(16);
+    expect(second.body.plantingDate).toBe('2026-03-01');
+
+    const list = await agent.get(url);
+    const inCell = list.body.data.filter(
+      (p: { cell: { x: number; y: number } | null }) => p.cell?.x === 0 && p.cell?.y === 0,
+    );
+    expect(inCell).toHaveLength(1);
+  });
+
+  it('clamps a merged sum at 99 and never reduces a quantity above 99', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 0 }, quantity: 90 });
+    const clamped = await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 0 }, quantity: 20 });
+    expect(clamped.status).toBe(200);
+    expect(clamped.body.quantity).toBe(99);
+
+    const big = await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 1, y: 0 } });
+    await agent.patch(`/api/plantings/${big.body.id}`).send({ quantity: 150 });
+    const kept = await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 1, y: 0 }, quantity: 5 });
+    expect(kept.status).toBe(200);
+    expect(kept.body.quantity).toBe(150);
+  });
+
+  it('a different plant in an occupied cell → 409 CELL_OCCUPIED, nothing inserted', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    const first = await agent.post(url).send({ seedId: personalSeedId, cell: { x: 2, y: 2 } });
+    expect(first.status).toBe(201);
+    const res = await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 2, y: 2 } });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CELL_OCCUPIED');
+    expect(res.body.occupant).toEqual({ id: first.body.id, commonName: 'Basil' });
+    const list = await agent.get(url);
+    expect(list.body.data).toHaveLength(1);
+  });
+
+  it('linked personal seed merges into a cell holding its Cambium seed', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    const linked = await linkedPersonalSeed(activeCambiumSeedId, 'My Tomato');
+    const first = await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 1 }, quantity: 2 });
+    const res = await agent.post(url).send({ seedId: linked, cell: { x: 0, y: 1 }, quantity: 3 });
+    expect(res.status).toBe(200);
+    expect(res.body.merged).toBe(true);
+    expect(res.body.id).toBe(first.body.id);
+    expect(res.body.quantity).toBe(5);
+    expect(res.body.cambiumSeedId).toBe(String(activeCambiumSeedId));
+    expect(res.body.seedId).toBeNull();
+  });
+
+  it('Cambium seed merges into a cell holding its linked personal seed', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    const linked = await linkedPersonalSeed(activeCambiumSeedId, 'My Tomato 2');
+    const first = await agent.post(url).send({ seedId: linked, cell: { x: 0, y: 1 }, quantity: 2 });
+    const res = await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 1 }, quantity: 3 });
+    expect(res.status).toBe(200);
+    expect(res.body.merged).toBe(true);
+    expect(res.body.id).toBe(first.body.id);
+    expect(res.body.quantity).toBe(5);
+    expect(res.body.seedId).toBe(String(linked));
+  });
+
+  it('user-created personal seed does not merge into a Cambium planting → 409', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 3, y: 3 } });
+    const res = await agent.post(url).send({ seedId: personalSeedId, cell: { x: 3, y: 3 } });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CELL_OCCUPIED');
+    expect(res.body.occupant.commonName).toBe('Tomato');
+  });
+
+  it('same user-created personal seed twice in one cell merges and sums', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    const first = await agent.post(url).send({ seedId: personalSeedId, cell: { x: 2, y: 3 }, quantity: 2 });
+    const res = await agent.post(url).send({ seedId: personalSeedId, cell: { x: 2, y: 3 }, quantity: 5 });
+    expect(res.status).toBe(200);
+    expect(res.body.merged).toBe(true);
+    expect(res.body.id).toBe(first.body.id);
+    expect(res.body.quantity).toBe(7);
+  });
+
+  it('PATCH cell onto another planting → 409; onto its own cell → 200', async () => {
+    const bed = await freshGridBed();
+    const url = `/api/gardens/${gardenId}/beds/${bed}/plantings`;
+    const a = await agent.post(url).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 0 } });
+    const b = await agent.post(url).send({ seedId: personalSeedId, cell: { x: 1, y: 0 } });
+    const blocked = await agent.patch(`/api/plantings/${b.body.id}`).send({ cell: { x: 0, y: 0 } });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.code).toBe('CELL_OCCUPIED');
+    expect(blocked.body.occupant.id).toBe(a.body.id);
+    const same = await agent.patch(`/api/plantings/${b.body.id}`).send({ cell: { x: 1, y: 0 } });
+    expect(same.status).toBe(200);
+    expect(same.body.cell).toEqual({ x: 1, y: 0 });
+  });
+
+  it('freeform beds still allow several plantings at one point', async () => {
+    const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({
+      type: 'freeform',
+      label: 'P54 Freeform',
+      freeform: { points: [0, 0, 200, 0, 200, 150, 0, 150], closed: true },
+    });
+    const url = `/api/gardens/${gardenId}/beds/${res.body.id}/plantings`;
+    const body = { cambiumSeedId: activeCambiumSeedId, point: { x: 10, y: 10 } };
+    const a = await agent.post(url).send(body);
+    const b = await agent.post(url).send(body);
+    expect(a.status).toBe(201);
+    expect(b.status).toBe(201);
+    expect(a.body.id).not.toBe(b.body.id);
+    const list = await agent.get(url);
+    expect(list.body.data).toHaveLength(2);
+  });
+
+  it('the unique index rejects a second planting in one cell (23505)', async () => {
+    await agent.post(plantingsUrl()).send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 1, y: 1 } });
+    await expect(
+      pool.query(
+        `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, cell_x, cell_y)
+         VALUES ($1, $2, $3, $4, 1, 1)`,
+        [bedId, gardenId, CURRENT_YEAR, activeCambiumSeedId],
+      ),
+    ).rejects.toMatchObject({ code: '23505' });
   });
 });

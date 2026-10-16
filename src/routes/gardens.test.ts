@@ -728,3 +728,28 @@ describe('Auth enforcement', () => {
     expect(res.status).toBe(401);
   });
 });
+
+// ── Phase 54: activePlantingCount sums quantities ────────────────────────────
+
+describe('Garden list activePlantingCount', () => {
+  it('sums planting quantities for the current season', async () => {
+    await createUser('count-user@example.com');
+    const agent = await loginAgent('count-user@example.com');
+    const g = await agent.post('/api/gardens').send({ ...BASE_GARDEN, name: 'Count Garden' });
+    const b = await agent.post(`/api/gardens/${g.body.id}/beds`).send({
+      type: 'grid', label: 'Count Bed', grid: { x: 0, y: 0, cols: 4, rows: 4 },
+    });
+    const { rows: cs } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+       VALUES ('Count Tomato', 'active', 'editorial') RETURNING id`,
+    );
+    await pool.query(
+      `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, quantity, cell_x, cell_y)
+       VALUES ($1, $2, $3, $4, 3, 0, 0), ($1, $2, $3, $4, 1, 1, 0)`,
+      [b.body.id, g.body.id, currentSeason(), cs[0].id],
+    );
+    const list = await agent.get('/api/gardens');
+    const found = list.body.data.find((x: { id: string }) => x.id === g.body.id);
+    expect(found.activePlantingCount).toBe(4);
+  });
+});

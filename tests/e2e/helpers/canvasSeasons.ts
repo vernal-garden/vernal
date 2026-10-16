@@ -22,10 +22,12 @@ export async function createGridBed(
 
 export async function createCellPlanting(
   api: APIRequestContext, gardenId: string, bedId: string, seedId: number,
-  plantingDate: string | null = null, cell = MARKER_CELL,
+  plantingDate: string | null = null, cell = MARKER_CELL, quantity = 1,
 ): Promise<string> {
+  // One planting per grid cell (Phase 54): a second planting of the same seed
+  // in the same cell merges into the first and returns 200, not 201.
   const resp = await api.post(`/api/gardens/${gardenId}/beds/${bedId}/plantings`, {
-    data: { seedId, quantity: 1, cell, plantingDate },
+    data: { seedId, quantity, cell, plantingDate },
   });
   expect(resp.status(), await resp.text()).toBe(201);
   return String((await resp.json()).id);

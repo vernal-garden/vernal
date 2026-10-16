@@ -28,6 +28,7 @@ import { notifyPlantingPlaced } from '../lib/guestBannerEvents';
 import { useMicroFeedback } from '../lib/microFeedback';
 import * as api from '../lib/api';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { PLANTS_HERE_MAX, plantCount } from '../lib/placement';
 
 // Garden ids that have already logged a canvas_session during this page load.
 // Module-level so re-renders and StrictMode double effects can't fire it twice.
@@ -84,7 +85,7 @@ export default function HomePage() {
   const [bedManagerOpen, setBedManagerOpen] = useState(false);
   const [pendingMode, setPendingMode] = useState<CanvasMode | null>(null);
   const [detailFocusName, setDetailFocusName] = useState(false);
-  const [overlapWarning, setOverlapWarning] = useState<string | null>(null);
+  const [overlapWarning, setOverlapWarning] = useState<{ msg: string; tone: 'error' | 'info' } | null>(null);
   const overlapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const canvasRef = useRef<GardenCanvasRef>(null);
 
@@ -108,7 +109,7 @@ export default function HomePage() {
   } = useGarden(resolvedId, currentSeason);
   const {
     plantingsByBedId, loading: plantingsLoading, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint,
-    loadedKey: plantingsLoadedKey, markStagesDisplayed, dismissIndicator,
+    updatePlantingQuantity, loadedKey: plantingsLoadedKey, markStagesDisplayed, dismissIndicator,
   } = usePlantings(resolvedId, currentSeason);
 
   // Phase 50: past-season overlay. Component state only (never saved). Keyed
@@ -465,11 +466,15 @@ export default function HomePage() {
     updateBed(bedId, payload);
   }, [updateBed, plantingsByBedId, beds, updatePlantingPoint]);
 
-  const handleOverlapWarning = useCallback((msg: string) => {
-    setOverlapWarning(msg);
+  const showToast = useCallback((msg: string, tone: 'error' | 'info') => {
+    setOverlapWarning({ msg, tone });
     if (overlapTimerRef.current) clearTimeout(overlapTimerRef.current);
     overlapTimerRef.current = setTimeout(() => setOverlapWarning(null), 3000);
   }, []);
+
+  const handleOverlapWarning = useCallback((msg: string) => {
+    showToast(msg, 'error');
+  }, [showToast]);
 
   const handleFocusBed = useCallback((bed: Bed) => {
     canvasRef.current?.focusBed(bed);
@@ -515,10 +520,26 @@ export default function HomePage() {
       ...(point ? { point } : {}),
       ...(seed.source === 'catalogue' ? { cambiumSeedId: seed.id } : { seedId: seed.id }),
     };
+    // The quantity already in this cell, if any (a same-plant placement merges).
+    const previous = cell
+      ? (plantingsByBedId[bedId] ?? []).find(p => p.cell?.x === cell.x && p.cell?.y === cell.y)?.quantity ?? null
+      : null;
     conflictSnapshotRef.current = new Set(conflictedIds);
     pendingPlacementRef.current = true;
     if (placementWindowTimerRef.current) clearTimeout(placementWindowTimerRef.current);
-    const placed = await placePlanting(bedId, payload, seed.commonName);
+    const result = await placePlanting(bedId, payload, seed.commonName, seed.cambiumIdentity);
+    const placed = result.ok;
+    if (result.blocked) {
+      showToast(`This square already has ${result.occupantName ?? 'a plant'}.`, 'error');
+    } else if (result.merged && result.planting) {
+      const merged = result.planting;
+      const name = merged.commonName ?? merged._commonName ?? seed.commonName;
+      if ((previous ?? 0) + qty > PLANTS_HERE_MAX) {
+        showToast(`${name} here is at the ${PLANTS_HERE_MAX} limit.`, 'info');
+      } else {
+        showToast(`Added ${qty} to ${name} here (now ${merged.quantity}).`, 'info');
+      }
+    }
     if (placed) {
       track('canvas_plant_placed');
       notifyPlantingPlaced();
@@ -538,7 +559,7 @@ export default function HomePage() {
     } else if (placed) {
       requestFeedback('planted');
     }
-  }, [armedSeed, placePlanting, account, conflictedIds, requestFeedback]);
+  }, [armedSeed, placePlanting, plantingsByBedId, account, conflictedIds, requestFeedback, showToast]);
 
   const handleConfirmRemoval = useCallback(async (planting: Planting) => {
     await deletePlanting(planting.id, planting.bedId);
@@ -547,6 +568,22 @@ export default function HomePage() {
   const handleMarkHarvested = useCallback(async (planting: Planting) => {
     await dismissIndicator(planting.id, planting.bedId);
   }, [dismissIndicator]);
+
+  // Phase 54: "Plants here" in the inspection popover. The hook reverts the
+  // count on failure; the toast reports it, unless the plant is gone (404, or
+  // removed locally meanwhile).
+  const plantingsByBedIdRef = useRef(plantingsByBedId);
+  plantingsByBedIdRef.current = plantingsByBedId;
+  const handleUpdateQuantity = useCallback(async (planting: Planting, quantity: number) => {
+    try {
+      await updatePlantingQuantity(planting.id, planting.bedId, quantity);
+    } catch (e) {
+      if (e instanceof api.ApiError && e.status === 404) return;
+      const stillHere = (plantingsByBedIdRef.current[planting.bedId] ?? []).some(p => p.id === planting.id);
+      if (!stillHere) return;
+      showToast("Couldn't update. Try again.", 'error');
+    }
+  }, [updatePlantingQuantity, showToast]);
 
   if (listLoading) {
     return (
@@ -594,6 +631,7 @@ export default function HomePage() {
         onConfirmPlacement={handleConfirmPlacement}
         onConfirmRemoval={handleConfirmRemoval}
         onMarkHarvested={handleMarkHarvested}
+        onUpdateQuantity={handleUpdateQuantity}
         conflictedIds={conflictedIds}
         conflictedBedIds={conflictedBedIds}
         latestPlacing={latestPlacing}
@@ -757,11 +795,14 @@ export default function HomePage() {
       {(mutationError || overlapWarning) && (
         <div style={{
           position: 'fixed', top: 'calc(16px + var(--shell-top, 0px))', left: '50%', transform: 'translateX(-50%)',
-          background: '#5a1e1e', color: '#ffd8d8', borderRadius: 8,
+          ...(!mutationError && overlapWarning?.tone === 'info'
+            ? { background: 'var(--c-text)', color: 'var(--c-surface)' }
+            : { background: '#5a1e1e', color: '#ffd8d8' }),
+          borderRadius: 8,
           padding: '10px 18px', fontSize: 13, zIndex: 100,
           boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
         }}>
-          {mutationError || overlapWarning}
+          {mutationError || overlapWarning?.msg}
         </div>
       )}
 
@@ -844,7 +885,7 @@ export default function HomePage() {
       {!isMobile && selectedBed && !pickerOpen && (
         <BedDetailPanel
           bed={selectedBed}
-          plantingCount={plantingsByBedId[selectedBed.id]?.length ?? 0}
+          plantingCount={plantCount(plantingsByBedId[selectedBed.id] ?? [])}
           onClose={handleCloseDetail}
           onRename={(label) => updateBed(selectedBed.id, { label })}
           onDelete={() => { deleteBed(selectedBed.id); setSelectedBed(null); }}
@@ -883,6 +924,8 @@ export default function HomePage() {
               id: seed.id,
               commonName: seed.commonName,
               spacingInches: seed.spacingInches ?? 6,
+              spacingOnRecord: seed.spacingInches ?? null,
+              cambiumIdentity: seed.cambiumSourceId ?? null,
             });
           }}
         />

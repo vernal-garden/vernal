@@ -2,7 +2,7 @@ import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayou
 import type { CSSProperties, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import Konva from 'konva';
-import { Circle, Layer, Line, Group, Rect, Shape, Stage, Text } from 'react-konva';
+import { Circle, Layer, Line, Group, Path, Rect, Shape, Stage, Text } from 'react-konva';
 import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
 import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
@@ -13,6 +13,7 @@ import { STAGE_NAMES, isHarvestReady } from '../../lib/growthStages';
 import { shortDate } from '../../lib/guideDates';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { drawStageMark, markerTier } from './stageMarks';
+import { PLANTS_HERE_MAX, isSamePlant, plantCount, plantsLabel, prefillQuantity } from '../../lib/placement';
 
 Konva.hitOnDragEnabled = true;
 
@@ -24,6 +25,12 @@ const GRID_HIDE_THRESHOLD = 0.4;
 const HANDLE_HALF = 6;
 const MARKER_RADIUS = GRID_PX * 0.38;
 const MARKER_HIT_RADIUS = GRID_PX * 0.5;
+
+// Phase 54: plant count on the marker, and the "Plants here" save debounce.
+// Plus Jakarta Sans isn't bundled yet, so this resolves to system-ui.
+const FONT_UI = "'Plus Jakarta Sans', system-ui, -apple-system, sans-serif";
+const COUNT_MIN_DIAMETER_PX = 22.5;
+const QTY_SAVE_DEBOUNCE_MS = 400;
 
 // Phase 53: fit-to-beds framing and the mobile view-only gestures.
 const FIT_MARGIN_PX = 40;
@@ -104,6 +111,10 @@ interface Props {
   onConfirmRemoval: (planting: Planting) => void;
   // Phase 50: "Mark as harvested" in the inspection popover. Rejects on failure.
   onMarkHarvested?: (planting: Planting) => Promise<void>;
+  // Phase 54: "Plants here" in the inspection popover (debounced here). The
+  // caller saves it and reports failures itself; the canvas ignores any
+  // rejection defensively.
+  onUpdateQuantity?: (planting: Planting, quantity: number) => Promise<void>;
   // Phase 20: companion indicators
   conflictedIds?: Set<string>;
   conflictedBedIds?: Set<string>;
@@ -136,6 +147,24 @@ type PendingPlacement = {
   screenX: number;
   screenY: number;
 };
+
+// Phase 54: grid cell (bed-local) under the pointer that holds a different plant.
+type BlockedHover = { bedId: string; x: number; y: number };
+
+// Phase 54: the planting already in a grid bed's cell, if any.
+function plantingInCell(plantings: Planting[] | undefined, x: number, y: number): Planting | null {
+  return (plantings ?? []).find(p => p.cell != null && p.cell.x === x && p.cell.y === y) ?? null;
+}
+
+// Phase 54: bed-local grid cell under world point w, or null when outside the bed.
+function gridCellAt(bed: Bed, w: { x: number; y: number }): { x: number; y: number } | null {
+  if (bed.type !== 'grid' || !bed.grid) return null;
+  const { x: gx, y: gy, cols, rows } = bed.grid;
+  const cellX = Math.floor((w.x - gx * GRID_PX) / GRID_PX);
+  const cellY = Math.floor((w.y - gy * GRID_PX) / GRID_PX);
+  if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows) return { x: cellX, y: cellY };
+  return null;
+}
 
 // Phase 50: inspection popover. Holds ids, not the planting, so it always
 // renders the latest planting (e.g. after "Mark as harvested").
@@ -194,6 +223,14 @@ const popoverButtonStyle: CSSProperties = {
   minHeight: 44, minWidth: 44, padding: '0 var(--sp-3)', borderRadius: 'var(--r-md)',
   fontSize: 13, fontFamily: 'inherit', cursor: 'pointer',
 };
+
+// Phase 54: "Plants here" stepper (desktop only, so smaller than 44 px).
+const stepperButtonStyle: CSSProperties = {
+  width: 32, height: 32, padding: 0, borderRadius: 'var(--r-md)',
+  border: '1px solid var(--c-border)', background: 'var(--c-surface-raised)', color: 'var(--c-text)',
+  fontSize: 16, lineHeight: 1, fontFamily: 'inherit', cursor: 'pointer',
+};
+const stepperButtonDisabled: CSSProperties = { opacity: 0.4, cursor: 'default' };
 
 const popoverLinkStyle: CSSProperties = {
   display: 'inline-flex', alignItems: 'center', minHeight: 44, minWidth: 44,
@@ -472,6 +509,9 @@ const PlantingMarker = memo(function PlantingMarker({
   const showMark = tier === 'large' && anchored && stage !== null;
   const showLabel = tier === 'medium' || (tier === 'large' && !showMark);
   const showHarvest = ready && tier !== 'small';
+  // Phase 54: the plant count, on a dark band across the marker's lower part,
+  // once the marker is big enough on screen to read it.
+  const showCount = planting.quantity >= 2 && 2 * MARKER_RADIUS * scale >= COUNT_MIN_DIAMETER_PX;
   // Markers are drawn in world units inside the scaled stage, so the harvest
   // ring's on-screen px (2 px inset, 2.5 px stroke) are divided by scale.
   const px = 1 / scale;
@@ -484,6 +524,45 @@ const PlantingMarker = memo(function PlantingMarker({
         fill={tier === 'small' && ready ? '#E6B85C' : color}
         opacity={0.88}
       />
+      {showMark && (
+        <Shape sceneFunc={sceneFunc} listening={false} />
+      )}
+      {showCount && (
+        <Path
+          data="M -10.82 3.6 A 11.4 11.4 0 0 0 10.82 3.6 Z"
+          fill="#191714"
+          opacity={0.45}
+          listening={false}
+        />
+      )}
+      {showLabel && (
+        <Text
+          text={markerLabel(planting)}
+          x={-MARKER_RADIUS}
+          y={showCount ? -7 : -5}
+          width={MARKER_RADIUS * 2}
+          fontSize={8}
+          fontFamily={FONT_UI}
+          align="center"
+          fill="#fff"
+          fontStyle="bold"
+          listening={false}
+        />
+      )}
+      {showCount && (
+        <Text
+          text={String(planting.quantity)}
+          x={-MARKER_RADIUS}
+          y={3.5}
+          width={2 * MARKER_RADIUS}
+          align="center"
+          fontSize={7}
+          fontFamily={FONT_UI}
+          fontStyle="bold"
+          fill="#FFFFFF"
+          listening={false}
+        />
+      )}
       {showHarvest && (
         <>
           <Circle radius={MARKER_RADIUS} fill="rgba(230, 184, 92, 0.10)" listening={false} />
@@ -504,22 +583,6 @@ const PlantingMarker = memo(function PlantingMarker({
           fill="transparent"
           stroke="#C88A2A"
           strokeWidth={2}
-          listening={false}
-        />
-      )}
-      {showMark && (
-        <Shape sceneFunc={sceneFunc} listening={false} />
-      )}
-      {showLabel && (
-        <Text
-          text={markerLabel(planting)}
-          x={-MARKER_RADIUS}
-          y={-5}
-          width={MARKER_RADIUS * 2}
-          fontSize={8}
-          align="center"
-          fill="#fff"
-          fontStyle="bold"
           listening={false}
         />
       )}
@@ -560,7 +623,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   onCreateBed, onUpdateBedGeometry,
   onScaleChange, onOverlapWarning, mode, panActive, gardenId,
   garden, plantingsByBedId, plantingsLoading, armedSeed,
-  onConfirmPlacement, onConfirmRemoval, onMarkHarvested,
+  onConfirmPlacement, onConfirmRemoval, onMarkHarvested, onUpdateQuantity,
   // Phase 20
   conflictedIds, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
@@ -666,6 +729,36 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, []);
   const [placementQty, setPlacementQty] = useState(1);
   const [placementDate, setPlacementDate] = useState('');
+
+  // Phase 54: a different armed seed while the popover is open re-runs the
+  // pre-fill; otherwise a typed value holds until the popover closes.
+  const armedSeedKey = armedSeed ? `${armedSeed.source}:${armedSeed.id}` : null;
+  useEffect(() => {
+    const pending = pendingPlacementRef.current;
+    const armed = armedSeedRef.current;
+    if (!pending || !armed) return;
+    const bed = bedsRef.current.find(b => b.id === pending.bedId);
+    if (!bed) return;
+    setPlacementQty(prefillQuantity(bed.type, armed.spacingOnRecord));
+  }, [armedSeedKey]);
+
+  // Phase 54: desktop preview of an occupied (different plant) grid cell under
+  // the pointer while a seed is armed. Only set when the blocked cell changes.
+  const [blockedHover, setBlockedHover] = useState<BlockedHover | null>(null);
+  const blockedHoverRef = useRef<BlockedHover | null>(null);
+  const setBlockedHoverSynced = useCallback((v: BlockedHover | null) => {
+    const cur = blockedHoverRef.current;
+    if (cur === v) return;
+    if (cur && v && cur.bedId === v.bedId && cur.x === v.x && cur.y === v.y) return;
+    blockedHoverRef.current = v;
+    setBlockedHover(v);
+  }, []);
+  useEffect(() => {
+    if (!armedSeed) setBlockedHoverSynced(null);
+  }, [armedSeed, setBlockedHoverSynced]);
+  useEffect(() => {
+    if (pendingPlacement) setBlockedHoverSynced(null);
+  }, [pendingPlacement, setBlockedHoverSynced]);
 
   // Phase 50: inspection popover (replaces the removal popover)
   const isMobile = useIsMobile();
@@ -848,6 +941,94 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const container = stageRef.current?.container();
     if (container && container.tabIndex >= 0) container.focus({ preventScroll: true });
   }, [inspectedId]);
+
+  // Phase 54: "Plants here" in the inspection popover. A change shows at once
+  // (qtyDraft) and is saved 400 ms after the last one; closing the popover or
+  // switching marker sends a pending save immediately. The saved value lives
+  // in plantingsByBedId (the hook updates it optimistically, reverts on failure).
+  const [qtyDraft, setQtyDraft] = useState<{ id: string; quantity: number } | null>(null);
+  // Text typed in the input, not yet committed (blur / Enter).
+  const [qtyText, setQtyText] = useState<{ planting: Planting; text: string } | null>(null);
+  const qtyTextRef = useRef<{ planting: Planting; text: string } | null>(null);
+  const setQtyTextSynced = useCallback((v: { planting: Planting; text: string } | null) => {
+    qtyTextRef.current = v;
+    setQtyText(v);
+  }, []);
+  const qtyPendingRef = useRef<{ planting: Planting; quantity: number } | null>(null);
+  const qtyTimerRef = useRef<number | null>(null);
+  const onUpdateQuantityRef = useRef(onUpdateQuantity);
+  onUpdateQuantityRef.current = onUpdateQuantity;
+
+  const flushQty = useCallback(() => {
+    if (qtyTimerRef.current !== null) {
+      window.clearTimeout(qtyTimerRef.current);
+      qtyTimerRef.current = null;
+    }
+    const pending = qtyPendingRef.current;
+    if (!pending) return;
+    qtyPendingRef.current = null;
+    // The hook applies the value optimistically in the same tick, so the
+    // draft can go without a flicker.
+    setQtyDraft(d => (d && d.id === pending.planting.id ? null : d));
+    const save = onUpdateQuantityRef.current;
+    if (save) save(pending.planting, pending.quantity).catch(() => {});
+  }, []);
+
+  const scheduleQty = useCallback((planting: Planting, quantity: number) => {
+    const pending = qtyPendingRef.current;
+    if (pending && pending.planting.id !== planting.id) flushQty();
+    qtyPendingRef.current = { planting, quantity };
+    setQtyDraft({ id: planting.id, quantity });
+    if (qtyTimerRef.current !== null) window.clearTimeout(qtyTimerRef.current);
+    qtyTimerRef.current = window.setTimeout(flushQty, QTY_SAVE_DEBOUNCE_MS);
+  }, [flushQty]);
+
+  // Commits typed text: a whole number 1-99 is scheduled; anything else reverts.
+  // Nothing is scheduled when it equals the value shown right now (the pending
+  // change, else the stored quantity), read fresh rather than at typing time.
+  const commitQtyText = useCallback(() => {
+    const t = qtyTextRef.current;
+    if (!t) return;
+    setQtyTextSynced(null);
+    if (!/^\d+$/.test(t.text)) return;
+    const n = parseInt(t.text, 10);
+    if (n < 1 || n > PLANTS_HERE_MAX) return;
+    const pending = qtyPendingRef.current;
+    const shown = pending && pending.planting.id === t.planting.id
+      ? pending.quantity
+      : (plantingsByBedIdRef.current[t.planting.bedId] ?? []).find(p => p.id === t.planting.id)?.quantity;
+    if (n === shown) return;
+    scheduleQty(t.planting, n);
+  }, [scheduleQty, setQtyTextSynced]);
+
+  // Drops any unsaved change (e.g. the plant is being removed).
+  const discardQty = useCallback(() => {
+    if (qtyTimerRef.current !== null) {
+      window.clearTimeout(qtyTimerRef.current);
+      qtyTimerRef.current = null;
+    }
+    qtyPendingRef.current = null;
+    setQtyDraft(null);
+    setQtyTextSynced(null);
+  }, [setQtyTextSynced]);
+
+  // Popover closed, switched to another marker, or canvas unmounted: commit
+  // typed text and send the pending save now. Clearing the pending ref before
+  // sending means a later blur or timer cannot send it twice.
+  useEffect(() => {
+    if (!inspectedId) return;
+    return () => {
+      commitQtyText();
+      flushQty();
+    };
+  }, [inspectedId, commitQtyText, flushQty]);
+  // Never leave the debounce timer running past unmount.
+  useEffect(() => () => {
+    if (qtyTimerRef.current !== null) {
+      window.clearTimeout(qtyTimerRef.current);
+      qtyTimerRef.current = null;
+    }
+  }, []);
 
   // Cursor style
   useEffect(() => {
@@ -1416,6 +1597,21 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     if (mode === 'freeform') setCursorWorld(w);
 
+    // Phase 54: blocked-cell preview, same geometry as the placement click.
+    {
+      const armed = armedSeedRef.current;
+      const selBed = armed && !pendingPlacementRef.current && selectedBedIdRef.current
+        ? bedsRef.current.find(b => b.id === selectedBedIdRef.current) ?? null
+        : null;
+      const cell = selBed ? gridCellAt(selBed, w) : null;
+      const occupant = selBed && cell ? plantingInCell(plantingsByBedIdRef.current[selBed.id], cell.x, cell.y) : null;
+      setBlockedHoverSynced(
+        selBed && cell && occupant && armed && !isSamePlant(occupant, armed)
+          ? { bedId: selBed.id, x: cell.x, y: cell.y }
+          : null,
+      );
+    }
+
     if (resizeRef.current) {
       const { handle, origBbox, origPoints, bedId } = resizeRef.current;
       const bed = bedsRef.current.find(b => b.id === bedId);
@@ -1505,7 +1701,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         }
       }
     }
-  }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
+  }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced, setBlockedHoverSynced]);
 
   const handleMouseUp = useCallback((_e?: Konva.KonvaEventObject<MouseEvent>) => {
     if (isMobileRef.current) return;
@@ -1793,11 +1989,17 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         let placement: { cell?: { x: number; y: number }; point?: { x: number; y: number } } | null = null;
 
         if (selBed.type === 'grid' && selBed.grid) {
-          const { x: gx, y: gy, cols, rows } = selBed.grid;
-          const cellX = Math.floor((w.x - gx * GRID_PX) / GRID_PX);
-          const cellY = Math.floor((w.y - gy * GRID_PX) / GRID_PX);
-          if (cellX >= 0 && cellX < cols && cellY >= 0 && cellY < rows) {
-            placement = { cell: { x: cellX, y: cellY } };
+          const cell = gridCellAt(selBed, w);
+          if (cell) {
+            // Occupied cell: same plant merges (popover opens as normal);
+            // a different plant is blocked and the seed stays armed.
+            const occupant = plantingInCell(plantingsByBedIdRef.current[selBed.id], cell.x, cell.y);
+            if (occupant && !isSamePlant(occupant, armed)) {
+              const name = occupant.commonName ?? occupant._commonName ?? 'a plant';
+              onOverlapWarning?.(`This square already has ${name}.`);
+              return;
+            }
+            placement = { cell };
           }
         } else if (selBed.type === 'freeform' && selBed.freeform) {
           if (pointInPolygon(w.x, w.y, selBed.freeform.points)) {
@@ -1813,7 +2015,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             screenX: screenPos.x,
             screenY: screenPos.y,
           });
-          setPlacementQty(1);
+          setBlockedHoverSynced(null);
+          setPlacementQty(prefillQuantity(selBed.type, armed.spacingOnRecord));
           setPlacementDate('');
           return;
         }
@@ -1840,7 +2043,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     const hit = hitTestBeds(w, bedsRef.current);
     onSelectBed(hit ?? null);
-  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingInspectSynced, handleMobilePress, inspectMarkerAt]);
+  }, [mode, panActive, spaceHeld, onSelectBed, onOverlapWarning, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingInspectSynced, setBlockedHoverSynced, handleMobilePress, inspectMarkerAt]);
 
   // Mouse click. Skipped right after a tap: a browser may emulate mouse events
   // after touchend, which would run the same press a second time (opening the
@@ -1913,6 +2116,42 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   const selectedBed = beds.find(b => b.id === selectedBedId) ?? null;
 
+  // Phase 54: blocked-cell preview (red tint + hatch, clipped to the cell).
+  // Rendered inside an always-mounted desktop layer.
+  const blockedHoverGroup = (() => {
+    if (!blockedHover || isMobile) return null;
+    const bed = beds.find(b => b.id === blockedHover.bedId);
+    if (!bed || bed.type !== 'grid' || !bed.grid) return null;
+    const cx = (bed.grid.x + blockedHover.x) * GRID_PX;
+    const cy = (bed.grid.y + blockedHover.y) * GRID_PX;
+    const hatch: ReactNode[] = [];
+    for (let k = 0; k <= 2 * GRID_PX; k += 5) {
+      hatch.push(
+        <Line
+          key={k}
+          points={[cx + k, cy, cx + k - GRID_PX, cy + GRID_PX]}
+          stroke="#B03A3A"
+          strokeWidth={1}
+          opacity={0.55}
+        />,
+      );
+    }
+    return (
+      <Group clip={{ x: cx, y: cy, width: GRID_PX, height: GRID_PX }}>
+        <Rect
+          x={cx + 0.75}
+          y={cy + 0.75}
+          width={GRID_PX - 1.5}
+          height={GRID_PX - 1.5}
+          fill="rgba(176,58,58,0.14)"
+          stroke="#B03A3A"
+          strokeWidth={1.5}
+        />
+        {hatch}
+      </Group>
+    );
+  })();
+
   // Build placement popover
   const placementPopover = (() => {
     if (!pendingPlacement) return null;
@@ -1943,11 +2182,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         )}
         <div style={{ marginBottom: 10 }}>
           <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9a8e7e', marginBottom: 4 }}>
-            Quantity
+            Plants here
           </label>
           <input
-            type="number" min={1} max={99} value={placementQty}
-            onChange={e => setPlacementQty(Math.max(1, parseInt(e.target.value) || 1))}
+            type="number" min={1} max={PLANTS_HERE_MAX} value={placementQty}
+            onChange={e => setPlacementQty(Math.min(PLANTS_HERE_MAX, Math.max(1, parseInt(e.target.value) || 1)))}
             style={{ width: '100%', boxSizing: 'border-box', padding: '6px 10px', borderRadius: 6, border: '1px solid #d0c8b8', fontSize: 13, fontFamily: 'inherit' }}
           />
         </div>
@@ -1996,6 +2235,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const { anchored, stage } = planting.growth;
     const key = seedParam(planting);
     const ready = isHarvestReady(planting);
+    // Unsaved change first, else the saved (or in-flight) value. May exceed 99
+    // (the API allows up to 9999); + is then disabled, − still works.
+    const displayQty = qtyDraft && qtyDraft.id === planting.id ? qtyDraft.quantity : planting.quantity;
 
     const popW = 232;
     const { left, top } = anchoredPopoverPosition(
@@ -2068,6 +2310,60 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             </div>
           )}
 
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-2)',
+            marginTop: 'var(--sp-1)', fontSize: 13, color: 'var(--c-text-2)',
+          }}>
+            <span>Plants here</span>
+            {isMobile ? (
+              <span style={{ fontWeight: 600, color: 'var(--c-text)' }}>{displayQty}</span>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-1)' }}>
+                <button
+                  type="button"
+                  aria-label="Fewer plants"
+                  disabled={displayQty <= 1}
+                  onClick={() => scheduleQty(planting, displayQty - 1)}
+                  style={{ ...stepperButtonStyle, ...(displayQty <= 1 ? stepperButtonDisabled : null) }}
+                >
+                  −
+                </button>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  aria-label="Plants here"
+                  value={qtyText && qtyText.planting.id === planting.id ? qtyText.text : String(displayQty)}
+                  onFocus={e => e.currentTarget.select()}
+                  onChange={e => setQtyTextSynced({
+                    planting,
+                    text: e.target.value.replace(/\D/g, '').slice(0, 4),
+                  })}
+                  onBlur={commitQtyText}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); commitQtyText(); }
+                    // Escape drops the typed text; the window handler closes the popover.
+                    if (e.key === 'Escape') setQtyTextSynced(null);
+                  }}
+                  style={{
+                    width: 40, height: 32, boxSizing: 'border-box', padding: '0 var(--sp-1)',
+                    border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)',
+                    background: 'var(--c-surface)', color: 'var(--c-text)',
+                    fontSize: 13, fontWeight: 600, fontFamily: 'inherit', textAlign: 'center',
+                  }}
+                />
+                <button
+                  type="button"
+                  aria-label="More plants"
+                  disabled={displayQty >= PLANTS_HERE_MAX}
+                  onClick={() => scheduleQty(planting, displayQty + 1)}
+                  style={{ ...stepperButtonStyle, ...(displayQty >= PLANTS_HERE_MAX ? stepperButtonDisabled : null) }}
+                >
+                  +
+                </button>
+              </div>
+            )}
+          </div>
+
           {planting.spacingInches != null && (
             <div style={{ fontSize: 13, color: 'var(--c-text-2)', marginTop: 'var(--sp-1)' }}>
               {planting.spacingInches} in. spacing
@@ -2108,6 +2404,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             <button
               type="button"
               onClick={() => {
+                discardQty();
                 onConfirmRemoval(planting);
                 setPendingInspectSynced(null);
               }}
@@ -2128,8 +2425,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const bedPopover = (() => {
     if (!pendingBed || !inspectedBed) return null;
     const label = inspectedBed.label || 'Bed';
-    const count = (plantingsByBedId[inspectedBed.id] ?? []).length;
-    const countText = count === 0 ? 'Empty' : count === 1 ? '1 plant' : `${count} plants`;
+    const count = plantCount(plantingsByBedId[inspectedBed.id] ?? []);
+    const countText = count === 0 ? 'Empty' : plantsLabel(count);
     const popW = 220;
     const { left, top } = anchoredPopoverPosition(
       pendingBed.screenX, pendingBed.screenY, popW, bedPopH, size.w,
@@ -2205,6 +2502,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         onMouseDown={isMobile ? undefined : handleMouseDown}
         onMouseMove={isMobile ? undefined : handleMouseMove}
         onMouseUp={isMobile ? undefined : handleMouseUp}
+        onMouseLeave={isMobile ? undefined : () => setBlockedHoverSynced(null)}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
@@ -2328,6 +2626,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             }))}
           </Layer>
         )}
+
+        {/* Layer 2c: blocked-cell preview while a seed is armed (desktop).
+            Not a thumb-* layer, so thumbnail captures skip it. */}
+        {!isMobile && <Layer listening={false}>{blockedHoverGroup}</Layer>}
 
         {/* Layer 3: planting markers (visual only — clicks resolved in JS) */}
         <Layer name="thumb-markers" listening={false}>

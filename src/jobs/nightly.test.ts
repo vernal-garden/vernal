@@ -139,7 +139,9 @@ async function createPlanting(
              COALESCE($8::date,
                CASE WHEN $6::int IS NULL THEN NULL ELSE ${PACIFIC_TODAY} - $6::int END),
              CASE WHEN $7::bool THEN NOW() ELSE NULL END,
-             0, 0)
+             -- COUNT-derived cell_x only satisfies the one-per-cell unique index
+             -- (this suite never deletes plantings mid-test).
+             (SELECT COUNT(*)::int FROM plantings WHERE bed_id = $1), 0)
      RETURNING id`,
     [
       bedId,
