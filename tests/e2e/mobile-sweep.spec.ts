@@ -3,6 +3,11 @@ import { resetTestDb, closePool, setSubscriptionTier } from './helpers/db';
 import { createMetricsFixture } from './helpers/metrics';
 import { signIn } from './helpers/guide';
 
+// The test build's PWA service worker routes /api through itself (NetworkOnly
+// in client/vite.config.ts), and page.route can't intercept requests a service
+// worker handles — without this, stubWeather() never takes effect.
+test.use({ serviceWorkers: 'block' });
+
 // Phase 53 mobile sweep: every shell page fits the viewport width and every
 // visible button, link and form control is at least 44x44. Runs only in the
 // 'mobile' (Pixel 7) project — see playwright.config.ts.
@@ -54,11 +59,13 @@ test.beforeAll(async () => {
 });
 test.afterAll(closePool);
 
-// The server fetches the forecast from an external service, so the browser's
-// own /api calls are stubbed instead. /weather reads /api/weather/current and
+// In E2E the server's forecast and geocoding calls fail fast (playwright.config.ts
+// points them at a dead port), so the browser's own /api calls are stubbed to
+// supply the forecast. /weather reads /api/weather/current and
 // /api/weather/history; the /data weather card reads `paid.weather` from
 // /api/metrics/dashboard, which is fetched for real and has only that field
-// replaced.
+// replaced. These stubs only apply because the service worker is blocked
+// (test.use above).
 async function stubWeather(page: Page): Promise<void> {
   const ymd = (daysAgo: number): string => {
     const d = new Date(Date.now() - daysAgo * 86_400_000);
@@ -241,7 +248,9 @@ test.describe('signed in', () => {
       }
       if (url === '/data') {
         const card = page.getByRole('region', { name: 'Weather' });
-        await expect(card.getByText(/this week/)).toBeVisible();
+        // The summary line ("<low> to <high> this week · <rain>"), not the
+        // warming insight, which also says "this week".
+        await expect(card.getByText(/ this week · /)).toBeVisible();
       }
       await sweep(page, url);
     });

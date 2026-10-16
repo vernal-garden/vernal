@@ -8,11 +8,21 @@ export interface GeoLocation {
 
 const geocodeCache = new Map<string, GeoLocation>();
 
+// Origins are overridable so E2E can point the server at a dead port. Read at
+// call time (not module load) so unit tests can set them per test.
+function baseUrl(envVar: string, fallback: string): string {
+  const value = process.env[envVar] || fallback;
+  return value.endsWith('/') ? value.slice(0, -1) : value;
+}
+
+const openMeteoBase = (): string => baseUrl('OPEN_METEO_BASE_URL', 'https://api.open-meteo.com');
+const nominatimBase = (): string => baseUrl('NOMINATIM_BASE_URL', 'https://nominatim.openstreetmap.org');
+
 export async function geocode(label: string): Promise<GeoLocation> {
   const cached = geocodeCache.get(label);
   if (cached) return cached;
 
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(label)}&format=json&limit=1`;
+  const url = `${nominatimBase()}/search?q=${encodeURIComponent(label)}&format=json&limit=1`;
   const res = await fetch(url, { headers: { 'User-Agent': 'Vernal Garden App/1.0' } });
 
   if (!res.ok) {
@@ -43,7 +53,7 @@ interface OpenMeteoCurrent {
 
 export async function fetchOpenMeteoCurrent(lat: number, lon: number): Promise<NormalizedReading> {
   const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `${openMeteoBase()}/v1/forecast?latitude=${lat}&longitude=${lon}` +
     '&current=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m,uv_index' +
     '&temperature_unit=celsius&wind_speed_unit=ms&precipitation_unit=mm';
 
@@ -76,7 +86,7 @@ interface OpenMeteoDaily {
 
 export async function fetchOpenMeteoHistory(lat: number, lon: number): Promise<DailyHistoryPoint[]> {
   const url =
-    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `${openMeteoBase()}/v1/forecast?latitude=${lat}&longitude=${lon}` +
     '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum' +
     '&past_days=7&forecast_days=1&temperature_unit=celsius&precipitation_unit=mm';
 
