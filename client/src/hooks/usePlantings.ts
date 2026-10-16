@@ -40,6 +40,16 @@ export interface ArmedSeed {
   id: string;
   commonName: string;
   spacingInches: number;
+  spacingOnRecord: number | null;   // the seed's real spacing; null if none
+  cambiumIdentity: string | null;   // catalogue: its own id; personal: its cambiumSourceId, or null
+}
+
+export interface PlacePlantingResult {
+  ok: boolean;
+  merged?: boolean;
+  blocked?: boolean;
+  planting?: Planting;
+  occupantName?: string;
 }
 
 export type PlantingsByBedId = Record<string, Planting[]>;
@@ -135,9 +145,17 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       plantingDate?: string;
     },
     commonName?: string,
-  ): Promise<boolean> => {
-    if (!gardenId) return false;
+    // The armed seed's Cambium identity, so the temp marker matches the
+    // same-plant check before the server row arrives.
+    cambiumIdentity?: string | null,
+  ): Promise<PlacePlantingResult> => {
+    if (!gardenId) return { ok: false };
     const tempId = `temp-${Date.now()}`;
+    // An occupied grid cell either merges into the existing planting or is
+    // blocked, so it never gets a second (temp) marker.
+    const cellOccupied = payload.cell != null && (plantingsRef.current[bedId] ?? []).some(p =>
+      p.cell != null && p.cell.x === payload.cell!.x && p.cell.y === payload.cell!.y,
+    );
     const optimistic: Planting = {
       id: tempId,
       bedId,
@@ -145,7 +163,7 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       season,
       seedId: payload.seedId ?? null,
       cambiumSeedId: payload.cambiumSeedId ?? null,
-      companionSeedId: null,
+      companionSeedId: payload.cambiumSeedId ?? cambiumIdentity ?? null,
       spacingInches: null,
       quantity: payload.quantity ?? 1,
       plantingDate: payload.plantingDate ?? null,
@@ -156,21 +174,52 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       updatedAt: new Date().toISOString(),
       _commonName: commonName,
     };
-    _addPlanting(optimistic);
+    if (!cellOccupied) _addPlanting(optimistic);
     try {
-      const result = await api.post<Planting>(`/api/gardens/${gardenId}/beds/${bedId}/plantings`, payload);
-      if (!result) throw new Error('No planting returned');
-      _removePlanting(tempId, bedId);
-      _addPlanting({ ...result, _commonName: commonName });
+      const response = await api.post<Planting & { merged?: boolean }>(`/api/gardens/${gardenId}/beds/${bedId}/plantings`, payload);
+      if (!response) throw new Error('No planting returned');
+      const { merged, ...result } = response;
+      if (!cellOccupied) _removePlanting(tempId, bedId);
+      if (merged) {
+        // Swap the existing planting for the returned one; never add a second.
+        const prev = plantingsRef.current;
+        const list = prev[bedId] ?? [];
+        const existing = list.find(p => p.id === result.id);
+        const next: Planting = {
+          ...result,
+          _commonName: existing?._commonName ?? commonName,
+          // Keep the local displayedStage: markStagesDisplayed may be ahead
+          // of the server row (its PATCH is best-effort).
+          growth: existing ? { ...result.growth, displayedStage: existing.growth.displayedStage } : result.growth,
+        };
+        syncPlantings({
+          ...prev,
+          [bedId]: existing ? list.map(p => (p.id === result.id ? next : p)) : [...list, next],
+        });
+        return { ok: true, merged: true, planting: next };
+      }
+      const created: Planting = { ...result, _commonName: commonName };
+      // A racing merge into this new planting may already have added it. A
+      // merge can only follow the INSERT, so that entry is at least as fresh:
+      // keep it, and never add a second.
+      if (!(plantingsRef.current[bedId] ?? []).some(p => p.id === created.id)) {
+        _addPlanting(created);
+      }
       seqRef.current += 1;
       setLatestPlacing({ id: result.id, seq: seqRef.current });
-      return true;
+      return { ok: true, merged: false, planting: created };
     } catch (e) {
-      _removePlanting(tempId, bedId);
+      if (!cellOccupied) _removePlanting(tempId, bedId);
+      if (e instanceof api.ApiError && e.status === 409) {
+        const body = e.body as { code?: string; occupant?: { commonName?: string | null } } | null | undefined;
+        if (body?.code === 'CELL_OCCUPIED') {
+          return { ok: false, blocked: true, occupantName: body.occupant?.commonName ?? 'a plant' };
+        }
+      }
       setError(e instanceof Error ? e.message : 'Failed to place planting');
-      return false;
+      return { ok: false };
     }
-  }, [gardenId, season, _addPlanting, _removePlanting]);
+  }, [gardenId, season, _addPlanting, _removePlanting, syncPlantings]);
 
   const deletePlanting = useCallback(async (plantingId: string, bedId: string): Promise<void> => {
     const snapshot = plantingsRef.current;
@@ -202,6 +251,64 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     } catch (e) {
       syncPlantings(snapshot);
       setError(e instanceof Error ? e.message : 'Failed to update planting position');
+    }
+  }, [syncPlantings]);
+
+  // Per planting: the latest quantity request, the last server-confirmed
+  // quantity (or the value before the first request) and requests in flight.
+  const qtyReqRef = useRef(new Map<string, {
+    seq: number; confirmed: number; confirmedSeq: number; inFlight: number; latestFailed: boolean;
+  }>());
+
+  // "Plants here": optimistic, like updatePlantingPoint, but rejects when the
+  // latest request fails so the caller can report it (a superseded request
+  // resolves quietly). If the latest request failed, the quantity reverts to
+  // the last confirmed value once no request for it is still in flight.
+  const updatePlantingQuantity = useCallback(async (
+    plantingId: string,
+    bedId: string,
+    quantity: number,
+  ): Promise<void> => {
+    const prev = plantingsRef.current;
+    const current = (prev[bedId] ?? []).find(p => p.id === plantingId);
+    const entry = qtyReqRef.current.get(plantingId)
+      ?? { seq: 0, confirmed: current?.quantity ?? quantity, confirmedSeq: 0, inFlight: 0, latestFailed: false };
+    entry.seq += 1;
+    entry.inFlight += 1;
+    entry.latestFailed = false;
+    qtyReqRef.current.set(plantingId, entry);
+    const mySeq = entry.seq;
+    syncPlantings({
+      ...prev,
+      [bedId]: (prev[bedId] ?? []).map(p =>
+        p.id === plantingId ? { ...p, quantity } : p,
+      ),
+    });
+    try {
+      await api.patch(`/api/plantings/${plantingId}`, { quantity });
+      if (mySeq > entry.confirmedSeq) {
+        entry.confirmed = quantity;
+        entry.confirmedSeq = mySeq;
+      }
+    } catch (e) {
+      if (mySeq === entry.seq) {
+        entry.latestFailed = true;
+        throw e;
+      }
+    } finally {
+      entry.inFlight -= 1;
+      if (entry.inFlight === 0) {
+        if (entry.latestFailed) {
+          const now = plantingsRef.current;
+          syncPlantings({
+            ...now,
+            [bedId]: (now[bedId] ?? []).map(p =>
+              p.id === plantingId ? { ...p, quantity: entry.confirmed } : p,
+            ),
+          });
+        }
+        if (qtyReqRef.current.get(plantingId) === entry) qtyReqRef.current.delete(plantingId);
+      }
     }
   }, [syncPlantings]);
 
@@ -247,6 +354,6 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
 
   return {
     plantingsByBedId, loading, error, errorKey, reload, placePlanting, deletePlanting, latestPlacing,
-    updatePlantingPoint, season, loadedKey, markStagesDisplayed, dismissIndicator,
+    updatePlantingPoint, updatePlantingQuantity, season, loadedKey, markStagesDisplayed, dismissIndicator,
   };
 }

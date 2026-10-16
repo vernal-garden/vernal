@@ -4,6 +4,7 @@ import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
 import { currentSeason } from '../lib/season';
+import { UI_MAX_QUANTITY } from '../lib/plantingQuantity';
 import type { SessionData } from '../types';
 
 // ── Three routers, all with mergeParams ──────────────────────────────────────
@@ -114,6 +115,28 @@ function formatPlanting(row: PlantingRow) {
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
+
+interface OccupantRow {
+  id: string;
+  seed_id: string | null;
+  cambium_seed_id: string | null;
+  quantity: number;
+  cambium_identity: string | null;
+  common_name: string | null;
+}
+
+function cellOccupiedBody(occupant: { id: string; common_name?: string | null }) {
+  return {
+    error: 'cell occupied',
+    code: 'CELL_OCCUPIED',
+    occupant: { id: occupant.id, commonName: occupant.common_name ?? null },
+  };
+}
+
+function isCellIndexViolation(err: unknown): boolean {
+  const e = err as { code?: string; constraint?: string };
+  return e?.code === '23505' && e.constraint === 'plantings_one_per_cell_idx';
+}
 
 async function ownGarden(gardenId: string, session: SessionData): Promise<boolean> {
   const accountId = session.account?.id ?? null;
@@ -331,6 +354,7 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
 
     let seedId: number | null = null;
     let cambiumSeedId: number | null = null;
+    let requestSeedSourceId: string | null = null;
 
     if (hasSeedId) {
       const raw = body.seedId;
@@ -340,12 +364,14 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       }
       seedId = parsed as number;
       const { rows } = await db.query(
-        'SELECT id FROM seeds WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+        `SELECT id, cambium_source_id::text AS cambium_source_id
+         FROM seeds WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)`,
         [seedId, accountId, sessionId],
       );
       if (rows.length === 0) {
         return res.status(400).json({ error: 'seedId not found in your catalogue' });
       }
+      requestSeedSourceId = (rows[0].cambium_source_id as string | null) ?? null;
     } else {
       const raw = body.cambiumSeedId;
       const parsed = typeof raw === 'string' ? parseInt(raw, 10) : raw;
@@ -409,20 +435,89 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       pointY = p.y;
     }
 
-    const { rows: insertRows } = await db.query<{ id: string }>(
-      `INSERT INTO plantings
-         (bed_id, garden_id, season, seed_id, cambium_seed_id, quantity, planting_date,
-          cell_x, cell_y, point_x, point_y)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-       RETURNING id::text`,
-      [bedId, gardenId, bed.season, seedId, cambiumSeedId, quantity, plantingDate,
-       cellX, cellY, pointX, pointY],
-    );
-    const { rows } = await db.query<PlantingRow>(
-      `${PLANTING_GET_QUERY} WHERE p.id = $1`,
-      [insertRows[0].id],
-    );
-    res.status(201).json(formatPlanting(rows[0]));
+    const selectFormatted = async (id: string) => {
+      const { rows } = await db.query<PlantingRow>(
+        `${PLANTING_GET_QUERY} WHERE p.id = $1`,
+        [id],
+      );
+      return formatPlanting(rows[0]);
+    };
+
+    const insertPlanting = async (): Promise<string> => {
+      const { rows: insertRows } = await db.query<{ id: string }>(
+        `INSERT INTO plantings
+           (bed_id, garden_id, season, seed_id, cambium_seed_id, quantity, planting_date,
+            cell_x, cell_y, point_x, point_y)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING id::text`,
+        [bedId, gardenId, bed.season, seedId, cambiumSeedId, quantity, plantingDate,
+         cellX, cellY, pointX, pointY],
+      );
+      return insertRows[0].id;
+    };
+
+    if (bed.type !== 'grid') {
+      const id = await insertPlanting();
+      return res.status(201).json({ ...(await selectFormatted(id)), merged: false });
+    }
+
+    // Grid bed: one planting per cell. Same plant merges; a different plant is refused.
+    const requestIdentity =
+      cambiumSeedId !== null ? String(cambiumSeedId) : requestSeedSourceId;
+
+    const resolveOccupied = async (occ: OccupantRow) => {
+      const sameSeedRecord =
+        (seedId !== null && occ.seed_id === String(seedId)) ||
+        (cambiumSeedId !== null && occ.cambium_seed_id === String(cambiumSeedId));
+      const sameIdentity =
+        occ.cambium_identity !== null && occ.cambium_identity === requestIdentity;
+      if (sameSeedRecord || sameIdentity) {
+        // SQL mirrors mergedQuantity() in lib/plantingQuantity.ts; computed in SQL
+        // so concurrent merges don't lose an update.
+        const { rows: merged } = await db.query<{ id: string }>(
+          `UPDATE plantings
+           SET quantity = LEAST(quantity + $1, GREATEST(quantity, $2)), updated_at = NOW()
+           WHERE id = $3 RETURNING id::text`,
+          [quantity, UI_MAX_QUANTITY, occ.id],
+        );
+        if (merged.length === 0) {
+          console.error(`POST planting merge: planting ${occ.id} vanished before the merge UPDATE`);
+          return res.status(500).json({ error: 'Internal server error' });
+        }
+        return res.status(200).json({ ...(await selectFormatted(occ.id)), merged: true });
+      }
+      return res.status(409).json(cellOccupiedBody(occ));
+    };
+
+    const findOccupant = async (): Promise<OccupantRow | null> => {
+      const { rows } = await db.query<OccupantRow>(
+        `SELECT p.id::text, p.seed_id::text, p.cambium_seed_id::text,
+                p.quantity,
+                COALESCE(p.cambium_seed_id, s.cambium_source_id)::text
+                  AS cambium_identity,
+                COALESCE(cs.common_name, s.common_name) AS common_name
+         FROM plantings p
+         LEFT JOIN seeds s          ON s.id  = p.seed_id
+         LEFT JOIN cambium.seeds cs ON cs.id = COALESCE(p.cambium_seed_id, s.cambium_source_id)
+         WHERE p.bed_id = $1 AND p.cell_x = $2 AND p.cell_y = $3`,
+        [bedId, cellX, cellY],
+      );
+      return rows[0] ?? null;
+    };
+
+    const occupant = await findOccupant();
+    if (occupant) return await resolveOccupied(occupant);
+
+    try {
+      const id = await insertPlanting();
+      return res.status(201).json({ ...(await selectFormatted(id)), merged: false });
+    } catch (err) {
+      if (!isCellIndexViolation(err)) throw err;
+      // Lost a race: someone filled the cell between lookup and insert. Look once more.
+      const raced = await findOccupant();
+      if (!raced) throw err;
+      return await resolveOccupied(raced);
+    }
   } catch (err) {
     console.error('POST /.../beds/:bedId/plantings error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -502,6 +597,14 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
       const cellErr = validateCell(body.cell, bedInfo);
       if (cellErr) return res.status(400).json({ error: cellErr });
       const c = body.cell as Record<string, number>;
+      const { rows: occupants } = await db.query<PlantingRow>(
+        `${PLANTING_GET_QUERY}
+         WHERE p.bed_id = $1 AND p.cell_x = $2 AND p.cell_y = $3 AND p.id <> $4`,
+        [planting.bed_id, c.x, c.y, plantingId],
+      );
+      if (occupants.length > 0) {
+        return res.status(409).json(cellOccupiedBody(occupants[0]));
+      }
       updates.push(`cell_x = $${idx++}`);
       values.push(c.x);
       updates.push(`cell_y = $${idx++}`);
@@ -536,10 +639,23 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
     updates.push(`updated_at = NOW()`);
     values.push(plantingId);
 
-    await db.query(
-      `UPDATE plantings SET ${updates.join(', ')} WHERE id = $${idx}`,
-      values,
-    );
+    try {
+      await db.query(
+        `UPDATE plantings SET ${updates.join(', ')} WHERE id = $${idx}`,
+        values,
+      );
+    } catch (err) {
+      if (!isCellIndexViolation(err) || body.cell === undefined) throw err;
+      // Lost a race for the target cell; report whoever holds it now.
+      const c = body.cell as Record<string, number>;
+      const { rows: occ } = await db.query<PlantingRow>(
+        `${PLANTING_GET_QUERY}
+         WHERE p.bed_id = $1 AND p.cell_x = $2 AND p.cell_y = $3 AND p.id <> $4`,
+        [planting.bed_id, c.x, c.y, plantingId],
+      );
+      if (occ.length === 0) throw err;
+      return res.status(409).json(cellOccupiedBody(occ[0]));
+    }
     const { rows } = await db.query<PlantingRow>(
       `${PLANTING_GET_QUERY} WHERE p.id = $1`,
       [plantingId],

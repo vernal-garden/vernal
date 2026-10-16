@@ -193,7 +193,9 @@ export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, 
         ) : (
           <div style={{ marginTop: 'auto', background: '#fff8f8', border: '1px solid #e8c8c8', borderRadius: 8, padding: 14 }}>
             <div style={{ fontSize: 13, color: '#5a3030', marginBottom: 10 }}>
-              This bed has {plantingCount} plant{plantingCount !== 1 ? 's' : ''} — deleting removes them too.
+              {plantingCount === 1
+                ? 'This bed has 1 plant. Deleting it will remove that plant too.'
+                : `This bed has ${plantingCount} plants. Deleting it will remove them too.`}
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => setConfirmDelete(false)} style={{ flex: 1, padding: '8px', borderRadius: 6, border: '1px solid #d8ceba', background: 'transparent', cursor: 'pointer', fontSize: 12 }}>

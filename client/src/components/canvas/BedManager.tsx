@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Bed } from '../../hooks/useGarden';
 import type { PlantingsByBedId } from '../../hooks/usePlantings';
+import { plantCount, plantsLabel } from '../../lib/placement';
 
 interface Props {
   beds: Bed[];
@@ -28,7 +29,7 @@ export default function BedManager({ beds, plantingsByBedId, onClose, onRename, 
   };
 
   const handleDelete = (bed: Bed) => {
-    const count = plantingsByBedId[bed.id]?.length ?? 0;
+    const count = plantCount(plantingsByBedId[bed.id] ?? []);
     if (count > 0) { setConfirmDeleteId(bed.id); return; }
     onDelete(bed.id);
   };
@@ -66,7 +67,7 @@ export default function BedManager({ beds, plantingsByBedId, onClose, onRename, 
           </div>
         )}
         {beds.map(bed => {
-          const count = plantingsByBedId[bed.id]?.length ?? 0;
+          const count = plantCount(plantingsByBedId[bed.id] ?? []);
           return (
             <div key={bed.id} style={{
               padding: '10px 16px', borderBottom: '1px solid #ede8dd',
@@ -121,7 +122,7 @@ export default function BedManager({ beds, plantingsByBedId, onClose, onRename, 
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 11, color: '#9a8e7e', flex: 1 }}>
-                  {count} plant{count !== 1 ? 's' : ''}
+                  {plantsLabel(count)}
                 </span>
                 <button onClick={() => onFocusBed(bed)} style={{
                   fontSize: 11, color: '#2d6a4f', background: 'transparent',
@@ -142,7 +143,7 @@ export default function BedManager({ beds, plantingsByBedId, onClose, onRename, 
               {confirmDeleteId === bed.id && (
                 <div style={{ background: '#fff8f8', border: '1px solid #e8c8c8', borderRadius: 6, padding: '10px 12px' }}>
                   <div style={{ fontSize: 12, color: '#5a3030', marginBottom: 8 }}>
-                    {count} plant{count !== 1 ? 's' : ''} will also be removed.
+                    {plantsLabel(count)} will also be removed.
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button onClick={() => setConfirmDeleteId(null)} style={{ flex: 1, padding: '5px', borderRadius: 4, border: '1px solid #d8ceba', background: 'transparent', cursor: 'pointer', fontSize: 11 }}>

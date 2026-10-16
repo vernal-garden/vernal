@@ -182,7 +182,7 @@ router.get('/', async (req, res) => {
     const season = currentSeason();
     const result = await db.query<GardenListRow>(
       `SELECT ${GARDEN_SELECT},
-        (SELECT COUNT(*)::int FROM plantings p
+        (SELECT COALESCE(SUM(p.quantity), 0)::int FROM plantings p
          WHERE p.garden_id = gardens.id AND p.season = $3)
          AS active_planting_count
        FROM gardens
