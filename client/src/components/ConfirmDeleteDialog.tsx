@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import ResponsiveDialog from './shell/ResponsiveDialog';
 
 interface Props {
   title: string;
@@ -14,17 +15,6 @@ export default function ConfirmDeleteDialog({ title, body, confirmLabel, onConfi
   const [deleting, setDeleting] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  // Scroll-lock + Escape
-  useEffect(() => {
-    document.body.style.overflow = 'hidden';
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onCancel(); }
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.body.style.overflow = '';
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [onCancel]);
-
   async function handleConfirm() {
     setDeleting(true);
     setFailed(false);
@@ -38,31 +28,15 @@ export default function ConfirmDeleteDialog({ title, body, confirmLabel, onConfi
   }
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--sp-4)' }}
-      onClick={onCancel}
-    >
-      <div
-        role="dialog"
-        aria-modal={true}
-        aria-label={title}
-        onClick={e => e.stopPropagation()}
-        style={{ background: 'var(--c-surface)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-5)', width: 400, maxWidth: '100%', boxSizing: 'border-box', boxShadow: 'var(--shadow-lg)' }}
-      >
-        <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 600, color: 'var(--c-text)', marginBottom: 'var(--sp-3)' }}>
-          {title}
-        </div>
-        <p style={{ fontFamily: 'var(--font-ui)', fontSize: 14, color: 'var(--c-text-2)', lineHeight: 1.6, margin: '0 0 var(--sp-4)' }}>
-          {body}
-        </p>
-        {failed && (
-          <p role="alert" style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-danger)', margin: '0 0 var(--sp-3)' }}>
-            Couldn't delete. Try again.
-          </p>
-        )}
-        <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
+    <ResponsiveDialog
+      open
+      onClose={deleting ? () => {} : onCancel}
+      title={title}
+      footer={
+        <>
           <button
             onClick={onCancel}
+            disabled={deleting}
             style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: '1px solid var(--c-border)', background: 'transparent', color: 'var(--c-text)', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer' }}
           >
             Cancel
@@ -74,8 +48,17 @@ export default function ConfirmDeleteDialog({ title, body, confirmLabel, onConfi
           >
             {deleting ? 'Deleting…' : confirmLabel}
           </button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <p style={{ fontFamily: 'var(--font-ui)', fontSize: 14, color: 'var(--c-text-2)', lineHeight: 1.6, margin: 0 }}>
+        {body}
+      </p>
+      {failed && (
+        <p role="alert" style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-danger)', margin: 'var(--sp-3) 0 0' }}>
+          Couldn't delete. Try again.
+        </p>
+      )}
+    </ResponsiveDialog>
   );
 }

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { GardenSummary } from '../hooks/useGardenList';
+import ResponsiveDialog from './shell/ResponsiveDialog';
 
 const METHOD_LABELS: Record<string, string> = {
   square_foot: 'Square foot',
@@ -34,6 +35,16 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogWasOpenRef = useRef(false);
+
+  // The menu item that opened a dialog has unmounted, so on close return focus
+  // to the menu toggle.
+  const dialogOpen = renaming || confirmingDelete;
+  useEffect(() => {
+    if (dialogWasOpenRef.current && !dialogOpen) menuButtonRef.current?.focus();
+    dialogWasOpenRef.current = dialogOpen;
+  }, [dialogOpen]);
 
   // Close menu on outside click
   useEffect(() => {
@@ -55,30 +66,6 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
       setTimeout(() => renameInputRef.current?.select(), 0);
     }
   }, [renaming, garden.name]);
-
-  // Scroll-lock + Escape for rename modal
-  useEffect(() => {
-    if (!renaming) return;
-    document.body.style.overflow = 'hidden';
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setRenaming(false); }
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.body.style.overflow = '';
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [renaming]);
-
-  // Scroll-lock + Escape for delete modal
-  useEffect(() => {
-    if (!confirmingDelete) return;
-    document.body.style.overflow = 'hidden';
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setConfirmingDelete(false); }
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.body.style.overflow = '';
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [confirmingDelete]);
 
   function handleCardClick(e: React.MouseEvent) {
     // Don't navigate when interacting with the menu or its children
@@ -196,6 +183,7 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
             {/* Overflow menu */}
             <div data-garden-menu style={{ position: 'relative', flexShrink: 0 }} ref={menuRef}>
               <button
+                ref={menuButtonRef}
                 onClick={e => { e.stopPropagation(); setMenuOpen(o => !o); }}
                 style={{
                   width: 28, height: 28, borderRadius: 'var(--r-sm)',
@@ -221,7 +209,7 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
 
               {menuOpen && (
                 <div style={{
-                  position: 'absolute', top: 32, right: 0, zIndex: 20,
+                  position: 'absolute', top: 'calc(100% + 4px)', right: 0, zIndex: 20,
                   background: 'var(--c-surface)', border: '1px solid var(--c-border)',
                   borderRadius: 'var(--r-md)', boxShadow: 'var(--shadow-md)',
                   minWidth: 140, overflow: 'hidden',
@@ -291,93 +279,75 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
       </div>
 
       {/* Rename modal */}
-      {renaming && (
-        <div
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={() => setRenaming(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal={true}
-            aria-label="Rename garden"
-            onClick={e => e.stopPropagation()}
-            style={{ background: 'var(--c-surface)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-5)', width: 360, boxShadow: 'var(--shadow-lg)' }}
-          >
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 600, color: 'var(--c-text)', marginBottom: 'var(--sp-3)' }}>
-              Rename garden
-            </div>
-            <input
-              ref={renameInputRef}
-              value={renameValue}
-              onChange={e => setRenameValue(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(); if (e.key === 'Escape') setRenaming(false); }}
-              style={{
-                width: '100%', padding: 'var(--sp-2) var(--sp-3)', borderRadius: 'var(--r-md)',
-                border: '1px solid var(--c-border)', fontFamily: 'var(--font-ui)', fontSize: 14,
-                color: 'var(--c-text)', outline: 'none', boxSizing: 'border-box',
-              }}
-            />
-            {renameError && (
-              <p style={{ fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--c-danger)', margin: 'var(--sp-1) 0 0' }}>
-                {renameError}
-              </p>
-            )}
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end', marginTop: 'var(--sp-4)' }}>
-              <button
-                onClick={() => setRenaming(false)}
-                style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: '1px solid var(--c-border)', background: 'transparent', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer' }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleRenameSubmit}
-                disabled={renameLoading || !renameValue.trim()}
-                style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: 'none', background: 'var(--c-primary)', color: 'var(--c-text-on-primary)', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer', opacity: renameLoading ? 0.6 : 1 }}
-              >
-                {renameLoading ? 'Saving\u2026' : 'Save'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ResponsiveDialog
+        open={renaming}
+        onClose={() => setRenaming(false)}
+        title="Rename garden"
+        footer={
+          <>
+            <button
+              onClick={() => setRenaming(false)}
+              style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: '1px solid var(--c-border)', background: 'transparent', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleRenameSubmit}
+              disabled={renameLoading || !renameValue.trim()}
+              style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: 'none', background: 'var(--c-primary)', color: 'var(--c-text-on-primary)', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer', opacity: renameLoading ? 0.6 : 1 }}
+            >
+              {renameLoading ? 'Saving…' : 'Save'}
+            </button>
+          </>
+        }
+      >
+        <input
+          ref={renameInputRef}
+          value={renameValue}
+          onChange={e => setRenameValue(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') handleRenameSubmit(); }}
+          style={{
+            width: '100%', padding: 'var(--sp-2) var(--sp-3)', borderRadius: 'var(--r-md)',
+            border: '1px solid var(--c-border)', fontFamily: 'var(--font-ui)', fontSize: 14,
+            color: 'var(--c-text)', outline: 'none', boxSizing: 'border-box',
+          }}
+        />
+        {renameError && (
+          <p style={{ fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--c-danger)', margin: 'var(--sp-1) 0 0' }}>
+            {renameError}
+          </p>
+        )}
+      </ResponsiveDialog>
 
       {/* Delete confirmation modal */}
-      {confirmingDelete && (
-        <div
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={() => setConfirmingDelete(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal={true}
-            aria-label="Delete garden"
-            onClick={e => e.stopPropagation()}
-            style={{ background: 'var(--c-surface)', borderRadius: 'var(--r-lg)', padding: 'var(--sp-5)', width: 400, boxShadow: 'var(--shadow-lg)' }}
-          >
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 600, color: 'var(--c-text)', marginBottom: 'var(--sp-3)' }}>
-              Delete {garden.name}?
-            </div>
-            <p style={{ fontFamily: 'var(--font-ui)', fontSize: 14, color: 'var(--c-text-2)', lineHeight: 1.6, margin: '0 0 var(--sp-4)' }}>
-              This permanently removes the garden, all its beds, and all planting history. This cannot be undone.
-            </p>
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => setConfirmingDelete(false)}
-                style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: '1px solid var(--c-border)', background: 'transparent', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer' }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDeleteConfirm}
-                disabled={deleteLoading}
-                style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: 'none', background: 'var(--c-danger)', color: '#fff', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer', opacity: deleteLoading ? 0.6 : 1 }}
-              >
-                {deleteLoading ? 'Deleting\u2026' : 'Delete garden'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ResponsiveDialog
+        open={confirmingDelete}
+        onClose={deleteLoading ? () => {} : () => setConfirmingDelete(false)}
+        title={`Delete ${garden.name}?`}
+        ariaLabel="Delete garden"
+        footer={
+          <>
+            <button
+              onClick={() => setConfirmingDelete(false)}
+              disabled={deleteLoading}
+              style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: '1px solid var(--c-border)', background: 'transparent', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer' }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDeleteConfirm}
+              disabled={deleteLoading}
+              style={{ padding: 'var(--sp-2) var(--sp-4)', borderRadius: 'var(--r-md)', border: 'none', background: 'var(--c-danger)', color: '#fff', fontFamily: 'var(--font-ui)', fontSize: 13, cursor: 'pointer', opacity: deleteLoading ? 0.6 : 1 }}
+            >
+              {deleteLoading ? 'Deleting…' : 'Delete garden'}
+            </button>
+          </>
+        }
+      >
+        <p style={{ fontFamily: 'var(--font-ui)', fontSize: 14, color: 'var(--c-text-2)', lineHeight: 1.6, margin: 0 }}>
+          This permanently removes the garden, all its beds, and all planting history. This cannot be undone.
+        </p>
+      </ResponsiveDialog>
     </>
   );
 }

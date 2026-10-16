@@ -78,6 +78,21 @@ export async function createTestCambiumSeed(commonName: string): Promise<number>
   return result.rows[0].id;
 }
 
+// Removes cambium.seeds rows whose common_name matches any of the LIKE
+// patterns (e.g. 'Mobcat %'), for a spec's afterAll since resetTestDb leaves
+// cambium.* alone. A stamp-prefix pattern also clears earlier runs' leftovers.
+// cambium.companions and cambium.seed_ratings go with them (ON DELETE
+// CASCADE); public-schema cambium_seed_id columns have no FK, so nothing
+// blocks the delete. Returns the number of seeds deleted.
+export async function deleteCambiumSeedsLike(...patterns: string[]): Promise<number> {
+  if (patterns.length === 0) return 0;
+  const result = await getPool().query(
+    'DELETE FROM cambium.seeds WHERE common_name LIKE ANY($1::text[])',
+    [patterns],
+  );
+  return result.rowCount ?? 0;
+}
+
 export async function closePool(): Promise<void> {
   if (ended) return;
   ended = true;
@@ -186,4 +201,26 @@ export async function getModerationItemId(seedId: number): Promise<number> {
   );
   if (result.rows.length === 0) throw new Error(`No moderation item for seed ${seedId}`);
   return result.rows[0].id;
+}
+
+// Spacing on a personal seed (createTestSeed leaves it null). The plantings API
+// reports it as the planting's spacingInches.
+export async function setSeedSpacing(seedId: number, spacingInches: number): Promise<void> {
+  await getPool().query('UPDATE seeds SET spacing_inches = $2 WHERE id = $1', [seedId, spacingInches]);
+}
+
+// A Cambium companion relationship, stored in both directions so either
+// seed's companions list reports it. Confidence 100 clears the service's
+// display threshold. cambium.* is not cleared by resetTestDb; the rows go
+// with their seeds (ON DELETE CASCADE), so use uniquely named seeds.
+export async function createCambiumCompanion(
+  seedId: number, companionSeedId: number,
+  relationship: 'beneficial' | 'antagonistic' | 'neutral',
+): Promise<void> {
+  await getPool().query(
+    `INSERT INTO cambium.companions (seed_id, companion_seed_id, relationship, confidence, source)
+     VALUES ($1, $2, $3, 100, 'e2e'), ($2, $1, $3, 100, 'e2e')
+     ON CONFLICT (seed_id, companion_seed_id) DO UPDATE SET relationship = EXCLUDED.relationship`,
+    [seedId, companionSeedId, relationship],
+  );
 }

@@ -46,6 +46,7 @@ export default function BottomSheet({ open, onClose, title, children, ariaLabel 
 
   const panelRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const downOnBackdropRef = useRef(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
@@ -69,13 +70,22 @@ export default function BottomSheet({ open, onClose, title, children, ariaLabel 
     if (open) setDragY(0);
   }, [open]);
 
-  // Focus management: move focus into the panel on open, restore it on close.
+  // Capture the trigger during render on the closed -> open transition, before
+  // React applies any child's autoFocus.
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
+  if (open && !wasOpenRef.current) triggerRef.current = document.activeElement as HTMLElement | null;
+  wasOpenRef.current = open;
+
+  // Focus management: move focus into the panel on open (unless a child already
+  // has it), restore it on close if the trigger is still in the document.
   useLayoutEffect(() => {
     if (!open) return;
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
+    const panel = panelRef.current;
+    if (panel && !panel.contains(document.activeElement)) panel.focus();
     return () => {
-      previouslyFocused?.focus?.();
+      const trigger = triggerRef.current;
+      if (trigger?.isConnected) trigger.focus?.();
     };
   }, [open]);
 
@@ -148,7 +158,11 @@ export default function BottomSheet({ open, onClose, title, children, ariaLabel 
       `}</style>
       <div
         aria-hidden="true"
-        onClick={() => onCloseRef.current()}
+        onPointerDown={() => { downOnBackdropRef.current = true; }}
+        onClick={() => {
+          if (downOnBackdropRef.current) onCloseRef.current();
+          downOnBackdropRef.current = false;
+        }}
         style={{
           position: 'fixed',
           inset: 0,

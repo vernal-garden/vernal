@@ -24,24 +24,33 @@ const PAGE_SIZE_COMMUNITY = 20;
 const PAGE_SIZE_PERSONAL  = 50;
 const ALL_PERSONAL_PREFETCH_LIMIT = 100;
 
-// Raw API response shapes
-interface CommunityApiItem {
+// Raw API response shapes. The growing fields are optional: /api/seeds returns
+// them, the community list (/api/catalogue/seeds) currently does not.
+interface GrowingSummaryApi {
+  maturityDaysMin?: number | null; maturityDaysMax?: number | null; spacingInches?: number | null;
+}
+interface CommunityApiItem extends GrowingSummaryApi {
   id: string; commonName: string; scientificName: string | null;
   plantFamily: string | null; illustrationKey: string | null;
   aggregateRating: number | null; ratingCount: number;
 }
-interface PersonalApiItem {
+interface PersonalApiItem extends GrowingSummaryApi {
   id: string; commonName: string; scientificName: string | null;
   plantFamily: string | null; illustrationKey: string | null;
   userRating: number | null; isFavourite: boolean;
   origin: string; contributionStatus: ContributionStatus; cambiumSourceId: string | null;
 }
 
+function growingSummary(item: GrowingSummaryApi) {
+  return { maturityDaysMin: item.maturityDaysMin ?? null, maturityDaysMax: item.maturityDaysMax ?? null,
+    spacingInches: item.spacingInches ?? null };
+}
+
 function toCommunityCard(item: CommunityApiItem): CommunityCard {
   return { kind: 'community', id: item.id, commonName: item.commonName,
     scientificName: item.scientificName, plantFamily: item.plantFamily,
     illustrationKey: item.illustrationKey, aggregateRating: item.aggregateRating,
-    ratingCount: item.ratingCount };
+    ratingCount: item.ratingCount, ...growingSummary(item) };
 }
 
 function toPersonalCard(item: PersonalApiItem): PersonalCard {
@@ -49,7 +58,8 @@ function toPersonalCard(item: PersonalApiItem): PersonalCard {
     scientificName: item.scientificName, plantFamily: item.plantFamily,
     illustrationKey: item.illustrationKey, userRating: item.userRating,
     isFavourite: item.isFavourite, origin: item.origin,
-    contributionStatus: item.contributionStatus, cambiumSourceId: item.cambiumSourceId };
+    contributionStatus: item.contributionStatus, cambiumSourceId: item.cambiumSourceId,
+    ...growingSummary(item) };
 }
 
 function buildCommunityUrl(q: string, family: string, offset: number): string {

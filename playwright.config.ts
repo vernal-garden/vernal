@@ -33,7 +33,10 @@ export default defineConfig({
     {
       name: 'mobile',
       use: { ...devices['Pixel 7'] },
-      testMatch: /mobile-.*\.spec\.ts/,
+      // mobile-*.spec.ts run here only. feedback-clearance.spec.ts runs in
+      // BOTH projects (chromium doesn't ignore it): it resizes the viewport
+      // itself, and on a Pixel 7 it also covers the touch/mobile-UA context.
+      testMatch: /(mobile-.*|feedback-clearance)\.spec\.ts/,
     },
   ],
   webServer: [
@@ -47,6 +50,14 @@ export default defineConfig({
       url: 'http://localhost:3105/health',
       reuseExistingServer: false,
       timeout: 120_000,
+      // The server's weather and geocoding calls must fail fast and
+      // deterministically in E2E (a slow upstream can outlast the assertion
+      // timeout); the browser-side stubs supply what the pages render.
+      // Merged over process.env, so CI's env still reaches the server.
+      env: {
+        OPEN_METEO_BASE_URL: 'http://127.0.0.1:9',
+        NOMINATIM_BASE_URL: 'http://127.0.0.1:9',
+      },
     },
     {
       command: 'npm run preview --prefix client -- --port 4173 --strictPort',

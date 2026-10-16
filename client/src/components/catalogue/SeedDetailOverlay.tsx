@@ -18,6 +18,7 @@ import SeedForm from './SeedForm';
 import CorrectionModal from './CorrectionModal';
 import ContributeModal from './ContributeModal';
 import SeedPhotos from './SeedPhotos';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -83,6 +84,31 @@ const scheduleLinkStyle: React.CSSProperties = {
   textDecoration: 'none',
 };
 
+// Mobile touch-target floor (desktop styles are left as they are).
+const MOBILE_TARGET: React.CSSProperties = { minHeight: 44, minWidth: 44 };
+
+// The one desktop message in the catalogue: subtle body text at the end of the
+// mobile detail, never a banner.
+export const MOBILE_DETAIL_DESKTOP_NOTE = 'To add, edit, or suggest a correction, visit Vernal on desktop.';
+
+function MobileDesktopNote() {
+  return (
+    <p
+      data-testid="seed-detail-desktop-note"
+      style={{ margin: 0, fontFamily: 'var(--font-ui)', fontSize: 13, lineHeight: 1.5, color: 'var(--c-text-3)' }}
+    >
+      {MOBILE_DETAIL_DESKTOP_NOTE}
+    </p>
+  );
+}
+
+// Hero: illustration beside the names on desktop, stacked on mobile.
+function heroStyle(isMobile: boolean): React.CSSProperties {
+  return isMobile
+    ? { display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)', alignItems: 'flex-start' }
+    : { display: 'flex', gap: 'var(--sp-4)', alignItems: 'flex-start' };
+}
+
 // Same shape as the photo viewer's buttons in SeedPhotos.tsx
 const textBtnStyle: React.CSSProperties = {
   minHeight: 44, padding: '0 var(--sp-4)',
@@ -139,6 +165,7 @@ type DetailStatus =
 export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDeleted }: Props) {
   const { isGuest } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const closeBtnRef = useRef<HTMLButtonElement>(null);
   const [detailStatus, setDetailStatus] = useState<DetailStatus>({ status: 'loading' });
   // True while a seed delete request is in flight; blocks closing the overlay.
@@ -165,13 +192,17 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDe
     return () => { cancelled = true; };
   }, [card.id, card.kind]);
 
-  // ── Body scroll lock + focus ───────────────────────────────────────────────
+  // ── Body scroll lock + focus (restored to the opener on close) ────────────
 
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeBtnRef.current?.focus();
-    return () => { document.body.style.overflow = prev; };
+    return () => {
+      document.body.style.overflow = prev;
+      if (opener?.isConnected) opener.focus?.();
+    };
   }, []);
 
   // ── Escape key ────────────────────────────────────────────────────────────
@@ -192,7 +223,14 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDe
 
   return (
     <div
-      style={{
+      style={isMobile ? {
+        // Mobile: full-height page over the app shell (below BottomSheet's 1100
+        // layer), scrolling as one column.
+        position: 'fixed', inset: 0, zIndex: 1050,
+        background: 'var(--c-surface)',
+        overflowY: 'auto', overflowX: 'hidden',
+        overscrollBehavior: 'contain',
+      } : {
         position: 'fixed', inset: 0, zIndex: 200,
         background: 'rgba(42,35,24,0.55)',
         display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
@@ -210,7 +248,16 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDe
 
       <div
         className="catalogue-overlay"
-        style={{
+        style={isMobile ? {
+          background: 'var(--c-surface)',
+          width: '100%',
+          minHeight: '100%',
+          boxSizing: 'border-box',
+          padding: 'calc(env(safe-area-inset-top) + var(--sp-4)) var(--sp-4) calc(env(safe-area-inset-bottom) + var(--sp-6))',
+          position: 'relative',
+          fontFamily: 'var(--font-ui)',
+          animation: 'catalogue-fade-in 0.18s ease',
+        } : {
           background: 'var(--c-surface)',
           borderRadius: 'var(--r-xl)',
           boxShadow: 'var(--shadow-lg)',
@@ -230,9 +277,12 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDe
           ref={closeBtnRef}
           onClick={requestClose}
           style={{
-            position: 'absolute', top: 'var(--sp-4)', right: 'var(--sp-4)',
+            ...(isMobile
+              // Fixed so it stays reachable while the detail scrolls.
+              ? { position: 'fixed', top: 'calc(env(safe-area-inset-top) + var(--sp-2))', right: 'var(--sp-2)', zIndex: 1, width: 44, height: 44, boxShadow: 'var(--shadow-sm)' }
+              : { position: 'absolute', top: 'var(--sp-4)', right: 'var(--sp-4)', width: 32, height: 32 }),
             background: 'var(--c-surface-raised)', border: 'none',
-            borderRadius: 'var(--r-full)', width: 32, height: 32,
+            borderRadius: 'var(--r-full)',
             cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 18, color: 'var(--c-text-2)',
           }}
@@ -258,6 +308,7 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDe
           <CommunityDetail
             detail={detailStatus.detail}
             isGuest={isGuest}
+            isMobile={isMobile}
             onPromptAccount={promptAccount}
             onNavigateToGarden={() => navigate('/')}
           />
@@ -267,6 +318,7 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDe
           <PersonalDetail
             detail={detailStatus.detail}
             isGuest={isGuest}
+            isMobile={isMobile}
             onPromptAccount={promptAccount}
             onNavigateToGarden={() => navigate('/')}
             onNavigateToCanvas={(gardenId) => navigate(`/?garden=${gardenId}`)}
@@ -292,11 +344,12 @@ export default function SeedDetailOverlay({ card, onClose, onDetailUpdated, onDe
 interface CommunityDetailProps {
   detail: CatalogueSeedDetail;
   isGuest: boolean;
+  isMobile: boolean;
   onPromptAccount: () => void;
   onNavigateToGarden: () => void;
 }
 
-function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden }: CommunityDetailProps) {
+function CommunityDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigateToGarden }: CommunityDetailProps) {
   const [importStatus, setImportStatus] = useState<'idle' | 'loading' | 'added' | 'duplicate' | 'error'>('idle');
   const [correctionOpen, setCorrectionOpen] = useState(false);
 
@@ -324,7 +377,7 @@ function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}>
       {/* Hero */}
-      <div style={{ display: 'flex', gap: 'var(--sp-4)', alignItems: 'flex-start' }}>
+      <div style={heroStyle(isMobile)}>
         <IllustrationImage illustrationKey={detail.illustrationKey} size={96} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{
@@ -364,7 +417,7 @@ function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden 
       </div>
 
       {/* Data grid */}
-      <DataGrid entries={buildDataEntries(detail)} />
+      <DataGrid entries={buildDataEntries(detail)} columns={isMobile ? 1 : 2} />
 
       {/* Companions */}
       {detail.companions.length > 0 && (
@@ -391,7 +444,15 @@ function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden 
         </div>
       )}
 
-      {/* Action row */}
+      {/* Action row. Mobile keeps only the schedule link, then the desktop note. */}
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 'var(--sp-4)', paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--c-border-subtle)' }}>
+          <Link to={`/guide?open=cambium:${detail.id}`} style={{ ...scheduleLinkStyle, ...MOBILE_TARGET }}>
+            View planting schedule
+          </Link>
+          <MobileDesktopNote />
+        </div>
+      ) : (
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)', paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--c-border-subtle)' }}>
         <button style={primaryBtnStyle} onClick={onNavigateToGarden}>Add to Garden</button>
         <button
@@ -420,7 +481,8 @@ function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden 
           View planting schedule
         </Link>
       </div>
-      {correctionOpen && (
+      )}
+      {!isMobile && correctionOpen && (
         <CorrectionModal
           cambiumSeedId={detail.id}
           seedName={detail.commonName}
@@ -436,6 +498,7 @@ function CommunityDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden 
 interface PersonalDetailProps {
   detail: PersonalSeedDetail;
   isGuest: boolean;
+  isMobile: boolean;
   onPromptAccount: () => void;
   onNavigateToGarden: () => void;
   onNavigateToCanvas: (gardenId: string) => void;
@@ -444,7 +507,7 @@ interface PersonalDetailProps {
   onDeleted: () => void;
 }
 
-function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, onNavigateToCanvas, onDetailUpdated, onDeletingChange, onDeleted }: PersonalDetailProps) {
+function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigateToGarden, onNavigateToCanvas, onDetailUpdated, onDeletingChange, onDeleted }: PersonalDetailProps) {
   const [localRating, setLocalRating] = useState<number | null>(detail.userRating);
   const [localFav, setLocalFav] = useState(detail.isFavourite);
   const [notes, setNotes] = useState(detail.userNotes ?? '');
@@ -539,7 +602,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}>
       {/* Hero */}
-      <div style={{ display: 'flex', gap: 'var(--sp-4)', alignItems: 'flex-start' }}>
+      <div style={heroStyle(isMobile)}>
         <IllustrationImage illustrationKey={detail.illustrationKey} size={96} />
         <div style={{ flex: 1, minWidth: 0 }}>
           {isCambiumImport && (
@@ -569,6 +632,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
           onChange={handleRating}
           size={20}
           label="Your rating"
+          touchTarget={isMobile}
         />
         <button
           onClick={handleFav}
@@ -577,6 +641,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
             background: 'none', border: 'none', cursor: 'pointer',
             fontSize: 20, color: localFav ? 'var(--c-secondary)' : 'var(--c-border)',
             padding: 0,
+            ...(isMobile ? MOBILE_TARGET : {}),
           }}
         >
           {localFav ? '♥' : '♡'}
@@ -588,7 +653,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
       )}
 
       {/* Data grid */}
-      <DataGrid entries={buildDataEntries(detail)} />
+      <DataGrid entries={buildDataEntries(detail)} columns={isMobile ? 1 : 2} />
 
       {/* My Notes */}
       <div>
@@ -637,6 +702,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
                     border: '1px solid var(--c-border-subtle)',
                     cursor: 'pointer', fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-text-2)',
                     textAlign: 'left',
+                    ...(isMobile ? { minHeight: 44, gap: 'var(--sp-2)' } : {}),
                   }}
                 >
                   <span>{h.gardenName} — {h.bedLabel} (Season {h.season})</span>
@@ -647,7 +713,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
             {detail.plantingHistory.length > 5 && (
               <button
                 onClick={() => setHistoryExpanded(e => !e)}
-                style={{ marginTop: 'var(--sp-2)', background: 'none', border: 'none', color: 'var(--c-primary)', cursor: 'pointer', fontSize: 13, padding: 0 }}
+                style={{ marginTop: 'var(--sp-2)', background: 'none', border: 'none', color: 'var(--c-primary)', cursor: 'pointer', fontSize: 13, padding: 0, ...(isMobile ? MOBILE_TARGET : {}) }}
               >
                 {historyExpanded ? 'Show less' : `Show all ${detail.plantingHistory.length}`}
               </button>
@@ -682,6 +748,32 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
           </div>
           {deleteError && (
             <p role="alert" style={{ margin: 'var(--sp-2) 0 0', fontSize: 13, color: 'var(--c-danger)' }}>{deleteError}</p>
+          )}
+        </div>
+      ) : isMobile ? (
+        // Mobile: no Add to Garden / Edit / Contribute; schedule and Delete (desktop note follows below).
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 'var(--sp-4)', paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--c-border-subtle)' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--sp-2)' }}>
+            <Link to={`/guide?open=seed:${detail.id}`} style={{ ...scheduleLinkStyle, ...MOBILE_TARGET }}>
+              View planting schedule
+            </Link>
+            <button
+              type="button"
+              style={dangerTextBtnStyle}
+              onClick={() => {
+                if (isGuest) { onPromptAccount(); return; }
+                setDeleteError(null);
+                setDeleteBlocked(false);
+                setConfirmingDelete(true);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+          {detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (
+            <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>
+              {contributionStatusLabel[contributionStatus]}
+            </span>
           )}
         </div>
       ) : (
@@ -729,7 +821,9 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
         </button>
       </div>
       )}
-      {editOpen && (
+      {/* After the actions/confirm swap so it stays visible while confirming a delete. */}
+      {isMobile && <MobileDesktopNote />}
+      {!isMobile && editOpen && (
         <SeedForm
           mode="edit"
           initialSeed={detail}
@@ -745,7 +839,7 @@ function PersonalDetail({ detail, isGuest, onPromptAccount, onNavigateToGarden, 
           }}
         />
       )}
-      {contributeOpen && (
+      {!isMobile && contributeOpen && (
         <ContributeModal
           seed={detail}
           photoCount={photoCount}

@@ -7,9 +7,11 @@ export interface DataGridEntry {
 
 interface Props {
   entries: DataGridEntry[];
+  /** 2 (default) on desktop; 1 for the single-column mobile detail. */
+  columns?: 1 | 2;
 }
 
-export default function DataGrid({ entries }: Props) {
+export default function DataGrid({ entries, columns = 2 }: Props) {
   // Keep 0 (valid numeric value e.g. spacing) but drop null, undefined, and empty string.
   const visible = entries.filter(e => e.value !== null && e.value !== undefined && e.value !== '');
   if (visible.length === 0) return null;
@@ -17,7 +19,7 @@ export default function DataGrid({ entries }: Props) {
   return (
     <dl style={{
       display: 'grid',
-      gridTemplateColumns: '1fr 1fr',
+      gridTemplateColumns: columns === 1 ? '1fr' : '1fr 1fr',
       gap: '1px',
       background: 'var(--c-border-subtle)',
       borderRadius: 'var(--r-md)',

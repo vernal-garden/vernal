@@ -25,7 +25,7 @@ function SignInPrompt() {
   return (
     <p className="mt-4 text-center text-sm text-gray-500">
       Already have an account?{' '}
-      <Link to="/login" className="text-[#4f7c3f] underline">
+      <Link to="/login" className="text-[#4f7c3f] underline m-own-line m-own-line--center">
         Sign in
       </Link>
     </p>

@@ -136,7 +136,7 @@ export default function RegisterPage() {
 
       <p style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.875rem', color: '#6b7280' }}>
         Already have an account?{' '}
-        <Link to="/login" style={{ color: '#4f7c3f', fontWeight: 500 }}>Sign in</Link>
+        <Link to="/login" className="m-own-line m-own-line--center" style={{ color: '#4f7c3f', fontWeight: 500 }}>Sign in</Link>
       </p>
     </AuthFormLayout>
   );

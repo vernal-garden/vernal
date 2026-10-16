@@ -43,6 +43,9 @@ const MIN_LENGTH = 10;
 const MAX_LENGTH = 5000;
 const SUCCESS_CLOSE_MS = 2000;
 const NARROW_QUERY = '(max-width: 1023px)';
+// Phase 53: tablet widths, where the canvas toolbar shares the bottom edge.
+const TABLET_QUERY = '(min-width: 768px) and (max-width: 1023px)';
+const TABLET_CANVAS_LIFT_PX = 56;
 
 const FAB_SIZE = 48;
 const EDGE = 'var(--sp-5)';
@@ -86,6 +89,7 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
   const pathname = usePathname();
   const canvasMounted = useCanvasMounted();
   const isNarrow = useMediaQuery(NARROW_QUERY);
+  const isTablet = useMediaQuery(TABLET_QUERY);
 
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState<Category | null>(null);
@@ -143,8 +147,10 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
 
   const onLeft = canvasMounted && isNarrow;
   const side = onLeft ? { left: EDGE } : { right: EDGE };
-  const fabBottom = `calc(${EDGE} + var(--shell-bottom, 0px) + ${bottomOffset}px)`;
-  const panelBottom = `calc(${EDGE} + var(--shell-bottom, 0px) + ${bottomOffset}px + ${FAB_SIZE}px + var(--sp-2))`;
+  // 768–1023px with the canvas mounted: lift clear of the canvas toolbar.
+  const lift = canvasMounted && isTablet ? TABLET_CANVAS_LIFT_PX : 0;
+  const fabBottom = `calc(${EDGE} + var(--shell-bottom, 0px) + ${bottomOffset + lift}px)`;
+  const panelBottom = `calc(${EDGE} + var(--shell-bottom, 0px) + ${bottomOffset + lift}px + ${FAB_SIZE}px + var(--sp-2))`;
 
   const alreadySent = category !== null && sentCategories.has(category);
   const canSend =

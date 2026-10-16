@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { get } from '../lib/api';
 import SubscriptionSettings from '../components/account/SubscriptionSettings';
 import ProfileSettings from '../components/account/ProfileSettings';
@@ -17,6 +18,46 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'subscription', label: 'Subscription' },
   { key: 'privacy', label: 'Data & Privacy' },
 ];
+
+function isTab(value: string | null): value is Tab {
+  return TABS.some((t) => t.key === value);
+}
+
+// Mobile: the section list row (48px) and the back control.
+const mobileRowSt: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  width: '100%',
+  minHeight: 48,
+  boxSizing: 'border-box',
+  padding: '0 var(--sp-4)',
+  border: '1px solid var(--c-border-subtle)',
+  borderRadius: 'var(--r-md)',
+  background: 'var(--c-surface)',
+  color: 'var(--c-text)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 15,
+  textAlign: 'left',
+  cursor: 'pointer',
+};
+
+const mobileBackSt: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 'var(--sp-1)',
+  minHeight: 44,
+  minWidth: 44,
+  marginBottom: 'var(--sp-3)',
+  padding: '0 var(--sp-3) 0 var(--sp-1)',
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--c-primary)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 14,
+  fontWeight: 600,
+  cursor: 'pointer',
+};
 
 function tabButtonSt(active: boolean): React.CSSProperties {
   return {
@@ -38,7 +79,43 @@ export default function AccountPage() {
   const [account, setAccount] = useState<AccountData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [tab, setTab] = useState<Tab>('profile');
+  const isMobile = useIsMobile();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const sectionParam = searchParams.get('section');
+  const [tab, setTab] = useState<Tab>(isTab(sectionParam) ? sectionParam : 'profile');
+  // Mobile only: /account?section=<key> opens that section; no param shows the list.
+  const mobileSection: Tab | null = isTab(sectionParam) ? sectionParam : null;
+
+  // Keep the desktop tab in step if ?section changes (e.g. after crossing the breakpoint).
+  useEffect(() => {
+    if (isTab(sectionParam)) setTab(sectionParam);
+  }, [sectionParam]);
+
+  const backRef = useRef<HTMLButtonElement>(null);
+  const rowRefs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
+  const prevSection = useRef<Tab | null>(mobileSection);
+
+  // Move focus with the view change: Back when a section opens, the row just
+  // closed when returning to the list. Skipped on first render (deep links).
+  useEffect(() => {
+    const prev = prevSection.current;
+    prevSection.current = mobileSection;
+    if (!isMobile || prev === mobileSection) return;
+    if (mobileSection) backRef.current?.focus();
+    else if (prev) rowRefs.current[prev]?.focus();
+  }, [mobileSection, isMobile]);
+
+  function openSection(key: Tab) {
+    navigate({ search: `?section=${key}` }, { state: { fromList: true } });
+  }
+
+  function closeSection() {
+    // Came from the list in this session: pop that entry. Deep link: replace.
+    if ((location.state as { fromList?: boolean } | null)?.fromList) navigate(-1);
+    else setSearchParams({}, { replace: true });
+  }
   const [signingOut, setSigningOut] = useState(false);
   const signOut = useSignOut();
 
@@ -58,8 +135,8 @@ export default function AccountPage() {
     await signOut();
   }
 
-  // Rendered twice (lg+ at the foot of the tab list, mobile below the content)
-  // and toggled with Tailwind visibility classes so each layout gets one.
+  // Rendered twice (lg+ at the foot of the tab list, narrow desktop below the
+  // content) and toggled with Tailwind visibility classes so each layout gets one.
   function signOutButton(className: string) {
     return (
       <div className={className}>
@@ -104,7 +181,63 @@ export default function AccountPage() {
         </p>
       )}
 
-      {!loading && !error && account && (
+      {!loading && !error && account && isMobile && (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {mobileSection ? (
+            <>
+              <div>
+                <button ref={backRef} type="button" onClick={closeSection} style={mobileBackSt}>
+                  <span aria-hidden="true">‹</span>
+                  Back
+                </button>
+              </div>
+              <h2
+                style={{
+                  margin: '0 0 var(--sp-3)',
+                  fontFamily: 'var(--font-display)',
+                  fontSize: 20,
+                  color: 'var(--c-text)',
+                }}
+              >
+                {TABS.find((t) => t.key === mobileSection)?.label}
+              </h2>
+              <div style={{ minWidth: 0 }}>
+                {mobileSection === 'profile' && <ProfileSettings account={account} onUpdate={handleUpdate} />}
+                {mobileSection === 'email' && <EmailSecuritySettings account={account} onUpdate={handleUpdate} />}
+                {mobileSection === 'subscription' && <SubscriptionSettings />}
+                {mobileSection === 'privacy' && <DataPrivacySettings account={account} onUpdate={handleUpdate} />}
+              </div>
+            </>
+          ) : (
+            <>
+              <nav
+                aria-label="Account settings sections"
+                style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}
+              >
+                {TABS.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    ref={(el) => { rowRefs.current[t.key] = el; }}
+                    onClick={() => openSection(t.key)}
+                    style={mobileRowSt}
+                  >
+                    {t.label}
+                    <span aria-hidden="true" style={{ color: 'var(--c-text-3)' }}>›</span>
+                  </button>
+                ))}
+              </nav>
+              <div style={{ marginTop: 'var(--sp-5)' }}>
+                <button type="button" onClick={handleSignOut} disabled={signingOut} style={secondaryButtonSt}>
+                  {signingOut ? 'Signing out…' : 'Sign out'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {!loading && !error && account && !isMobile && (
         <div className="flex flex-col lg:flex-row gap-6">
           <div className="lg:w-56 shrink-0">
             <nav

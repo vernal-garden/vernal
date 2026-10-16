@@ -145,7 +145,7 @@ export default function LoginPage() {
 
       <p style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.875rem', color: '#6b7280' }}>
         Don't have an account?{' '}
-        <Link to="/register" style={{ color: '#4f7c3f', fontWeight: 500 }}>Create one</Link>
+        <Link to="/register" className="m-own-line m-own-line--center" style={{ color: '#4f7c3f', fontWeight: 500 }}>Create one</Link>
       </p>
     </AuthFormLayout>
   );

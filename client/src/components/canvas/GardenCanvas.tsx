@@ -25,6 +25,12 @@ const HANDLE_HALF = 6;
 const MARKER_RADIUS = GRID_PX * 0.38;
 const MARKER_HIT_RADIUS = GRID_PX * 0.5;
 
+// Phase 53: fit-to-beds framing and the mobile view-only gestures.
+const FIT_MARGIN_PX = 40;
+const DOUBLE_TAP_MS = 300;
+const DOUBLE_TAP_SLOP_PX = 24;
+const DOUBLE_TAP_ANIM_S = 0.25;
+
 // Phase 41: garden thumbnails
 const THUMB_LONG_SIDE_PX = 640;
 const THUMB_PAD = 24;
@@ -65,6 +71,8 @@ export interface GardenCanvasRef {
   zoomOut: () => void;
   resetZoom: () => void;
   focusBed: (bed: Bed) => void;
+  // Phase 53: frame all current-season beds (scale capped at 1).
+  fitToBeds: () => void;
   captureThumbnail: () => Promise<Blob | null>;
 }
 
@@ -110,6 +118,9 @@ interface Props {
   // marker layers. Never hit-tested, never animated, never acknowledged.
   overlayBeds?: Bed[];
   overlayPlantingsByBedId?: PlantingsByBedId;
+  // Phase 53: `${gardenId}:${season}` of the last completed beds load. The
+  // canvas fits the beds once per key (garden open or season switch).
+  bedsLoadedKey?: string | null;
 }
 
 type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
@@ -133,7 +144,35 @@ type PendingInspect = {
   bedId: string;
   screenX: number;
   screenY: number;
-};
+} & PopoverBand;
+
+// Phase 53: mobile bed popover (tap on an empty area inside a current bed).
+type PendingBedInspect = {
+  bedId: string;
+  screenX: number;
+  screenY: number;
+} & PopoverBand;
+
+// Shared by the plant and bed popovers: to the right of the anchor, flipped
+// to the left near the right edge, vertically centred and kept on screen.
+// Vertically it stays within [minY + 8, maxY - 8]: the whole stage on desktop
+// (0..height), the band between the shell bars on mobile.
+function anchoredPopoverPosition(
+  anchorX: number, anchorY: number, popW: number, popH: number, viewW: number,
+  minY: number, maxY: number,
+): { left: number; top: number } {
+  let left = anchorX + 12;
+  if (left + popW > viewW - 8) left = anchorX - popW - 12;
+  if (left < 8) left = 8;
+  let top = anchorY - popH / 2;
+  if (top < minY + 8) top = minY + 8;
+  if (top + popH > maxY - 8) top = maxY - popH - 8;
+  top = Math.max(minY + 8, top);
+  return { left, top };
+}
+
+// Visible vertical band captured when a popover opens (mobile only).
+type PopoverBand = { bandTop?: number; bandBottom?: number };
 
 // Touch gesture bookkeeping so a tap only inspects when it was a single,
 // stationary finger (not the end of a pan or a two-finger gesture).
@@ -527,6 +566,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   occupancyByBedId, relationshipBetween,
   plantingsLoadedKey, onStagesDisplayed,
   overlayBeds = EMPTY_BEDS, overlayPlantingsByBedId = EMPTY_PLANTINGS,
+  bedsLoadedKey,
 }, ref) => {
   useRegisterCanvas();
   const stageRef = useRef<Konva.Stage>(null);
@@ -644,6 +684,44 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const touchGestureRef = useRef<TouchGesture | null>(null);
   const lastTapAtRef = useRef(0);
 
+  // Phase 53: mobile is view-only. No bed placement, drawing, move, resize or
+  // plant placement/removal handlers run; taps inspect, drags pan, pinch zooms.
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+  const [pendingBed, setPendingBed] = useState<PendingBedInspect | null>(null);
+  const pendingBedRef = useRef<PendingBedInspect | null>(null);
+  const setPendingBedSynced = useCallback((v: PendingBedInspect | null) => {
+    pendingBedRef.current = v;
+    setPendingBed(v);
+  }, []);
+  const bedPopoverRef = useRef<HTMLDivElement>(null);
+  const [bedPopH, setBedPopH] = useState(110);
+  // Fixed probe spanning the area between the shell bars, so fitting frames
+  // the beds in what is actually visible (the stage runs under the bars).
+  const insetProbeRef = useRef<HTMLDivElement>(null);
+  // Scale chosen by the last fitToBeds; on mobile it is the minimum zoom.
+  const fittedScaleRef = useRef(1);
+  const lastPressRef = useRef<{ t: number; x: number; y: number } | null>(null);
+  const pressTimerRef = useRef<number | null>(null);
+  const stageTweenRef = useRef<Konva.Tween | null>(null);
+  const pinchRef = useRef<{ dist: number; center: { x: number; y: number } } | null>(null);
+
+  const getMinScale = useCallback(
+    () => (isMobileRef.current ? Math.min(fittedScaleRef.current, 1) : MIN_SCALE),
+    [],
+  );
+
+  const cancelPendingPress = useCallback(() => {
+    if (pressTimerRef.current !== null) {
+      window.clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => () => {
+    if (pressTimerRef.current !== null) window.clearTimeout(pressTimerRef.current);
+    stageTweenRef.current?.destroy();
+  }, []);
+
   const closeFreeform = useCallback((pts: number[]) => {
     if (pts.length < 6) { setFreeformPtsSynced([]); setCursorWorld(null); return; }
     if (bedOverlapsAny(pts, '', bedsRef.current)) {
@@ -685,6 +763,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         setResizePreviewSynced(null);
         setPendingPlacementSynced(null);
         setPendingInspectSynced(null);
+        setPendingBedSynced(null);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -696,22 +775,25 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
-  }, [setFreeformPtsSynced, setDragOffsetSynced, setResizePreviewSynced, setMoveOverlapSynced, setPendingPlacementSynced, setPendingInspectSynced]);
+  }, [setFreeformPtsSynced, setDragOffsetSynced, setResizePreviewSynced, setMoveOverlapSynced, setPendingPlacementSynced, setPendingInspectSynced, setPendingBedSynced]);
 
-  // Inspection popover: a pointerdown outside it closes it. Presses on the
-  // canvas are left to handleClick, which already closes popovers on click.
+  // Inspection / bed popover: a pointerdown outside it closes it. Presses on
+  // the canvas are left to handleClick, which already closes popovers on click.
+  const popoverOpen = pendingInspect != null || pendingBed != null;
   useEffect(() => {
-    if (!pendingInspect) return;
+    if (!popoverOpen) return;
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null;
       if (!target) return;
       if (inspectPopoverRef.current?.contains(target)) return;
+      if (bedPopoverRef.current?.contains(target)) return;
       if (stageRef.current?.container().contains(target)) return;
       setPendingInspectSynced(null);
+      setPendingBedSynced(null);
     };
     document.addEventListener('pointerdown', onPointerDown);
     return () => document.removeEventListener('pointerdown', onPointerDown);
-  }, [pendingInspect, setPendingInspectSynced]);
+  }, [popoverOpen, setPendingInspectSynced, setPendingBedSynced]);
 
   // Measure the inspection popover so edge-flipping uses its real height.
   // Re-measures when it opens for a planting or that planting changes
@@ -723,6 +805,32 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const el = inspectPopoverRef.current;
     if (el && el.offsetHeight !== inspectH) setInspectH(el.offsetHeight);
   }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH]);
+
+  const inspectedBed = pendingBed ? beds.find(b => b.id === pendingBed.bedId) ?? null : null;
+  useLayoutEffect(() => {
+    const el = bedPopoverRef.current;
+    if (el && el.offsetHeight !== bedPopH) setBedPopH(el.offsetHeight);
+  }, [inspectedBed, plantingsByBedId, bedPopH]);
+  // A bed that disappears (e.g. deleted elsewhere) closes its popover.
+  useEffect(() => {
+    if (pendingBed && !inspectedBed) setPendingBedSynced(null);
+  }, [pendingBed, inspectedBed, setPendingBedSynced]);
+  // Focus the bed popover when it opens; on close (X, Escape, outside tap,
+  // pan/zoom) hand focus back to the canvas container, as the plant popover does.
+  const inspectedBedId = inspectedBed?.id ?? null;
+  const hadBedPopoverRef = useRef(false);
+  useEffect(() => {
+    if (inspectedBedId) {
+      hadBedPopoverRef.current = true;
+      bedPopoverRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (!hadBedPopoverRef.current) return;
+    hadBedPopoverRef.current = false;
+    if (pendingInspectRef.current) return; // the plant popover took over
+    const container = stageRef.current?.container();
+    if (container && container.tabIndex >= 0) container.focus({ preventScroll: true });
+  }, [inspectedBedId]);
 
   // Focus the popover when it opens for a new planting; on close, hand focus
   // back to the canvas container if it can take it.
@@ -736,6 +844,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }
     if (!hadInspectRef.current) return;
     hadInspectRef.current = false;
+    if (pendingBedRef.current) return; // the bed popover took over
     const container = stageRef.current?.container();
     if (container && container.tabIndex >= 0) container.focus({ preventScroll: true });
   }, [inspectedId]);
@@ -791,7 +900,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   // Phase 20: conflict pulse
   const prevConflictedIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (REDUCED_MOTION) {
+    // Phase 53: rings still render on mobile, but they never pulse there.
+    if (REDUCED_MOTION || isMobileRef.current) {
       prevConflictedIdsRef.current = new Set(conflictedIds);
       return;
     }
@@ -886,21 +996,17 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     if (shown.length > 0) queueMicrotask(() => onStagesDisplayed?.(shown));
   }, [plantingsLoadedKey, gardenId, garden?.id, onStagesDisplayed, tweenTo]);
 
-  // [ring-diag] observe conflictedIds prop as it reaches the canvas
-  useEffect(() => {
-    console.log('[ring-diag][canvas] conflictedIds prop', {
-      size: conflictedIds?.size ?? 0,
-      ids: conflictedIds ? [...conflictedIds] : null,
-    });
-  }, [conflictedIds]);
-
   const applyZoom = useCallback((newScale: number, cx: number, cy: number) => {
     // Popovers are anchored to screen positions; close them rather than drift.
     setPendingPlacementSynced(null);
     setPendingInspectSynced(null);
+    setPendingBedSynced(null);
+    cancelPendingPress();
     const stage = stageRef.current;
     if (!stage) return;
-    const clamped = Math.min(Math.max(newScale, MIN_SCALE), MAX_SCALE);
+    stageTweenRef.current?.destroy();
+    stageTweenRef.current = null;
+    const clamped = Math.min(Math.max(newScale, getMinScale()), MAX_SCALE);
     const old = stage.scaleX();
     const pt = { x: (cx - stage.x()) / old, y: (cy - stage.y()) / old };
     stage.scale({ x: clamped, y: clamped });
@@ -908,7 +1014,151 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     stage.batchDraw();
     setScale(clamped);
     onScaleChange?.(clamped);
-  }, [onScaleChange, setPendingPlacementSynced, setPendingInspectSynced]);
+  }, [onScaleChange, setPendingPlacementSynced, setPendingInspectSynced, setPendingBedSynced, cancelPendingPress, getMinScale]);
+
+  // Phase 53: move the stage to a scale + position, tweened over `durationS`
+  // unless reduced motion is on (or duration is 0). Scale state commits at the end.
+  const moveStageTo = useCallback((target: number, x: number, y: number, durationS: number) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    stageTweenRef.current?.destroy();
+    stageTweenRef.current = null;
+    const commit = () => {
+      setScale(target);
+      onScaleChange?.(target);
+    };
+    if (durationS <= 0 || REDUCED_MOTION) {
+      stage.scale({ x: target, y: target });
+      stage.position({ x, y });
+      stage.batchDraw();
+      commit();
+      return;
+    }
+    const tween: Konva.Tween = new Konva.Tween({
+      node: stage,
+      duration: durationS,
+      easing: Konva.Easings.EaseInOut,
+      scaleX: target,
+      scaleY: target,
+      x,
+      y,
+      onFinish: () => {
+        if (stageTweenRef.current === tween) stageTweenRef.current = null;
+        tween.destroy();
+        commit();
+      },
+    });
+    stageTweenRef.current = tween;
+    tween.play();
+  }, [onScaleChange]);
+
+  // The stage area between the shell bars, in stage (container) coordinates.
+  const visibleRect = useCallback(() => {
+    const stage = stageRef.current;
+    const w = stage?.width() ?? window.innerWidth;
+    const h = stage?.height() ?? window.innerHeight;
+    const probe = insetProbeRef.current;
+    const container = stage?.container();
+    if (!probe || !container) return { x: 0, y: 0, w, h };
+    const pr = probe.getBoundingClientRect();
+    const cr = container.getBoundingClientRect();
+    const top = Math.min(Math.max(0, pr.top - cr.top), h);
+    const bottom = Math.max(top, Math.min(h, pr.bottom - cr.top));
+    return bottom - top > 2 * FIT_MARGIN_PX ? { x: 0, y: top, w, h: bottom - top } : { x: 0, y: 0, w, h };
+  }, []);
+
+  // Phase 53: frame every current-season bed (grid rects and freeform
+  // polygons) with a FIT_MARGIN_PX margin, scale capped at 1, centred. No
+  // beds: scale 1 at the origin. On mobile the fitted scale is the minimum zoom.
+  const fitToBeds = useCallback((durationS = 0) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    setPendingPlacementSynced(null);
+    setPendingInspectSynced(null);
+    setPendingBedSynced(null);
+    cancelPendingPress();
+    const view = visibleRect();
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    for (const bed of bedsRef.current) {
+      const bb = getBedBbox(bed);
+      if (!bb) continue;
+      x1 = Math.min(x1, bb.x1); y1 = Math.min(y1, bb.y1);
+      x2 = Math.max(x2, bb.x2); y2 = Math.max(y2, bb.y2);
+    }
+    if (!(x2 >= x1) || !(y2 >= y1)) {
+      fittedScaleRef.current = 1;
+      // Desktop: the strict origin, as before. Mobile: the visible band's
+      // top-left, so the origin isn't under the top bar.
+      if (isMobileRef.current) moveStageTo(1, view.x, view.y, durationS);
+      else moveStageTo(1, 0, 0, durationS);
+      return;
+    }
+    const bw = Math.max(x2 - x1, 1);
+    const bh = Math.max(y2 - y1, 1);
+    const availW = Math.max(view.w - 2 * FIT_MARGIN_PX, 1);
+    const availH = Math.max(view.h - 2 * FIT_MARGIN_PX, 1);
+    let fitted = Math.min(availW / bw, availH / bh, 1);
+    // Desktop keeps its 0.2 floor; on mobile the fit itself is the floor.
+    if (!isMobileRef.current) fitted = Math.max(fitted, MIN_SCALE);
+    fittedScaleRef.current = fitted;
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    moveStageTo(
+      fitted,
+      view.x + view.w / 2 - cx * fitted,
+      view.y + view.h / 2 - cy * fitted,
+      durationS,
+    );
+  }, [visibleRect, moveStageTo, setPendingPlacementSynced, setPendingInspectSynced, setPendingBedSynced, cancelPendingPress]);
+
+  // Fit once per completed beds load (garden open or season switch), never on
+  // bed edits. Waits for the beds to belong to gardenId.
+  const fittedKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!bedsLoadedKey || !bedsLoadedKey.startsWith(`${gardenId}:`) || garden?.id !== gardenId) return;
+    if (fittedKeyRef.current === bedsLoadedKey) return;
+    if (!stageRef.current) return;
+    fittedKeyRef.current = bedsLoadedKey;
+    fitToBeds();
+  }, [bedsLoadedKey, gardenId, garden?.id, fitToBeds]);
+
+  // Refit when crossing the mobile breakpoint, so the mobile minimum zoom is
+  // the fit without the desktop 0.2 floor (and the current scale is never
+  // below it). Only once the current garden's beds have been fitted.
+  const prevIsMobileRef = useRef(isMobile);
+  useEffect(() => {
+    if (prevIsMobileRef.current === isMobile) return;
+    prevIsMobileRef.current = isMobile;
+    if (fittedKeyRef.current == null || fittedKeyRef.current !== bedsLoadedKey) return;
+    // Next frame: the shell bars (--shell-top/--shell-bottom, set by a parent
+    // layout effect) and the stage size have settled by then.
+    // (Not cancelled on re-run: the ref above already consumed this change;
+    // fitToBeds no-ops if the stage is gone.)
+    window.requestAnimationFrame(() => fitToBeds());
+  }, [isMobile, bedsLoadedKey, fitToBeds]);
+
+  // Mobile double-tap: zoomed in past the fit → back to the fit; otherwise
+  // zoom to 2x the fitted scale centred on the tap. Decided by the current
+  // scale, so pinches and button zooms in between are respected.
+  const doubleTapZoom = useCallback((p: { x: number; y: number }) => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    if (stage.scaleX() > fittedScaleRef.current * 1.01) {
+      fitToBeds(DOUBLE_TAP_ANIM_S);
+      return;
+    }
+    setPendingInspectSynced(null);
+    setPendingBedSynced(null);
+    const target = Math.min(Math.max(fittedScaleRef.current * 2, getMinScale()), MAX_SCALE);
+    const w = stage.getAbsoluteTransform().copy().invert().point(p);
+    const view = visibleRect();
+    moveStageTo(
+      target,
+      view.x + view.w / 2 - w.x * target,
+      view.y + view.h / 2 - w.y * target,
+      DOUBLE_TAP_ANIM_S,
+    );
+  }, [fitToBeds, getMinScale, visibleRect, moveStageTo, setPendingInspectSynced, setPendingBedSynced]);
 
   // ---- Phase 41: thumbnail capture ----
 
@@ -1037,15 +1287,26 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     }, THUMB_DEBOUNCE_MS);
   }, [thumbContentLoaded, thumbSignature, gardenId, captureAndUpload]);
 
+  // Button zoom pivot: the stage centre on desktop (unchanged); on mobile the
+  // centre of the visible band between the shell bars.
+  const zoomPivot = useCallback((s: Konva.Stage) => {
+    if (!isMobileRef.current) return { x: s.width() / 2, y: s.height() / 2 };
+    const view = visibleRect();
+    return { x: view.x + view.w / 2, y: view.y + view.h / 2 };
+  }, [visibleRect]);
+
   useImperativeHandle(ref, () => ({
     captureThumbnail,
+    fitToBeds() { fitToBeds(); },
     zoomIn() {
       const s = stageRef.current; if (!s) return;
-      applyZoom(s.scaleX() * ZOOM_STEP, s.width() / 2, s.height() / 2);
+      const c = zoomPivot(s);
+      applyZoom(s.scaleX() * ZOOM_STEP, c.x, c.y);
     },
     zoomOut() {
       const s = stageRef.current; if (!s) return;
-      applyZoom(s.scaleX() / ZOOM_STEP, s.width() / 2, s.height() / 2);
+      const c = zoomPivot(s);
+      applyZoom(s.scaleX() / ZOOM_STEP, c.x, c.y);
     },
     resetZoom() {
       const s = stageRef.current; if (!s) return;
@@ -1075,7 +1336,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       setScale(clamped);
       onScaleChange?.(clamped);
     },
-  }), [applyZoom, onScaleChange, captureThumbnail]);
+  }), [applyZoom, onScaleChange, captureThumbnail, fitToBeds, zoomPivot]);
 
   const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
@@ -1086,6 +1347,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [applyZoom]);
 
   const handleMouseDown = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isMobileRef.current) return; // view-only: no resize, move or drawing
     if ('button' in e.evt && (e.evt as unknown as MouseEvent).button !== 0) return;
     const stage = stageRef.current; if (!stage) return;
     const isPanning = panActive || spaceHeld;
@@ -1147,6 +1409,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, panActive, spaceHeld]);
 
   const handleMouseMove = useCallback((_e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isMobileRef.current) return;
     const stage = stageRef.current; if (!stage) return;
     const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
@@ -1245,6 +1508,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, [mode, setDragOffsetSynced, setMoveOverlapSynced, setResizePreviewSynced]);
 
   const handleMouseUp = useCallback((_e?: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isMobileRef.current) return;
     if (resizeRef.current) {
       const { bedId } = resizeRef.current;
       resizeRef.current = null;
@@ -1325,9 +1589,43 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       touchGestureRef.current = { startX: touches[0].clientX, startY: touches[0].clientY, multi: false, moved: false };
     } else {
       touchGestureRef.current = { startX: 0, startY: 0, multi: true, moved: false };
+      if (isMobileRef.current) {
+        // A second finger starts a pinch: no pending tap, no open popover.
+        cancelPendingPress();
+        lastPressRef.current = null;
+        pinchRef.current = null;
+        setPendingInspectSynced(null);
+        setPendingBedSynced(null);
+      }
     }
     handleMouseDown(e as unknown as Konva.KonvaEventObject<MouseEvent>);
-  }, [handleMouseDown]);
+  }, [handleMouseDown, cancelPendingPress, setPendingInspectSynced, setPendingBedSynced]);
+
+  // Phase 53: mobile pinch-zoom about the pinch centre (with two-finger pan),
+  // clamped to the mobile minimum (the fitted scale) and MAX_SCALE. Scale
+  // state commits when the pinch ends so markers don't re-render per move.
+  const handlePinchMove = useCallback((evt: TouchEvent) => {
+    const stage = stageRef.current;
+    if (!stage || evt.touches.length < 2) return;
+    evt.preventDefault();
+    if (stage.isDragging()) stage.stopDrag();
+    stageTweenRef.current?.destroy();
+    stageTweenRef.current = null;
+    const rect = stage.container().getBoundingClientRect();
+    const a = { x: evt.touches[0].clientX - rect.left, y: evt.touches[0].clientY - rect.top };
+    const b = { x: evt.touches[1].clientX - rect.left, y: evt.touches[1].clientY - rect.top };
+    const center = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    const last = pinchRef.current;
+    pinchRef.current = { dist, center };
+    if (!last || last.dist === 0) return;
+    const old = stage.scaleX();
+    const next = Math.min(Math.max(old * (dist / last.dist), getMinScale()), MAX_SCALE);
+    const pt = { x: (last.center.x - stage.x()) / old, y: (last.center.y - stage.y()) / old };
+    stage.scale({ x: next, y: next });
+    stage.position({ x: center.x - pt.x * next, y: center.y - pt.y * next });
+    stage.batchDraw();
+  }, [getMinScale]);
 
   const handleTouchMove = useCallback((e: Konva.KonvaEventObject<TouchEvent>) => {
     const g = touchGestureRef.current;
@@ -1335,14 +1633,117 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     if (g && t && !g.moved && Math.hypot(t.clientX - g.startX, t.clientY - g.startY) > TAP_SLOP_PX) {
       g.moved = true;
     }
+    if (isMobileRef.current) {
+      handlePinchMove(e.evt);
+      return;
+    }
     handleMouseMove(e as unknown as Konva.KonvaEventObject<MouseEvent>);
-  }, [handleMouseMove]);
+  }, [handleMouseMove, handlePinchMove]);
 
-  const handleTouchEnd = useCallback(() => {
+  const handleTouchEnd = useCallback((e: Konva.KonvaEventObject<TouchEvent>) => {
+    if (isMobileRef.current) {
+      if (pinchRef.current && e.evt.touches.length < 2) {
+        pinchRef.current = null;
+        const s = stageRef.current?.scaleX();
+        if (s != null) {
+          setScale(s);
+          onScaleChange?.(s);
+        }
+      }
+      return;
+    }
     handleMouseUp();
-  }, [handleMouseUp]);
+  }, [handleMouseUp, onScaleChange]);
+
+  // Mobile: the visible band (between the shell bars) at open time, so the
+  // popover never sits under the top bar or tab bar. Desktop: none.
+  const popoverBand = useCallback((): PopoverBand => {
+    if (!isMobileRef.current) return {};
+    const view = visibleRect();
+    return { bandTop: view.y, bandBottom: view.y + view.h };
+  }, [visibleRect]);
+
+  // Opens the inspection popover for the current-season marker nearest the
+  // world point (within MARKER_HIT_RADIUS). Returns whether one was hit.
+  // Past-season overlay plantings are never in plantingsByBedIdRef.
+  const inspectMarkerAt = useCallback((
+    stage: Konva.Stage, w: { x: number; y: number }, p: { x: number; y: number },
+  ): boolean => {
+    let nearest: Planting | null = null;
+    let nearestDist = MARKER_HIT_RADIUS;
+    for (const [bedId, plantings] of Object.entries(plantingsByBedIdRef.current)) {
+      const bed = bedsRef.current.find(b => b.id === bedId);
+      if (!bed) continue;
+      for (const planting of plantings) {
+        const center = markerWorldCenter(planting, bed);
+        if (!center) continue;
+        const dist = Math.hypot(w.x - center.x, w.y - center.y);
+        if (dist < nearestDist) {
+          nearest = planting;
+          nearestDist = dist;
+        }
+      }
+    }
+    if (!nearest) return false;
+    const nearestBed = bedsRef.current.find(b => b.id === nearest!.bedId);
+    const center = nearestBed ? markerWorldCenter(nearest, nearestBed) : null;
+    const screenPos = center
+      ? stage.getAbsoluteTransform().point(center)
+      : { x: p.x, y: p.y };
+    setPendingBedSynced(null);
+    setPendingInspectSynced({
+      plantingId: nearest.id, bedId: nearest.bedId, screenX: screenPos.x, screenY: screenPos.y,
+      ...popoverBand(),
+    });
+    return true;
+  }, [setPendingInspectSynced, setPendingBedSynced, popoverBand]);
+
+  // Phase 53: a confirmed single tap/click on mobile. Marker → plant popover;
+  // empty area of a current-season bed → bed popover; anything else (incl.
+  // past-season overlay beds and markers) → nothing.
+  const mobileInspectAt = useCallback((p: { x: number; y: number }) => {
+    const stage = stageRef.current; if (!stage) return;
+    const w = stage.getAbsoluteTransform().copy().invert().point(p);
+    if (inspectMarkerAt(stage, w, p)) return;
+    const hit = hitTestBeds(w, bedsRef.current);
+    if (hit) {
+      setPendingInspectSynced(null);
+      setPendingBedSynced({ bedId: hit.id, screenX: p.x, screenY: p.y, ...popoverBand() });
+    }
+  }, [inspectMarkerAt, setPendingInspectSynced, setPendingBedSynced, popoverBand]);
+
+  // Phase 53: mobile press (tap, or click on a narrow mouse window). A second
+  // press within DOUBLE_TAP_MS and DOUBLE_TAP_SLOP_PX is a double-tap; single
+  // presses wait that long so a double-tap never also opens a popover. A press
+  // while a popover is open only closes it.
+  const handleMobilePress = useCallback((p: { x: number; y: number }) => {
+    const now = Date.now();
+    const prev = lastPressRef.current;
+    if (prev && now - prev.t <= DOUBLE_TAP_MS && Math.hypot(p.x - prev.x, p.y - prev.y) <= DOUBLE_TAP_SLOP_PX) {
+      lastPressRef.current = null;
+      cancelPendingPress();
+      doubleTapZoom(p);
+      return;
+    }
+    lastPressRef.current = { t: now, x: p.x, y: p.y };
+    cancelPendingPress();
+    if (pendingInspectRef.current || pendingBedRef.current) {
+      setPendingInspectSynced(null);
+      setPendingBedSynced(null);
+      return;
+    }
+    pressTimerRef.current = window.setTimeout(() => {
+      pressTimerRef.current = null;
+      mobileInspectAt(p);
+    }, DOUBLE_TAP_MS);
+  }, [cancelPendingPress, doubleTapZoom, mobileInspectAt, setPendingInspectSynced, setPendingBedSynced]);
 
   const handleClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isMobileRef.current) {
+      const p = e.target.getStage()?.getPointerPosition();
+      if (p) handleMobilePress({ x: p.x, y: p.y });
+      return;
+    }
     if (resizeDoneRef.current) { resizeDoneRef.current = false; return; }
     if (moveDoneRef.current) { moveDoneRef.current = false; return; }
     if (gridCreateDoneRef.current) { gridCreateDoneRef.current = false; return; }
@@ -1424,32 +1825,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     // Marker hit check for inspection (only when not armed). Only the current
     // plantings are considered.
-    if (!armed) {
-      let nearest: Planting | null = null;
-      let nearestDist = MARKER_HIT_RADIUS;
-      for (const [bedId, plantings] of Object.entries(plantingsByBedIdRef.current)) {
-        const bed = bedsRef.current.find(b => b.id === bedId);
-        if (!bed) continue;
-        for (const planting of plantings) {
-          const center = markerWorldCenter(planting, bed);
-          if (!center) continue;
-          const dist = Math.hypot(w.x - center.x, w.y - center.y);
-          if (dist < nearestDist) {
-            nearest = planting;
-            nearestDist = dist;
-          }
-        }
-      }
-      if (nearest) {
-        const nearestBed = bedsRef.current.find(b => b.id === nearest!.bedId);
-        const center = nearestBed ? markerWorldCenter(nearest, nearestBed) : null;
-        const screenPos = center
-          ? stage.getAbsoluteTransform().point(center)
-          : { x: p.x, y: p.y };
-        setPendingInspectSynced({ plantingId: nearest.id, bedId: nearest.bedId, screenX: screenPos.x, screenY: screenPos.y });
-        return;
-      }
-    }
+    if (!armed && inspectMarkerAt(stage, w, p)) return;
 
     // Normal selection flow
     if (mode === 'freeform' && !isPanning) {
@@ -1464,7 +1840,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
     const hit = hitTestBeds(w, bedsRef.current);
     onSelectBed(hit ?? null);
-  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingInspectSynced]);
+  }, [mode, panActive, spaceHeld, onSelectBed, closeFreeform, setFreeformPtsSynced, setPendingPlacementSynced, setPendingInspectSynced, handleMobilePress, inspectMarkerAt]);
 
   // Mouse click. Skipped right after a tap: a browser may emulate mouse events
   // after touchend, which would run the same press a second time (opening the
@@ -1486,18 +1862,33 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       gridCreateDoneRef.current = false;
       setPendingPlacementSynced(null);
       setPendingInspectSynced(null);
+      setPendingBedSynced(null);
+      // A pan or pinch also breaks any double-tap in progress.
+      lastPressRef.current = null;
+      cancelPendingPress();
       return;
     }
     handleClick(e as unknown as Konva.KonvaEventObject<MouseEvent>);
-  }, [handleClick, setPendingPlacementSynced, setPendingInspectSynced]);
+  }, [handleClick, setPendingPlacementSynced, setPendingInspectSynced, setPendingBedSynced, cancelPendingPress]);
 
   const handleStageDragStart = useCallback((e: Konva.KonvaEventObject<DragEvent>) => {
     if (e.target !== e.target.getStage()) return;
     setPendingPlacementSynced(null);
     setPendingInspectSynced(null);
-  }, [setPendingPlacementSynced, setPendingInspectSynced]);
+    setPendingBedSynced(null);
+    lastPressRef.current = null;
+    cancelPendingPress();
+    if (stageTweenRef.current) {
+      // A pan interrupts a double-tap animation: keep where it got to.
+      stageTweenRef.current.destroy();
+      stageTweenRef.current = null;
+      const s = e.target.getStage()?.scaleX();
+      if (s != null) { setScale(s); onScaleChange?.(s); }
+    }
+  }, [setPendingPlacementSynced, setPendingInspectSynced, setPendingBedSynced, cancelPendingPress, onScaleChange]);
 
   const handleDblClick = useCallback((e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isMobileRef.current) return; // view-only: no bed editing
     const stage = e.target.getStage(); if (!stage) return;
     const p = stage.getPointerPosition(); if (!p) return;
     const w = stage.getAbsoluteTransform().copy().invert().point(p);
@@ -1607,14 +1998,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const ready = isHarvestReady(planting);
 
     const popW = 232;
-    const popH = inspectH;
-    let left = pendingInspect.screenX + 12;
-    if (left + popW > size.w - 8) left = pendingInspect.screenX - popW - 12;
-    if (left < 8) left = 8;
-    let top = pendingInspect.screenY - popH / 2;
-    if (top < 8) top = 8;
-    if (top + popH > size.h - 8) top = size.h - popH - 8;
-    top = Math.max(8, top);
+    const { left, top } = anchoredPopoverPosition(
+      pendingInspect.screenX, pendingInspect.screenY, popW, inspectH, size.w,
+      pendingInspect.bandTop ?? 0, pendingInspect.bandBottom ?? size.h,
+    );
 
     const markHarvested = async () => {
       if (!onMarkHarvested || harvestBusy) return;
@@ -1681,6 +2068,12 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             </div>
           )}
 
+          {planting.spacingInches != null && (
+            <div style={{ fontSize: 13, color: 'var(--c-text-2)', marginTop: 'var(--sp-1)' }}>
+              {planting.spacingInches} in. spacing
+            </div>
+          )}
+
           {stage === 5 && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
               {key && (
@@ -1731,24 +2124,93 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     );
   })();
 
+  // Phase 53: mobile bed popover. Same placement/edge-flip as the plant popover.
+  const bedPopover = (() => {
+    if (!pendingBed || !inspectedBed) return null;
+    const label = inspectedBed.label || 'Bed';
+    const count = (plantingsByBedId[inspectedBed.id] ?? []).length;
+    const countText = count === 0 ? 'Empty' : count === 1 ? '1 plant' : `${count} plants`;
+    const popW = 220;
+    const { left, top } = anchoredPopoverPosition(
+      pendingBed.screenX, pendingBed.screenY, popW, bedPopH, size.w,
+      pendingBed.bandTop ?? 0, pendingBed.bandBottom ?? size.h,
+    );
+    return (
+      <div
+        ref={bedPopoverRef}
+        role="dialog"
+        aria-label={label}
+        tabIndex={-1}
+        style={{
+          outline: 'none',
+          position: 'absolute', left, top, width: popW, boxSizing: 'border-box',
+          background: 'var(--c-surface)', border: '1px solid var(--c-border)', borderRadius: 'var(--r-lg)',
+          boxShadow: 'var(--shadow-lg)', padding: 'var(--sp-1) var(--sp-1) var(--sp-3) var(--sp-4)', zIndex: 30,
+          fontFamily: 'var(--font-ui)', color: 'var(--c-text)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 700, overflowWrap: 'anywhere' }}>
+            {label}
+          </div>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => setPendingBedSynced(null)}
+            style={{
+              ...popoverButtonStyle, padding: 0, border: 'none', background: 'transparent',
+              color: 'var(--c-text-2)', fontSize: 20, lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', paddingRight: 'var(--sp-3)' }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center',
+            padding: '0 var(--sp-2)', lineHeight: 1.7, borderRadius: 'var(--r-full)',
+            background: 'var(--c-surface-raised)', border: '1px solid var(--c-border)',
+            fontSize: 12, fontWeight: 600, color: 'var(--c-text-2)',
+          }}>
+            {inspectedBed.type === 'grid' ? 'Grid' : 'Freeform'}
+          </span>
+          <span style={{ fontSize: 13, color: 'var(--c-text-2)' }}>{countText}</span>
+        </div>
+      </div>
+    );
+  })();
+
   return (
     <div style={{ position: 'relative', width: size.w, height: size.h, touchAction: 'none' }}>
+      {/* Spans the area between the shell bars; measured by fitToBeds. */}
+      <div
+        ref={insetProbeRef}
+        aria-hidden="true"
+        style={{
+          position: 'fixed', left: 0, width: 0,
+          top: 'var(--shell-top, 0px)', bottom: 'var(--shell-bottom, 0px)',
+          visibility: 'hidden', pointerEvents: 'none',
+        }}
+      />
       <Stage
         ref={stageRef}
         width={size.w}
         height={size.h}
-        draggable={panActive || spaceHeld}
+        // Mobile: one-finger drag always pans (view-only canvas). The drag
+        // distance keeps a slightly wobbly tap from counting as a pan.
+        draggable={isMobile || panActive || spaceHeld}
+        dragDistance={isMobile ? TAP_SLOP_PX : undefined}
         onDragStart={handleStageDragStart}
         onWheel={handleWheel}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
+        onMouseDown={isMobile ? undefined : handleMouseDown}
+        onMouseMove={isMobile ? undefined : handleMouseMove}
+        onMouseUp={isMobile ? undefined : handleMouseUp}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onClick={handleStageClick}
         onTap={handleTap}
-        onDblClick={handleDblClick}
+        onDblClick={isMobile ? undefined : handleDblClick}
       >
         {/* Layer 1: grid lines */}
         <Layer listening={false}>
@@ -2107,6 +2569,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
       {placementPopover}
       {inspectPopover}
+      {bedPopover}
     </div>
   );
 });

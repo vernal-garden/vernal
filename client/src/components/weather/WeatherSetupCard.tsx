@@ -138,7 +138,7 @@ export default function WeatherSetupCard({ error, units, onConnected, onTryLocal
       {triedLocal && error === 'location_not_set' && (
         <p style={{ marginTop: 'var(--sp-4)', fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-warning)' }}>
           Set your location first — visit{' '}
-          <Link to="/account" style={{ color: 'var(--c-primary)' }}>
+          <Link to="/account" className="m-own-line" style={{ color: 'var(--c-primary)' }}>
             your account settings
           </Link>{' '}
           to add it.
