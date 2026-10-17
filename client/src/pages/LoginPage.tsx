@@ -1,8 +1,15 @@
-import { useState, FormEvent } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useState, FormEvent } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import AuthFormLayout from '../components/AuthFormLayout';
+
+const OAUTH_ERRORS: Record<string, string> = {
+  oauth_failed: 'Google sign-in failed. Please try again.',
+  oauth_csrf: "Google sign-in couldn't be verified. Please try again.",
+  oauth_error: 'Something went wrong with Google sign-in. Please try again.',
+  oauth_unverified: "Your Google email isn't verified. Verify it with Google, or sign in with a password.",
+};
 
 export default function LoginPage() {
   const { refetch } = useAuth();
@@ -15,7 +22,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [searchParams] = useSearchParams();
+  const [error, setError] = useState(() => {
+    const key = searchParams.get('error') ?? '';
+    return Object.prototype.hasOwnProperty.call(OAUTH_ERRORS, key) ? OAUTH_ERRORS[key] : '';
+  });
+  useEffect(() => {
+    if (searchParams.has('error')) navigate(location.pathname, { replace: true, state: location.state });
+  }, [searchParams, navigate, location.pathname, location.state]);
 
   // Forgot-password panel
   const [showForgot, setShowForgot] = useState(false);

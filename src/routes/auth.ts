@@ -6,19 +6,24 @@ import {
   makeSessionCookie,
   clearSessionCookie,
   claimSession,
+  revokeAccountSessions,
   verifySignedToken,
   migrateGuestData,
   getPendingGuestData,
   COOKIE_NAME,
 } from '../lib/sessions';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
+import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
-import { encryptToBuffer } from '../lib/crypto';
+import { sendVerificationEmail, consumeVerificationToken } from '../lib/emailVerification';
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
 import { requireAuth } from '../middleware/auth';
 import { authLimiter, passwordResetLimiter } from '../middleware/rateLimiters';
 import { LOCATION_NOT_SET } from '../lib/constants';
+import { OAUTH_NONCE_COOKIE, OAUTH_NONCE_COOKIE_OPTIONS, buildOAuthState, verifyOAuthState } from '../lib/oauth/state';
+import { resolveOAuthAccount, OAuthUnverifiedEmailError } from '../lib/oauth/resolveAccount';
 
 export const authRouter = Router();
 
@@ -99,22 +104,25 @@ authRouter.get('/session', async (req: Request, res: Response): Promise<void> =>
 });
 
 // DELETE /api/auth/session
-// Clears the session cookie. Guests lose their session; authenticated users are logged out.
-// Does not delete the guest_sessions row — expired rows are cleaned up by the nightly job.
-authRouter.delete('/session', (req: Request, res: Response): void => {
+// Clears the session cookie. For an account session the row is deleted too, so
+// a copied cookie stops working. Guest rows are kept: expired guest sessions
+// stay recoverable and are cleaned up by the nightly job.
+authRouter.delete('/session', async (req: Request, res: Response): Promise<void> => {
+  if (req.session && !req.session.isGuest) {
+    await db.query('DELETE FROM guest_sessions WHERE token = $1', [req.session.token]);
+  }
   clearSessionCookie(res);
   res.json({ data: { success: true } });
 });
 
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS ?? '12', 10);
-const OAUTH_NONCE_COOKIE = '_vernal_oauth_nonce';
 const SUPPORTED_PROVIDERS = new Set(['google']);
 
 // POST /api/auth/register
 authRouter.post('/register', authLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { email, password } = req.body as { email?: string; password?: string };
+  const { email, password } = req.body as { email?: unknown; password?: unknown };
 
-  if (!email || !password) {
+  if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
     res.status(400).json({ error: 'Email and password are required' });
     return;
   }
@@ -179,6 +187,11 @@ authRouter.post('/register', authLimiter, async (req: Request, res: Response): P
 
     await client.query('COMMIT');
 
+    // Soft verification: nothing is gated, so a mail failure must not fail signup.
+    sendVerificationEmail(accountId, email.toLowerCase()).catch((err: unknown) =>
+      logger.error('Failed to send verification email', err, { accountId }),
+    );
+
     makeSessionCookie(signedToken, expiresAt, res);
     res.status(201).json({
       data: {
@@ -196,9 +209,9 @@ authRouter.post('/register', authLimiter, async (req: Request, res: Response): P
 
 // POST /api/auth/login
 authRouter.post('/login', authLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { email, password } = req.body as { email?: string; password?: string };
+  const { email, password } = req.body as { email?: unknown; password?: unknown };
 
-  if (!email || !password) {
+  if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
     res.status(400).json({ error: 'Email and password are required' });
     return;
   }
@@ -234,7 +247,31 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response): Prom
 
   const sessionId = req.session?.id ?? null;
   const existingToken = req.session?.token ?? null;
-  const { signedToken, expiresAt } = await claimSession(account.id, existingToken);
+
+  // Re-check the credential under a lock: an OAuth claim of this (unverified)
+  // account may have committed while bcrypt was running.
+  let signedToken: string;
+  let expiresAt: Date;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const current = await client.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM accounts WHERE id = $1 FOR SHARE',
+      [account.id],
+    );
+    if (current.rows[0]?.password_hash !== account.password_hash) {
+      await client.query('ROLLBACK');
+      res.status(401).json({ error: 'Invalid email or password' });
+      return;
+    }
+    ({ signedToken, expiresAt } = await claimSession(account.id, existingToken, client));
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
   makeSessionCookie(signedToken, expiresAt, res);
 
   // Silent-discard: delete any guest gardens with zero plantings (cascade removes beds).
@@ -265,9 +302,9 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response): Prom
 
 // POST /api/auth/forgot-password
 authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { email } = req.body as { email?: string };
+  const { email } = req.body as { email?: unknown };
 
-  if (!email) {
+  if (typeof email !== 'string' || !email) {
     res.status(400).json({ error: 'Email is required' });
     return;
   }
@@ -275,39 +312,62 @@ authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Respo
   // Always return 200 regardless of whether the email exists — prevents enumeration
   res.json({ data: { message: 'If an account with that email exists, a reset link has been sent.' } });
 
-  // Do the work after responding
-  const { rows } = await db.query<{ id: number }>(
-    'SELECT id FROM accounts WHERE email = $1',
-    [email.toLowerCase()],
-  );
-  if (rows.length === 0) return;
+  // Do the work after responding; failures can only be logged, not returned.
+  try {
+    const { rows } = await db.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1',
+      [email.toLowerCase()],
+    );
+    if (rows.length === 0) return;
 
-  const accountId = rows[0].id;
-  const rawToken = crypto.randomBytes(32).toString('hex');
-  const tokenHash = await bcrypt.hash(rawToken, 10);
-  const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    const accountId = rows[0].id;
+    const rawToken = generateRawToken();
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-  await db.query(
-    `INSERT INTO password_reset_tokens (account_id, token_hash, expires_at)
-     VALUES ($1, $2, $3)`,
-    [accountId, tokenHash, expiresAt],
-  );
+    // One live token per account: a new request invalidates earlier links.
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      // Serialise concurrent requests for the same account so only one live token remains.
+      await client.query('SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+      await client.query('DELETE FROM password_reset_tokens WHERE account_id = $1 AND used_at IS NULL', [
+        accountId,
+      ]);
+      await client.query(
+        `INSERT INTO password_reset_tokens (account_id, token_hash, expires_at)
+         VALUES ($1, $2, $3)`,
+        [accountId, hashToken(rawToken), expiresAt],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
 
-  const resetUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/reset-password?token=${rawToken}`;
+    const resetUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/reset-password?token=${rawToken}`;
 
-  await sendMail({
-    to: email.toLowerCase(),
-    subject: 'Reset your Vernal password',
-    text: `Click this link to reset your password (expires in 1 hour):\n\n${resetUrl}\n\nIf you didn't request this, you can ignore this email.`,
-    html: `<p>Click this link to reset your password (expires in 1 hour):</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>If you didn't request this, you can ignore this email.</p>`,
-  }).catch((err: Error) => console.error('[auth] Failed to send reset email:', err.message));
+    await sendMail({
+      to: email.toLowerCase(),
+      subject: 'Reset your Vernal password',
+      text: `Click this link to reset your password (expires in 1 hour):
+
+${resetUrl}
+
+If you didn't request this, you can ignore this email.`,
+      html: `<p>Click this link to reset your password (expires in 1 hour):</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>If you didn't request this, you can ignore this email.</p>`,
+    });
+  } catch (err) {
+    logger.error('forgot-password background work failed', err);
+  }
 });
 
 // POST /api/auth/reset-password
 authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { token, password } = req.body as { token?: string; password?: string };
+  const { token, password } = req.body as { token?: unknown; password?: unknown };
 
-  if (!token || !password) {
+  if (typeof token !== 'string' || typeof password !== 'string' || !token || !password) {
     res.status(400).json({ error: 'Token and new password are required' });
     return;
   }
@@ -317,126 +377,71 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
     return;
   }
 
-  // Find valid, unused, unexpired tokens and compare
-  const { rows } = await db.query<{ id: number; account_id: number; token_hash: string }>(
-    `SELECT id, account_id, token_hash
-     FROM password_reset_tokens
-     WHERE expires_at > now() AND used_at IS NULL`,
+  const invalid = { error: 'Invalid or expired reset token' };
+  const { rows } = await db.query<{ id: number; account_id: number }>(
+    `SELECT id, account_id FROM password_reset_tokens
+     WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()`,
+    [hashToken(token)],
   );
-
-  let matchedRow: (typeof rows)[0] | null = null;
-  for (const row of rows) {
-    if (await bcrypt.compare(token, row.token_hash)) {
-      matchedRow = row;
-      break;
-    }
-  }
-
-  if (!matchedRow) {
-    res.status(400).json({ error: 'Invalid or expired reset token' });
+  if (rows.length === 0) {
+    res.status(400).json(invalid);
     return;
   }
+  const { id: tokenId, account_id: accountId } = rows[0];
 
   const newHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-
-  await db.query('BEGIN');
-  try {
-    await db.query('UPDATE accounts SET password_hash = $1 WHERE id = $2', [newHash, matchedRow.account_id]);
-    await db.query('UPDATE password_reset_tokens SET used_at = now() WHERE id = $1', [matchedRow.id]);
-    await db.query('COMMIT');
-  } catch (err) {
-    await db.query('ROLLBACK');
-    throw err;
-  }
-
-  res.json({ data: { success: true, message: 'Password updated. You can now log in.' } });
-});
-
-async function resolveOAuthAccount(
-  oauthUser: OAuthUser,
-  guestSessionId?: string | null,
-): Promise<{ accountId: number; isNew: boolean }> {
-  const { provider, profile, accessToken, refreshToken } = oauthUser;
-  const email = profile.emails?.[0]?.value ?? null;
-  const displayName = profile.displayName || email?.split('@')[0] || 'Grower';
-  const avatarUrl = profile.photos?.[0]?.value ?? null;
-
-  const encAccess = encryptToBuffer(accessToken);
-  const encRefresh = refreshToken ? encryptToBuffer(refreshToken) : null;
 
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-
-    const identityRow = await client.query<{ account_id: string }>(
-      'SELECT account_id FROM oauth_identities WHERE provider = $1 AND provider_user_id = $2',
-      [provider, profile.id],
+    // Claim the token inside the transaction so two concurrent requests can't both use it.
+    const claimed = await client.query(
+      'UPDATE password_reset_tokens SET used_at = now() WHERE id = $1 AND used_at IS NULL AND expires_at > now()',
+      [tokenId],
     );
-
-    if (identityRow.rows.length > 0) {
-      const accountId = Number(identityRow.rows[0].account_id);
-      await client.query(
-        `UPDATE oauth_identities
-         SET access_token_encrypted = $1, refresh_token_encrypted = $2,
-             token_expires_at = NOW() + INTERVAL '1 hour', updated_at = NOW()
-         WHERE provider = $3 AND provider_user_id = $4`,
-        [encAccess, encRefresh, provider, profile.id],
-      );
-      await client.query('COMMIT');
-      return { accountId, isNew: false };
+    if (claimed.rowCount === 0) {
+      await client.query('ROLLBACK');
+      res.status(400).json(invalid);
+      return;
     }
-
-    let accountId: number;
-    let isNew = false;
-
-    if (email) {
-      const emailRow = await client.query<{ id: string }>(
-        'SELECT id FROM accounts WHERE email = $1',
-        [email],
-      );
-      if (emailRow.rows.length > 0) {
-        accountId = Number(emailRow.rows[0].id);
-      } else {
-        const newAccount = await client.query<{ id: string }>(
-          `INSERT INTO accounts (email, display_name, email_verified, zone, zone_location_label)
-           VALUES ($1, $2, true, 'unknown', $3) RETURNING id`,
-          [email, displayName, LOCATION_NOT_SET],
-        );
-        accountId = Number(newAccount.rows[0].id);
-        isNew = true;
-      }
-    } else {
-      const newAccount = await client.query<{ id: string }>(
-        `INSERT INTO accounts (display_name, email_verified, zone, zone_location_label)
-         VALUES ($1, false, 'unknown', $2) RETURNING id`,
-        [displayName, LOCATION_NOT_SET],
-      );
-      accountId = Number(newAccount.rows[0].id);
-      isNew = true;
-    }
-
+    // Completing a reset proves control of the inbox, so the email is verified.
     await client.query(
-      `INSERT INTO oauth_identities
-         (account_id, provider, provider_user_id, email, display_name, avatar_url,
-          access_token_encrypted, refresh_token_encrypted, token_expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + INTERVAL '1 hour')`,
-      [accountId, provider, profile.id, email, displayName, avatarUrl, encAccess, encRefresh],
+      'UPDATE accounts SET password_hash = $1, email_verified = true, pending_email = NULL, updated_at = now() WHERE id = $2',
+      [newHash, accountId],
     );
-
-    // For brand-new accounts only: migrate guest data inside this transaction
-    if (isNew && guestSessionId) {
-      await migrateGuestData(client, guestSessionId, accountId);
-    }
-
+    // A pending email change must not survive a reset (its link may be in an attacker's inbox).
+    await client.query('DELETE FROM email_change_tokens WHERE account_id = $1', [accountId]);
+    await client.query(
+      'DELETE FROM password_reset_tokens WHERE account_id = $1 AND used_at IS NULL',
+      [accountId],
+    );
+    await revokeAccountSessions(client, accountId);
     await client.query('COMMIT');
-    return { accountId, isNew };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
   }
-}
+
+  res.json({ data: { success: true, message: 'Password updated. You can now log in.' } });
+});
+
+// POST /api/auth/verify-email
+// Public: the token itself is the proof, so the link works logged out or on another device.
+authRouter.post('/verify-email', authLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { token } = req.body as { token?: unknown };
+  if (typeof token !== 'string' || !token) {
+    res.status(400).json({ error: 'Token is required.' });
+    return;
+  }
+  const verified = await consumeVerificationToken(token);
+  if (!verified) {
+    res.status(400).json({ error: 'This verification link is invalid or has expired.' });
+    return;
+  }
+  res.json({ data: { verified: true } });
+});
 
 // GET /api/auth/oauth/:provider — initiate OAuth flow
 authRouter.get('/oauth/:provider', (req: Request, res: Response, next) => {
@@ -446,13 +451,10 @@ authRouter.get('/oauth/:provider', (req: Request, res: Response, next) => {
   }
 
   const nonce = crypto.randomBytes(16).toString('hex');
-  const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : '/';
-  const state = Buffer.from(JSON.stringify({ nonce, returnTo })).toString('base64url');
+  const state = buildOAuthState(nonce, req.query.returnTo);
 
   res.cookie(OAUTH_NONCE_COOKIE, nonce, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    ...OAUTH_NONCE_COOKIE_OPTIONS,
     maxAge: 10 * 60 * 1000,
   });
 
@@ -466,31 +468,14 @@ authRouter.get('/oauth/:provider', (req: Request, res: Response, next) => {
 // GET /api/auth/oauth/google/callback — handles return from Google
 authRouter.get(
   '/oauth/google/callback',
+  verifyOAuthState,
   passport.authenticate('google', {
     session: false,
     failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
   }),
   async (req: Request, res: Response) => {
     try {
-      let returnTo = '/';
-      const rawState = req.query.state as string | undefined;
-      if (rawState) {
-        try {
-          const decoded = JSON.parse(Buffer.from(rawState, 'base64url').toString('utf8')) as {
-            nonce: string;
-            returnTo: string;
-          };
-          const cookieNonce = req.cookies[OAUTH_NONCE_COOKIE] as string | undefined;
-          if (!cookieNonce || cookieNonce !== decoded.nonce) {
-            return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_csrf`);
-          }
-          returnTo = decoded.returnTo || '/';
-        } catch {
-          return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_state_invalid`);
-        }
-      }
-
-      res.clearCookie(OAUTH_NONCE_COOKIE);
+      const returnTo = res.locals.returnTo as string;
 
       const oauthUser = req.user as OAuthUser;
       const guestSessionId = req.session?.id ?? null;
@@ -514,7 +499,10 @@ authRouter.get(
 
       res.redirect(`${process.env.FRONTEND_URL}${returnTo}`);
     } catch (err) {
-      console.error('OAuth callback error:', err);
+      if (err instanceof OAuthUnverifiedEmailError) {
+        return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_unverified`);
+      }
+      logger.error('OAuth callback error:', err);
       res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
     }
   },

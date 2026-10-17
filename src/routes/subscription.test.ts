@@ -85,6 +85,19 @@ describe('GET /api/subscription', () => {
   });
 });
 
+describe('POST /api/subscription/checkout — scheduled deletion', () => {
+  it('returns 409 before touching Stripe when deletion is scheduled', async () => {
+    const id = await createUser('sub-checkout-deleting@example.com');
+    await pool.query('UPDATE accounts SET deletion_scheduled_at = NOW() WHERE id = $1', [id]);
+    const agent = await loginAgent('sub-checkout-deleting@example.com');
+
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'monthly' });
+    expect(res.status).toBe(409);
+    const { rows } = await pool.query('SELECT stripe_customer_id FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].stripe_customer_id).toBeNull();
+  });
+});
+
 // ── POST /api/webhooks/stripe — signature verification ────────────────────────
 
 describe('POST /api/webhooks/stripe — signature verification', () => {

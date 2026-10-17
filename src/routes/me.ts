@@ -1,11 +1,14 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
-import crypto from 'crypto';
 import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
-import { clearSessionCookie } from '../lib/sessions';
+import { clearSessionCookie, revokeAccountSessions } from '../lib/sessions';
+import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
+import { sendVerificationEmail } from '../lib/emailVerification';
+import { verificationResendLimiter } from '../middleware/rateLimiters';
 import { logger } from '../lib/logger';
+import { stopRenewal, resumeRenewal } from '../lib/billing';
 import { processExportJob } from '../lib/exportWorker';
 import { invalidateMetrics } from '../lib/metricsCache';
 
@@ -67,10 +70,6 @@ function formatAccount(row: AccountRow) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
-}
-
-function hashToken(rawToken: string): string {
-  return crypto.createHash('sha256').update(rawToken).digest('hex');
 }
 
 // GET /api/me
@@ -279,10 +278,7 @@ router.patch('/password', async (req, res) => {
         [newHash, accountId],
       );
       // Invalidate all other sessions for this account; the current session survives.
-      await client.query(
-        'DELETE FROM guest_sessions WHERE account_id = $1 AND token <> $2',
-        [accountId, sessionToken],
-      );
+      await revokeAccountSessions(client, accountId, sessionToken);
       await client.query('COMMIT');
     } catch (txErr) {
       await client.query('ROLLBACK');
@@ -339,7 +335,7 @@ router.patch('/email', async (req, res) => {
       return res.status(409).json({ error: 'That email address is already in use.' });
     }
 
-    const rawToken = crypto.randomBytes(32).toString('hex');
+    const rawToken = generateRawToken();
     const tokenHash = hashToken(rawToken);
 
     const client = await db.connect();
@@ -366,7 +362,7 @@ router.patch('/email', async (req, res) => {
       client.release();
     }
 
-    const confirmUrl = `${process.env.FRONTEND_URL}/account/email/confirm?token=${rawToken}`;
+    const confirmUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:5173'}/account/email/confirm?token=${rawToken}`;
     await sendMail({
       to: normalizedEmail,
       subject: 'Confirm your new email address',
@@ -402,12 +398,37 @@ router.delete('/email', async (req, res) => {
   }
 });
 
+// POST /api/me/verify-email/resend
+// Sends a fresh verification link. No-op once verified.
+router.post('/verify-email/resend', verificationResendLimiter, async (req, res) => {
+  const accountId = req.session!.account!.id;
+
+  try {
+    const { rows } = await db.query<{ email: string | null; email_verified: boolean }>(
+      'SELECT email, email_verified FROM accounts WHERE id = $1',
+      [accountId],
+    );
+    if (rows.length === 0) {
+      clearSessionCookie(res);
+      return res.status(401).json({ error: 'Account not found' });
+    }
+    if (rows[0].email_verified || !rows[0].email) {
+      return res.json({ data: { sent: false } });
+    }
+    await sendVerificationEmail(accountId, rows[0].email);
+    res.json({ data: { sent: true } });
+  } catch (err) {
+    logger.error('POST /me/verify-email/resend error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/me/email/confirm
 // Completes an email change. The token must belong to the currently
 // authenticated account — this prevents a leaked/shared confirmation link
 // from being redeemed onto a different, attacker-controlled account.
 router.get('/email/confirm', async (req, res) => {
-  const token = req.query.token as string | undefined;
+  const token = typeof req.query.token === 'string' ? req.query.token : undefined;
   const accountId = req.session!.account!.id;
 
   if (!token) {
@@ -444,14 +465,27 @@ router.get('/email/confirm', async (req, res) => {
     const client = await db.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        'UPDATE accounts SET email = $1, pending_email = NULL, updated_at = NOW() WHERE id = $2',
-        [matchedToken.new_email, accountId],
-      );
-      await client.query(
-        'UPDATE email_change_tokens SET used_at = NOW() WHERE id = $1',
+      // Claim the token first so two concurrent confirmations can't both succeed.
+      const claimed = await client.query(
+        'UPDATE email_change_tokens SET used_at = NOW() WHERE id = $1 AND used_at IS NULL',
         [matchedToken.id],
       );
+      if (claimed.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json(invalidError);
+      }
+      // Clicking the link proves control of the new inbox.
+      await client.query(
+        `UPDATE accounts SET email = $1, pending_email = NULL, email_verified = true, updated_at = NOW()
+         WHERE id = $2`,
+        [matchedToken.new_email, accountId],
+      );
+      // Reset links sent to the old inbox must die when the email changes.
+      await client.query(
+        'DELETE FROM password_reset_tokens WHERE account_id = $1 AND used_at IS NULL',
+        [accountId],
+      );
+      await revokeAccountSessions(client, accountId, req.session!.token);
       await client.query('COMMIT');
     } catch (txErr) {
       await client.query('ROLLBACK');
@@ -477,6 +511,27 @@ router.delete('/', async (req, res) => {
   const sessionToken = req.session!.token;
 
   try {
+    // Stop renewal before scheduling anything: if Stripe can't be reached we
+    // refuse, rather than leave a deleted account still being billed.
+    const { rows: billingRows } = await db.query<{ stripe_subscription_id: string | null }>(
+      'SELECT stripe_subscription_id FROM accounts WHERE id = $1',
+      [accountId],
+    );
+    const subId = billingRows[0]?.stripe_subscription_id ?? null;
+    if (subId) {
+      try {
+        // If the DB transaction below fails, renewal stays stopped with no
+        // deletion scheduled. Accepted: a retry makes it consistent, and the
+        // webhook surfaces "cancels on X" meanwhile.
+        await stopRenewal(subId);
+      } catch (err) {
+        logger.error('Could not stop renewal for account deletion', err, { accountId });
+        return res
+          .status(502)
+          .json({ error: "We couldn't stop your billing, so nothing was changed. Please try again." });
+      }
+    }
+
     const client = await db.connect();
     try {
       await client.query('BEGIN');
@@ -510,6 +565,25 @@ router.post('/cancel-deletion', async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
+    const { rows } = await db.query<{
+      stripe_subscription_id: string | null;
+      deletion_scheduled_at: string | null;
+    }>('SELECT stripe_subscription_id, deletion_scheduled_at FROM accounts WHERE id = $1', [accountId]);
+    const subId = rows[0]?.stripe_subscription_id ?? null;
+
+    // Only resume renewal we turned off for a pending deletion; otherwise this
+    // idempotent endpoint could undo a cancellation made in the Stripe portal.
+    if (subId && rows[0]?.deletion_scheduled_at) {
+      try {
+        await resumeRenewal(subId);
+      } catch (err) {
+        logger.error('Could not resume renewal when cancelling deletion', err, { accountId });
+        return res.status(502).json({
+          error: "We couldn't restart your billing, so your account is still scheduled for deletion. Please try again.",
+        });
+      }
+    }
+
     await db.query(
       'UPDATE accounts SET deletion_scheduled_at = NULL, updated_at = NOW() WHERE id = $1',
       [accountId],

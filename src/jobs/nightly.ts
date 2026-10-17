@@ -2,6 +2,7 @@ import { db } from '../lib/db';
 import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
 import { deleteFromR2, exportsBucket, ownedThumbnailKey } from '../lib/r2';
 import { logger } from '../lib/logger';
+import { teardownCustomer } from '../lib/billing';
 import { exportKey } from '../lib/exportWorker';
 import { harvestableCountSql } from '../lib/gardenBadges';
 import { STAGE_BOUNDS } from '../lib/growthStages';
@@ -184,7 +185,12 @@ export async function purgeExpiredGuests(): Promise<{ affected: number }> {
   const tokensResult = await db.query(
     `DELETE FROM password_reset_tokens WHERE expires_at < NOW()`,
   );
-  return { affected: guestsAffected + (tokensResult.rowCount ?? 0) };
+  const verificationResult = await db.query(
+    `DELETE FROM email_verification_tokens WHERE expires_at < NOW()`,
+  );
+  return {
+    affected: guestsAffected + (tokensResult.rowCount ?? 0) + (verificationResult.rowCount ?? 0),
+  };
 }
 
 // Read notifications are kept 90 days; unread ones are never purged.
@@ -237,26 +243,33 @@ async function accountStorageKeys(
   return keys;
 }
 
-// Deletes accounts 30 days past their scheduled deletion, after deleting every
-// R2 object they own. If any object delete fails (or the exports bucket is
-// misconfigured) the account row is kept: its cascade would delete the rows
-// that record the keys, so tomorrow's run could never find them again.
+// Deletes accounts 30 days past their scheduled deletion, after ending their
+// Stripe customer and deleting every R2 object they own. If any of that fails
+// (or the exports bucket is misconfigured) the account row is kept: its
+// cascade would delete the rows that record the keys/ids, so tomorrow's run
+// could never find them again.
 export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
-  const { rows } = await db.query<{ id: number }>(
-    `SELECT id FROM accounts WHERE deletion_scheduled_at + INTERVAL '30 days' < NOW()`,
+  const { rows } = await db.query<{
+    id: number;
+    stripe_subscription_id: string | null;
+    stripe_customer_id: string | null;
+  }>(
+    `SELECT id, stripe_subscription_id, stripe_customer_id
+       FROM accounts WHERE deletion_scheduled_at + INTERVAL '30 days' < NOW()`,
   );
 
   const purgeable: number[] = [];
-  for (const { id } of rows) {
+  for (const { id, stripe_subscription_id, stripe_customer_id } of rows) {
     let key: string | undefined;
     try {
+      await teardownCustomer({ subId: stripe_subscription_id, customerId: stripe_customer_id });
       for (const object of await accountStorageKeys(id)) {
         key = object.key;
         await deleteFromR2(object.key, object.bucket);
       }
       purgeable.push(id);
     } catch (err) {
-      logger.warn('Could not delete R2 object for purged account; keeping account', {
+      logger.warn('Could not clean up external data for purged account; keeping account', {
         accountId: id,
         key,
         errMsg: err instanceof Error ? err.message : String(err),

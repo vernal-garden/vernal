@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { patch, del } from '../../lib/api';
+import { patch, del, post } from '../../lib/api';
 import type { AccountData } from './types';
 import {
   cardSt,
@@ -17,6 +17,55 @@ import {
 interface Props {
   account: AccountData;
   onUpdate: (patch: Partial<AccountData>) => void;
+}
+
+function VerifyEmailBanner({
+  email,
+  onUpdate,
+}: {
+  email: string | null;
+  onUpdate: (patch: Partial<AccountData>) => void;
+}) {
+  const [state, setState] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleResend() {
+    setError(null);
+    setState('sending');
+    try {
+      const res = await post<{ data?: { sent?: boolean } }>('/api/me/verify-email/resend');
+      if (res?.data?.sent === false) {
+        onUpdate({ emailVerified: true });
+        return;
+      }
+      setState('sent');
+    } catch (err) {
+      setError(apiErrorMessage(err, 'Could not send the verification email.'));
+      setState('idle');
+    }
+  }
+
+  return (
+    <div style={cardSt}>
+      <h3 style={cardTitleSt}>Verify your email</h3>
+      <p style={bodyTextSt}>
+        Confirm that {email ?? 'your email address'} belongs to you. This keeps your account safe if you
+        later sign in with Google.
+      </p>
+      {state === 'sent' ? (
+        <p role="status" style={successTextSt}>Sent. Check your inbox for the link.</p>
+      ) : (
+        <button type="button" style={secondaryButtonSt} onClick={handleResend} disabled={state === 'sending'}>
+          {state === 'sending' ? 'Sending…' : 'Send verification link'}
+        </button>
+      )}
+      {error && (
+        <p role="status" style={errorTextSt}>
+          {error}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function EmailSection({ account, onUpdate }: Props) {
@@ -172,6 +221,9 @@ export default function EmailSecuritySettings({ account, onUpdate }: Props) {
       <h2 style={{ margin: '0 0 var(--sp-4)', fontFamily: 'var(--font-display)', fontSize: 20, color: 'var(--c-text)' }}>
         Email & Security
       </h2>
+      {account.isPasswordAccount && account.email && !account.emailVerified && (
+        <VerifyEmailBanner email={account.email} onUpdate={onUpdate} />
+      )}
       <EmailSection account={account} onUpdate={onUpdate} />
       {account.isPasswordAccount && <PasswordSection />}
     </section>

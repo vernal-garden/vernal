@@ -1,7 +1,8 @@
-import { useState, FormEvent } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useEffect, useState, FormEvent } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../lib/api';
 import AuthFormLayout from '../components/AuthFormLayout';
+import { getUrlToken } from '../instrument';
 
 function ExpiredMessage() {
   return (
@@ -18,7 +19,13 @@ function ExpiredMessage() {
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
-  const token = searchParams.get('token');
+  const navigate = useNavigate();
+  const location = useLocation();
+  // Read once, then drop it from the address bar (history, Sentry, replays).
+  const [token] = useState(() => getUrlToken(location.pathname) ?? searchParams.get('token'));
+  useEffect(() => {
+    if (searchParams.has('token')) navigate(location.pathname, { replace: true });
+  }, [searchParams, navigate, location.pathname]);
 
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');

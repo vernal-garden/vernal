@@ -24,6 +24,7 @@ import WeatherPage from './pages/WeatherPage';
 import AmendmentPage from './pages/AmendmentPage';
 import AccountPage from './pages/AccountPage';
 import EmailConfirmPage from './pages/EmailConfirmPage';
+import VerifyEmailPage from './pages/VerifyEmailPage';
 import AboutPage from './pages/AboutPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminRoute from './components/admin/AdminRoute';
@@ -219,6 +220,10 @@ const routes: RouteObject[] = [
   {
     path: '/reset-password',
     element: <ResetPasswordPage />,
+  },
+  {
+    path: '/verify-email',
+    element: <VerifyEmailPage />,
   },
   {
     path: '/account/email/confirm',
