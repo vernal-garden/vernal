@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { get, ApiError } from '../lib/api';
+import { getUrlToken } from '../instrument';
 
 type Status = { kind: 'loading' } | { kind: 'success'; email: string } | { kind: 'error'; message: string };
 
@@ -36,10 +37,20 @@ const linkSt: React.CSSProperties = {
 
 export default function EmailConfirmPage() {
   const [searchParams] = useSearchParams();
-  const token = searchParams.get('token');
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [token] = useState(() => getUrlToken(location.pathname) ?? searchParams.get('token'));
   const [status, setStatus] = useState<Status>({ kind: 'loading' });
+  // Tokens are single-use; StrictMode's double effect must not submit twice.
+  const submitted = useRef(false);
 
   useEffect(() => {
+    if (searchParams.has('token')) navigate(location.pathname, { replace: true });
+  }, [searchParams, navigate, location.pathname]);
+
+  useEffect(() => {
+    if (submitted.current) return;
+    submitted.current = true;
     if (!token) {
       setStatus({ kind: 'error', message: 'Token is required.' });
       return;

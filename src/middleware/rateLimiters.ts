@@ -49,3 +49,13 @@ export const writeLimiter = rateLimit({
     req.session?.account?.id != null ? `user:${req.session.account.id}` : byIp(req),
   message: { error: 'Too many requests — please try again later' },
 });
+
+// POST /api/me/verify-email/resend — keyed per account (route requires auth).
+export const verificationResendLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
+  message: { error: 'Too many verification emails — please try again later' },
+});

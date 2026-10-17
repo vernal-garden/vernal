@@ -67,10 +67,19 @@ router.post('/checkout', async (req, res) => {
       email: string;
       display_name: string | null;
       stripe_customer_id: string | null;
-    }>('SELECT email, display_name, stripe_customer_id FROM accounts WHERE id = $1', [accountId]);
+      deletion_scheduled_at: string | null;
+    }>(
+      'SELECT email, display_name, stripe_customer_id, deletion_scheduled_at FROM accounts WHERE id = $1',
+      [accountId],
+    );
 
     if (rows.length === 0) {
       return res.status(401).json({ error: 'Account not found' });
+    }
+    if (rows[0].deletion_scheduled_at) {
+      return res
+        .status(409)
+        .json({ error: 'Your account is scheduled for deletion. Cancel the deletion before subscribing.' });
     }
 
     let customerId = rows[0].stripe_customer_id;

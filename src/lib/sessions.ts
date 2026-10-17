@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { db } from './db';
-import type { PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { SessionData, SessionAccount } from '../types';
 
 const SESSION_DAYS = parseInt(process.env.SESSION_DAYS ?? '7', 10);
@@ -71,28 +71,71 @@ export async function createGuestSession(): Promise<{ signedToken: string; expir
   return { signedToken, expiresAt };
 }
 
-// Migrate an existing guest session to an authenticated account,
-// or create a new authenticated session if no prior session exists.
-// Returns the signed token to set in the cookie.
+type Runner = Pool | PoolClient;
+
+// Attaches a session row to an account and replaces its token, so any copy of
+// the pre-login cookie stops working (session fixation). The row id is kept on
+// purpose: guest gardens/seeds reference guest_sessions(id) ON DELETE CASCADE
+// and the merge prompt reads pending data by that id.
+export async function rotateSessionToken(
+  runner: Runner,
+  oldToken: string,
+  accountId: number,
+): Promise<{ signedToken: string; expiresAt: Date }> {
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const token = generateToken();
+  const result = await runner.query(
+    `UPDATE guest_sessions
+        SET token = $1, account_id = $2, migrated_at = COALESCE(migrated_at, now()), expires_at = $3
+      WHERE token = $4 AND (account_id IS NULL OR account_id = $2)`,
+    [token, accountId, expiresAt, oldToken],
+  );
+  if (result.rowCount === 0) {
+    // The cookie's row is gone, or belongs to another account — start a fresh session.
+    await runner.query(
+      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+       VALUES ($1, $2, $3, now())`,
+      [token, expiresAt, accountId],
+    );
+  }
+  return { signedToken: signToken(token), expiresAt };
+}
+
+// Expires an account's session rows (optionally sparing one). Rows are expired
+// rather than deleted: findSession rejects expired rows, the GET /session cold
+// path treats migrated rows as plain unauthenticated (a deleted row would read
+// as 'gone'), and unmerged guest data is not cascaded away.
+export async function revokeAccountSessions(
+  runner: Runner,
+  accountId: number,
+  exceptToken?: string,
+): Promise<void> {
+  if (exceptToken) {
+    await runner.query(
+      'UPDATE guest_sessions SET expires_at = LEAST(expires_at, now()) WHERE account_id = $1 AND token <> $2',
+      [accountId, exceptToken],
+    );
+  } else {
+    await runner.query(
+      'UPDATE guest_sessions SET expires_at = LEAST(expires_at, now()) WHERE account_id = $1',
+      [accountId],
+    );
+  }
+}
+
+// Attach the current session (rotating its token) or create a new one for an account.
 export async function claimSession(
   accountId: number,
   existingToken: string | null,
   client?: PoolClient,
 ): Promise<{ signedToken: string; expiresAt: Date }> {
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const runner = client ?? db;
 
   if (existingToken) {
-    await runner.query(
-      `UPDATE guest_sessions
-       SET account_id = $1, migrated_at = now(), expires_at = $2
-       WHERE token = $3`,
-      [accountId, expiresAt, existingToken],
-    );
-    const signedToken = signToken(existingToken);
-    return { signedToken, expiresAt };
+    return rotateSessionToken(runner, existingToken, accountId);
   }
 
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const token = generateToken();
   const signedToken = signToken(token);
   await runner.query(
@@ -168,8 +211,7 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
      FROM guest_sessions gs
      LEFT JOIN accounts a ON a.id = gs.account_id
      WHERE gs.token = $1
-       AND gs.expires_at > now()
-       AND gs.migrated_at IS NOT DISTINCT FROM gs.migrated_at`, // always true; future: add revocation
+       AND gs.expires_at > now()`,
     [token],
   );
 

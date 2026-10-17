@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import app from '../index';
 import * as mailer from '../lib/mailer';
 import * as exportWorker from '../lib/exportWorker';
+import * as billing from '../lib/billing';
 
 vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
 const sendMailMock = vi.mocked(mailer.sendMail);
@@ -15,6 +16,14 @@ vi.mock('../lib/exportWorker', async (importOriginal) => ({
   processExportJob: vi.fn().mockResolvedValue(undefined),
 }));
 const processExportJobMock = vi.mocked(exportWorker.processExportJob);
+
+vi.mock('../lib/billing', () => ({
+  stopRenewal: vi.fn().mockResolvedValue(undefined),
+  resumeRenewal: vi.fn().mockResolvedValue(undefined),
+  teardownCustomer: vi.fn().mockResolvedValue(undefined),
+}));
+const stopRenewalMock = vi.mocked(billing.stopRenewal);
+const resumeRenewalMock = vi.mocked(billing.resumeRenewal);
 
 function extractToken(html: string): string {
   const match = html.match(/token=([a-f0-9]+)/);
@@ -653,6 +662,33 @@ describe('GET /api/me/email/confirm', () => {
     expect(rows[0].used_at).not.toBeNull();
   });
 
+  it('kills outstanding password reset tokens when the email changes', async () => {
+    const accountId = await createUser('me-email-resetkill@example.com');
+    const otherAgent = await loginAgent('me-email-resetkill@example.com');
+    const resetHash = crypto.createHash('sha256').update('old-inbox-reset-token').digest('hex');
+    await pool.query(
+      `INSERT INTO password_reset_tokens (account_id, token_hash, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '1 hour')`,
+      [accountId, resetHash],
+    );
+
+    sendMailMock.mockClear();
+    const patchRes = await otherAgent
+      .patch('/api/me/email')
+      .send({ newEmail: 'resetkill-new@example.com' });
+    expect(patchRes.status).toBe(200);
+    const rawToken = extractToken(sendMailMock.mock.calls[0][0].html);
+
+    const res = await otherAgent.get(`/api/me/email/confirm?token=${rawToken}`);
+    expect(res.status).toBe(200);
+
+    const { rowCount } = await pool.query(
+      'SELECT 1 FROM password_reset_tokens WHERE account_id = $1',
+      [accountId],
+    );
+    expect(rowCount).toBe(0);
+  });
+
   it('rejects an expired token with 400 (test 21)', async () => {
     const accountId = await createUser('me-email-expired@example.com');
     const rawToken = crypto.randomBytes(32).toString('hex');
@@ -715,6 +751,31 @@ describe('GET /api/me/email/confirm', () => {
   it('returns 400 when token is missing', async () => {
     const res = await agent.get('/api/me/email/confirm');
     expect(res.status).toBe(400);
+  });
+
+  it('revokes other sessions, keeps the current one, and marks the email verified', async () => {
+    const email = 'confirm-revoke@example.com';
+    const accountId = await createUser(email);
+    await pool.query('UPDATE accounts SET email_verified = false WHERE id = $1', [accountId]);
+    const current = await loginAgent(email);
+    const other = await loginAgent(email);
+
+    sendMailMock.mockClear();
+    const start = await current.patch('/api/me/email').send({ newEmail: 'confirm-revoke-new@example.com' });
+    expect(start.status).toBe(200);
+    const token = extractToken(sendMailMock.mock.calls[0][0].html);
+
+    const confirm = await current.get(`/api/me/email/confirm?token=${token}`);
+    expect(confirm.status).toBe(200);
+
+    expect((await current.get('/api/me')).status).toBe(200);
+    expect((await other.get('/api/me')).status).toBe(401);
+
+    const { rows } = await pool.query<{ email_verified: boolean }>(
+      'SELECT email_verified FROM accounts WHERE id = $1',
+      [accountId],
+    );
+    expect(rows[0].email_verified).toBe(true);
   });
 });
 
@@ -905,5 +966,102 @@ describe('/api/me/export', () => {
     await guest.post('/api/auth/guest');
     expect((await guest.post('/api/me/export')).status).toBe(401);
     expect((await guest.get('/api/me/export')).status).toBe(401);
+  });
+});
+
+describe('POST /api/me/verify-email/resend', () => {
+  it('sends a new link for an unverified account, then rate-limits after 3 per hour', async () => {
+    const email = 'resend@example.com';
+    const accountId = await createUser(email);
+    await pool.query('UPDATE accounts SET email_verified = false WHERE id = $1', [accountId]);
+    const agent = await loginAgent(email);
+
+    for (let i = 0; i < 3; i++) {
+      sendMailMock.mockClear();
+      const res = await agent.post('/api/me/verify-email/resend');
+      expect(res.status).toBe(200);
+      expect(res.body.data.sent).toBe(true);
+      expect(sendMailMock).toHaveBeenCalledWith(expect.objectContaining({ to: email }));
+    }
+    const { rows } = await pool.query(
+      'SELECT 1 FROM email_verification_tokens WHERE account_id = $1 AND used_at IS NULL',
+      [accountId],
+    );
+    expect(rows).toHaveLength(1);
+
+    expect((await agent.post('/api/me/verify-email/resend')).status).toBe(429);
+  });
+
+  it('is a no-op for an already verified account', async () => {
+    await createUser('resend-verified@example.com');
+    const agent = await loginAgent('resend-verified@example.com');
+    sendMailMock.mockClear();
+    const res = await agent.post('/api/me/verify-email/resend');
+    expect(res.status).toBe(200);
+    expect(res.body.data.sent).toBe(false);
+    expect(sendMailMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /api/me and cancel-deletion — Stripe renewal', () => {
+  it('stops renewal before scheduling deletion', async () => {
+    const id = await createUser('billing-delete@example.com');
+    await pool.query("UPDATE accounts SET stripe_subscription_id = 'sub_del' WHERE id = $1", [id]);
+    const agent = await loginAgent('billing-delete@example.com');
+    stopRenewalMock.mockClear();
+
+    const res = await agent.delete('/api/me');
+    expect(res.status).toBe(204);
+    expect(stopRenewalMock).toHaveBeenCalledWith('sub_del');
+  });
+
+  it('returns 502 and schedules nothing when Stripe fails', async () => {
+    const id = await createUser('billing-delete-fail@example.com');
+    await pool.query("UPDATE accounts SET stripe_subscription_id = 'sub_fail' WHERE id = $1", [id]);
+    const agent = await loginAgent('billing-delete-fail@example.com');
+    stopRenewalMock.mockRejectedValueOnce(new Error('stripe down'));
+
+    const res = await agent.delete('/api/me');
+    expect(res.status).toBe(502);
+    const { rows } = await pool.query('SELECT deletion_scheduled_at FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].deletion_scheduled_at).toBeNull();
+    expect((await agent.get('/api/me')).status).toBe(200);
+  });
+
+  it('does not call Stripe for accounts without a subscription', async () => {
+    await createUser('billing-none@example.com');
+    const agent = await loginAgent('billing-none@example.com');
+    stopRenewalMock.mockClear();
+    expect((await agent.delete('/api/me')).status).toBe(204);
+    expect(stopRenewalMock).not.toHaveBeenCalled();
+  });
+
+  it('cancel-deletion resumes renewal; Stripe failure → 502 and deletion stays scheduled', async () => {
+    const id = await createUser('billing-cancel@example.com');
+    await pool.query(
+      "UPDATE accounts SET stripe_subscription_id = 'sub_cancel', deletion_scheduled_at = NOW() WHERE id = $1",
+      [id],
+    );
+    const agent = await loginAgent('billing-cancel@example.com');
+
+    resumeRenewalMock.mockRejectedValueOnce(new Error('stripe down'));
+    const failed = await agent.post('/api/me/cancel-deletion');
+    expect(failed.status).toBe(502);
+    const { rows: still } = await pool.query('SELECT deletion_scheduled_at FROM accounts WHERE id = $1', [id]);
+    expect(still[0].deletion_scheduled_at).not.toBeNull();
+
+    resumeRenewalMock.mockClear();
+    const ok = await agent.post('/api/me/cancel-deletion');
+    expect(ok.status).toBe(200);
+    expect(resumeRenewalMock).toHaveBeenCalledWith('sub_cancel');
+  });
+
+  it('cancel-deletion does not touch Stripe when no deletion is scheduled', async () => {
+    const id = await createUser('billing-cancel-idle@example.com');
+    await pool.query("UPDATE accounts SET stripe_subscription_id = 'sub_idle' WHERE id = $1", [id]);
+    const agent = await loginAgent('billing-cancel-idle@example.com');
+    resumeRenewalMock.mockClear();
+    expect((await agent.post('/api/me/cancel-deletion')).status).toBe(200);
+    expect(resumeRenewalMock).not.toHaveBeenCalled();
   });
 });

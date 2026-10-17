@@ -9,7 +9,14 @@ vi.mock('../lib/r2', async (importOriginal) => ({
   exportsBucket: vi.fn(() => 'test-exports'),
 }));
 
+vi.mock('../lib/billing', () => ({
+  stopRenewal: vi.fn(),
+  resumeRenewal: vi.fn(),
+  teardownCustomer: vi.fn(),
+}));
+
 import { deleteFromR2, exportsBucket } from '../lib/r2';
+import { teardownCustomer } from '../lib/billing';
 import { currentSeason } from '../lib/season';
 import {
   deriveGrowth,
@@ -24,6 +31,7 @@ import {
 
 const deleteFromR2Mock = vi.mocked(deleteFromR2);
 const exportsBucketMock = vi.mocked(exportsBucket);
+const teardownCustomerMock = vi.mocked(teardownCustomer);
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -672,6 +680,24 @@ describe('purgeExpiredGuests', () => {
     expect(tokens).not.toContain('nightly-expired-not-migrated');
     expect(tokens).toContain('nightly-expired-migrated');
   });
+
+  it('deletes expired email verification tokens and keeps live ones', async () => {
+    const ownerId = await createAccount();
+    await pool.query(
+      `INSERT INTO email_verification_tokens (account_id, email, token_hash, expires_at)
+       VALUES ($1, 'v@example.com', 'nightly-vt-expired', NOW() - INTERVAL '1 hour'),
+              ($1, 'v@example.com', 'nightly-vt-live', NOW() + INTERVAL '1 hour')`,
+      [ownerId],
+    );
+
+    const { affected } = await purgeExpiredGuests();
+
+    expect(affected).toBe(1);
+    const { rows } = await pool.query<{ token_hash: string }>(
+      'SELECT token_hash FROM email_verification_tokens',
+    );
+    expect(rows.map((r) => r.token_hash)).toEqual(['nightly-vt-live']);
+  });
 });
 
 describe('purgeReadNotifications', () => {
@@ -713,6 +739,7 @@ describe('purgeScheduledAccounts', () => {
     await resetDb();
     deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
     exportsBucketMock.mockReset().mockReturnValue('test-exports');
+    teardownCustomerMock.mockReset().mockResolvedValue(undefined);
     savedBaseUrl = process.env.R2_PUBLIC_BASE_URL;
     process.env.R2_PUBLIC_BASE_URL = BASE;
   });
@@ -720,6 +747,42 @@ describe('purgeScheduledAccounts', () => {
   afterEach(() => {
     if (savedBaseUrl === undefined) delete process.env.R2_PUBLIC_BASE_URL;
     else process.env.R2_PUBLIC_BASE_URL = savedBaseUrl;
+  });
+
+  it('tears down the Stripe customer before deleting the account', async () => {
+    const id = await createAccount({ deletionScheduledAtDaysAgo: 31, stripeSubscriptionId: 'sub_purge' });
+    await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_purge' WHERE id = $1", [id]);
+
+    const { affected } = await purgeScheduledAccounts();
+    expect(affected).toBe(1);
+    expect(teardownCustomerMock).toHaveBeenCalledWith({ subId: 'sub_purge', customerId: 'cus_purge' });
+  });
+
+  it('keeps the account when Stripe teardown fails', async () => {
+    const id = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_keep' WHERE id = $1", [id]);
+    teardownCustomerMock.mockRejectedValueOnce(new Error('stripe down'));
+
+    const { affected } = await purgeScheduledAccounts();
+    expect(affected).toBe(0);
+    expect(await accountIds()).toContain(id);
+    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('purges the other accounts in a batch when one teardown fails', async () => {
+    const first = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const second = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_first' WHERE id = $1", [first]);
+    await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_second' WHERE id = $1", [second]);
+    teardownCustomerMock.mockImplementation(async ({ customerId }) => {
+      if (customerId === 'cus_first') throw new Error('stripe down');
+    });
+
+    const { affected } = await purgeScheduledAccounts();
+    expect(affected).toBe(1);
+    const ids = await accountIds();
+    expect(ids).toContain(first);
+    expect(ids).not.toContain(second);
   });
 
   async function createSeedPhoto(seedId: number, key: string): Promise<void> {
