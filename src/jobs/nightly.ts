@@ -1,4 +1,4 @@
-import { db } from '../lib/db';
+import { jobDb as db } from '../lib/db'; // long-running work: job pool, 5-min statement cap
 import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
 import { deleteFromR2, exportsBucket, ownedThumbnailKey } from '../lib/r2';
 import { logger } from '../lib/logger';
@@ -126,60 +126,121 @@ export async function refreshGardenBadges(): Promise<{ affected: number }> {
   return { affected: result.rowCount ?? 0 };
 }
 
-// Deletes expired, unmigrated guest sessions after deleting the garden
-// thumbnails they saved to R2 (guests can't upload anything else). If a
+const GUEST_PURGE_BATCH = 5000;
+
+// Purges one batch of expired, unmigrated guest sessions, deleting the garden
+// thumbnails they saved to R2 first (guests can't upload anything else). If a
 // thumbnail delete fails the session row is kept: its cascade would delete the
 // gardens that record the keys, so tomorrow's run could never find them again.
-// Also deletes expired password reset tokens.
-export async function purgeExpiredGuests(): Promise<{ affected: number }> {
-  const { rows: sessions } = await db.query<{ id: string }>(
-    `SELECT id FROM guest_sessions WHERE expires_at < NOW() AND migrated_at IS NULL`,
+async function purgeExpiredGuestBatch(sessionIds: string[]): Promise<number> {
+  const { rows: gardens } = await db.query<{
+    id: number;
+    guest_session_id: string;
+    thumbnail_url: string | null;
+  }>(
+    `SELECT id, guest_session_id, thumbnail_url FROM gardens
+     WHERE guest_session_id = ANY($1::uuid[]) AND thumbnail_url IS NOT NULL`,
+    [sessionIds],
   );
+  const keysBySession = new Map<string, string[]>();
+  for (const garden of gardens) {
+    const key = ownedThumbnailKey(garden.thumbnail_url, String(garden.id));
+    if (!key) continue;
+    const keys = keysBySession.get(garden.guest_session_id) ?? [];
+    keys.push(key);
+    keysBySession.set(garden.guest_session_id, keys);
+  }
 
-  let guestsAffected = 0;
-  if (sessions.length > 0) {
-    const sessionIds = sessions.map((s) => s.id);
-    const { rows: gardens } = await db.query<{
-      id: number;
-      guest_session_id: string;
-      thumbnail_url: string | null;
-    }>(
-      `SELECT id, guest_session_id, thumbnail_url FROM gardens
-       WHERE guest_session_id = ANY($1::uuid[]) AND thumbnail_url IS NOT NULL`,
-      [sessionIds],
-    );
-    const keysBySession = new Map<string, string[]>();
-    for (const garden of gardens) {
-      const key = ownedThumbnailKey(garden.thumbnail_url, String(garden.id));
-      if (!key) continue;
-      const keys = keysBySession.get(garden.guest_session_id) ?? [];
-      keys.push(key);
-      keysBySession.set(garden.guest_session_id, keys);
-    }
-
-    const purgeable: string[] = [];
-    for (const id of sessionIds) {
-      let key: string | undefined;
-      try {
-        for (const k of keysBySession.get(id) ?? []) {
-          key = k;
-          await deleteFromR2(k);
-        }
-        purgeable.push(id);
-      } catch (err) {
-        logger.warn('Could not delete R2 object for expired guest; keeping session', {
-          sessionId: id,
-          key,
-          errMsg: err instanceof Error ? err.message : String(err),
-        });
+  const purgeable: string[] = [];
+  for (const id of sessionIds) {
+    let key: string | undefined;
+    try {
+      for (const k of keysBySession.get(id) ?? []) {
+        key = k;
+        await deleteFromR2(k);
       }
+      purgeable.push(id);
+    } catch (err) {
+      logger.warn('Could not delete R2 object for expired guest; keeping session', {
+        sessionId: id,
+        key,
+        errMsg: err instanceof Error ? err.message : String(err),
+      });
     }
-    if (purgeable.length > 0) {
-      const result = await db.query('DELETE FROM guest_sessions WHERE id = ANY($1::uuid[])', [
-        purgeable,
-      ]);
-      guestsAffected = result.rowCount ?? 0;
+  }
+  if (purgeable.length === 0) return 0;
+  const result = await db.query('DELETE FROM guest_sessions WHERE id = ANY($1::uuid[])', [purgeable]);
+  return result.rowCount ?? 0;
+}
+
+// Deletes expired, unmigrated guest sessions (with their R2 thumbnails), then
+// guest sessions over 2 days old that never created anything — those are
+// mostly bots and bounced visitors, and own nothing in R2. Both passes work in
+// batches so a flood of junk rows can't exhaust memory. Also deletes expired
+// password reset and email verification tokens, and email-change tokens over
+// 30 days old.
+export async function purgeExpiredGuests(
+  { batchSize = GUEST_PURGE_BATCH }: { batchSize?: number } = {},
+): Promise<{ affected: number }> {
+  let guestsAffected = 0;
+
+  // Keyset pagination by id: rows kept after a failed R2 delete are skipped,
+  // not re-selected forever.
+  let afterId: string | null = null;
+  for (;;) {
+    // Annotated: afterId is reassigned from rows, which defeats inference.
+    const { rows }: { rows: Array<{ id: string }> } = await db.query<{ id: string }>(
+      `SELECT id FROM guest_sessions
+        WHERE expires_at < NOW() AND migrated_at IS NULL
+          AND ($1::uuid IS NULL OR id > $1::uuid)
+        ORDER BY id
+        LIMIT $2`,
+      [afterId, batchSize],
+    );
+    if (rows.length === 0) break;
+    afterId = rows[rows.length - 1].id;
+    guestsAffected += await purgeExpiredGuestBatch(rows.map((r) => r.id));
+    if (rows.length < batchSize) break;
+  }
+
+  // Empty guests: lock candidates first, then delete with the emptiness check
+  // re-run. The second statement gets a fresh snapshot (READ COMMITTED), so a
+  // garden committed after the candidate scan keeps its session. SKIP LOCKED
+  // skips a guest whose POST /api/gardens transaction holds the row right now.
+  for (;;) {
+    const client = await db.connect();
+    let candidates = 0;
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query<{ id: string }>(
+        `SELECT gs.id FROM guest_sessions gs
+          WHERE gs.migrated_at IS NULL AND gs.account_id IS NULL
+            AND gs.created_at < NOW() - INTERVAL '2 days'
+            AND NOT EXISTS (SELECT 1 FROM gardens g WHERE g.guest_session_id = gs.id)
+            AND NOT EXISTS (SELECT 1 FROM seeds s WHERE s.guest_session_id = gs.id)
+          LIMIT $1
+          FOR UPDATE OF gs SKIP LOCKED`,
+        [batchSize],
+      );
+      candidates = rows.length;
+      if (candidates > 0) {
+        const result = await client.query(
+          `DELETE FROM guest_sessions gs
+            WHERE gs.id = ANY($1::uuid[])
+              AND NOT EXISTS (SELECT 1 FROM gardens g WHERE g.guest_session_id = gs.id)
+              AND NOT EXISTS (SELECT 1 FROM seeds s WHERE s.guest_session_id = gs.id)`,
+          [rows.map((r) => r.id)],
+        );
+        guestsAffected += result.rowCount ?? 0;
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
+    if (candidates < batchSize) break;
   }
 
   const tokensResult = await db.query(
@@ -188,8 +249,18 @@ export async function purgeExpiredGuests(): Promise<{ affected: number }> {
   const verificationResult = await db.query(
     `DELETE FROM email_verification_tokens WHERE expires_at < NOW()`,
   );
+  // Email-change tokens are kept after use or cancel (the per-recipient
+  // cooldown counts them by created_at over 24h), but they hold email
+  // addresses, so drop them after 30 days.
+  const emailChangeResult = await db.query(
+    `DELETE FROM email_change_tokens WHERE created_at < NOW() - INTERVAL '30 days'`,
+  );
   return {
-    affected: guestsAffected + (tokensResult.rowCount ?? 0) + (verificationResult.rowCount ?? 0),
+    affected:
+      guestsAffected +
+      (tokensResult.rowCount ?? 0) +
+      (verificationResult.rowCount ?? 0) +
+      (emailChangeResult.rowCount ?? 0),
   };
 }
 

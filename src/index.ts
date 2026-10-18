@@ -29,6 +29,8 @@ import microFeedbackRouter from './routes/microFeedback';
 import metricsRouter from './routes/metrics';
 import notificationsRouter from './routes/notifications';
 import { sessionMiddleware } from './middleware/session';
+import { dbBackpressure } from './middleware/dbBackpressure';
+import { apiLimiters } from './middleware/rateLimiters';
 import { requestMetricsMiddleware } from './lib/requestMetrics';
 import { initPassport, passport } from './lib/oauth/index';
 
@@ -84,9 +86,17 @@ app.use(requestMetricsMiddleware);
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
 
 // ── Body parsing ─────────────────────────────────────────────────────────────
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// 64kb covers every real payload — the largest is a 2,000-point freeform bed
+// (~38kb worst case) — and keeps one request from making the server parse
+// megabytes of JSON.
+app.use(express.json({ limit: '64kb' }));
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 app.use(cookieParser());
+// Global limits and load shedding run before the session lookup so a flood
+// never reaches the database. /health (mounted outside /api) and the Stripe
+// webhook (registered above) are not affected.
+app.use('/api', apiLimiters);
+app.use('/api', dbBackpressure);
 app.use(sessionMiddleware);
 initPassport();
 app.use(passport.initialize());
@@ -146,6 +156,12 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
     runNightlyJob().catch((err) => console.error('[nightly] job error:', err));
   });
   console.log('[vernal] Nightly job scheduled at 03:00 UTC');
+
+  process.on('uncaughtException', (err) => {
+    logger.error('Uncaught exception', err);
+    Sentry.captureException(err);
+    void Sentry.flush(2000).finally(() => process.exit(1));
+  });
 
   process.on('unhandledRejection', (reason) => {
     logger.error('Unhandled promise rejection', reason instanceof Error ? reason : new Error(String(reason)));

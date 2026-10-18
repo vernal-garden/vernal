@@ -1,7 +1,7 @@
 import { PassThrough } from 'stream';
 import { ZipArchive } from 'archiver';
 import { types as pgTypes, CustomTypesConfig } from 'pg';
-import { db } from './db';
+import { jobDb as db } from './db'; // long-running work: job pool, 5-min statement cap
 import { logger } from './logger';
 import { uploadToR2, getPresignedDownloadUrl, exportsBucket } from './r2';
 

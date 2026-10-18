@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { sendMail } from '../lib/mailer';
 import { logger } from '../lib/logger';
-import { writeLimiter } from '../middleware/rateLimiters';
+import { writeLimiter, feedbackSessionLimiter, feedbackIpLimiter } from '../middleware/rateLimiters';
+import { requireSession } from '../middleware/auth';
 
 const feedbackRouter = Router();
 
@@ -19,6 +20,26 @@ const CATEGORY_LABELS: Record<Category, string> = {
 const MESSAGE_MIN = 10;
 const MESSAGE_MAX = 5000;
 const META_MAX = 64;
+
+// Notification emails per rolling hour across all senders. Past this, feedback
+// is still saved (and visible in admin) but the owner isn't emailed.
+const EMAIL_BUDGET_PER_HOUR = 20;
+
+async function withinEmailBudget(): Promise<boolean> {
+  try {
+    const { rows } = await db.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM feedback_submissions WHERE created_at > NOW() - INTERVAL '1 hour'`,
+    );
+    if (rows[0].n <= EMAIL_BUDGET_PER_HOUR) return true;
+    logger.warn('Feedback email budget reached; notification skipped');
+    return false;
+  } catch (err) {
+    logger.warn('Feedback email budget check failed; skipping email', {
+      errMsg: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
 
 function optionalMeta(value: unknown): string | null {
   if (typeof value !== 'string') return null;
@@ -78,47 +99,59 @@ function notify(p: NotifyParams): void {
   });
 }
 
-// POST /api/feedback — persistent feedback widget (surface 3.1). Guests allowed.
-feedbackRouter.post('/', writeLimiter, async (req: Request, res: Response) => {
-  const { category, message } = req.body ?? {};
+// POST /api/feedback — persistent feedback widget (surface 3.1). Guests allowed,
+// but a session is required so per-session limits apply.
+feedbackRouter.post(
+  '/',
+  requireSession,
+  feedbackSessionLimiter,
+  feedbackIpLimiter,
+  writeLimiter,
+  async (req: Request, res: Response) => {
+    const { category, message } = req.body ?? {};
 
-  if (!CATEGORIES.includes(category)) {
-    res.status(400).json({ error: 'Invalid category.' });
-    return;
-  }
+    if (!CATEGORIES.includes(category)) {
+      res.status(400).json({ error: 'Invalid category.' });
+      return;
+    }
 
-  const trimmed = typeof message === 'string' ? message.trim() : '';
-  if (trimmed.length < MESSAGE_MIN || trimmed.length > MESSAGE_MAX) {
-    res.status(400).json({ error: 'Message must be between 10 and 5000 characters.' });
-    return;
-  }
+    const trimmed = typeof message === 'string' ? message.trim() : '';
+    if (trimmed.length < MESSAGE_MIN || trimmed.length > MESSAGE_MAX) {
+      res.status(400).json({ error: 'Message must be between 10 and 5000 characters.' });
+      return;
+    }
 
-  const sourceSurface = optionalMeta(req.body.sourceSurface);
-  const appVersion = optionalMeta(req.body.appVersion);
-  const account = req.session?.account ?? null;
+    const sourceSurface = optionalMeta(req.body.sourceSurface);
+    const appVersion = optionalMeta(req.body.appVersion);
+    const account = req.session?.account ?? null;
 
-  const { rows } = await db.query<{ id: number }>(
-    `INSERT INTO feedback_submissions (user_id, category, message, source_surface, app_version)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id`,
-    [account?.id ?? null, category, trimmed, sourceSurface, appVersion],
-  );
-  const id = rows[0].id;
+    const { rows } = await db.query<{ id: number }>(
+      `INSERT INTO feedback_submissions (user_id, category, message, source_surface, app_version)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [account?.id ?? null, category, trimmed, sourceSurface, appVersion],
+    );
+    const id = rows[0].id;
 
-  res.status(201).json({ id });
+    // The count includes the row just inserted, so the 20th submission in an
+    // hour is the last one emailed.
+    const to = process.env.FEEDBACK_NOTIFY_EMAIL;
+    const sendEmail = to ? await withinEmailBudget() : false;
 
-  const to = process.env.FEEDBACK_NOTIFY_EMAIL;
-  if (to) {
-    notify({
-      to,
-      id,
-      category: category as Category,
-      message: trimmed,
-      sender: account?.email ?? 'Guest (not logged in)',
-      sourceSurface,
-      appVersion,
-    });
-  }
-});
+    res.status(201).json({ id });
+
+    if (to && sendEmail) {
+      notify({
+        to,
+        id,
+        category: category as Category,
+        message: trimmed,
+        sender: account?.email ?? 'Guest (not logged in)',
+        sourceSurface,
+        appVersion,
+      });
+    }
+  },
+);
 
 export default feedbackRouter;

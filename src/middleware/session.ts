@@ -31,6 +31,7 @@ function bumpLastActive(accountId: number): void {
 
 // Attaches session data to req.session on every request.
 // Sets req.session = null if no valid cookie is present.
+// Responds 503 if the session lookup itself fails (DB down or saturated).
 // Does NOT block unauthenticated requests. That is the job of requireAuth (Phase 06).
 export async function sessionMiddleware(
   req: Request,
@@ -39,15 +40,21 @@ export async function sessionMiddleware(
 ): Promise<void> {
   const signed = req.cookies?.[COOKIE_NAME];
 
-  if (!signed) {
+  // cookie-parser can yield non-strings (e.g. "j:1" parses to the number 1).
+  if (typeof signed !== 'string' || !signed) {
     req.session = null;
     return next();
   }
 
   try {
     req.session = await findSession(signed);
-  } catch {
-    req.session = null;
+  } catch (err) {
+    // Fail closed: treating a DB error as "no session" would log everyone out
+    // and let the client mint a fresh guest session on top of their real one.
+    logger.warn('Session lookup failed', { errMsg: err instanceof Error ? err.message : String(err) });
+    res.set('Retry-After', '5');
+    res.status(503).json({ error: 'Server is busy — please try again shortly' });
+    return;
   }
 
   if (req.session?.account) {

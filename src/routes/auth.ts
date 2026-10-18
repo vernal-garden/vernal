@@ -20,8 +20,9 @@ import { sendVerificationEmail, consumeVerificationToken } from '../lib/emailVer
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
 import { requireAuth } from '../middleware/auth';
-import { authLimiter, passwordResetLimiter } from '../middleware/rateLimiters';
+import { authLimiter, passwordResetLimiter, guestCreateLimiter, consumeResetEmailQuota, byIp } from '../middleware/rateLimiters';
 import { LOCATION_NOT_SET } from '../lib/constants';
+import { isValidEmail } from '../lib/validation';
 import { OAUTH_NONCE_COOKIE, OAUTH_NONCE_COOKIE_OPTIONS, buildOAuthState, verifyOAuthState } from '../lib/oauth/state';
 import { resolveOAuthAccount, OAuthUnverifiedEmailError } from '../lib/oauth/resolveAccount';
 
@@ -31,7 +32,7 @@ export const authRouter = Router();
 // Creates a guest session for first-time visitors with no cookie.
 // Idempotent from the client's perspective — if called with an existing valid session,
 // we still honour the existing session (the middleware already populated req.session).
-authRouter.post('/guest', async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/guest', guestCreateLimiter, async (req: Request, res: Response): Promise<void> => {
   // If a valid session already exists, return its state rather than creating a duplicate
   if (req.session) {
     res.json({
@@ -127,7 +128,7 @@ authRouter.post('/register', authLimiter, async (req: Request, res: Response): P
     return;
   }
 
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (!isValidEmail(email)) {
     res.status(400).json({ error: 'Invalid email address' });
     return;
   }
@@ -313,31 +314,47 @@ authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Respo
   res.json({ data: { message: 'If an account with that email exists, a reset link has been sent.' } });
 
   // Do the work after responding; failures can only be logged, not returned.
+  const normalized = email.trim().toLowerCase();
+  if (!isValidEmail(normalized)) return;
   try {
     const { rows } = await db.query<{ id: number }>(
       'SELECT id FROM accounts WHERE email = $1',
-      [email.toLowerCase()],
+      [normalized],
     );
     if (rows.length === 0) return;
 
     const accountId = rows[0].id;
     const rawToken = generateRawToken();
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
     // One live token per account: a new request invalidates earlier links.
     const client = await db.connect();
+    let duplicate = false;
     try {
       await client.query('BEGIN');
       // Serialise concurrent requests for the same account so only one live token remains.
       await client.query('SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
-      await client.query('DELETE FROM password_reset_tokens WHERE account_id = $1 AND used_at IS NULL', [
-        accountId,
-      ]);
-      await client.query(
-        `INSERT INTO password_reset_tokens (account_id, token_hash, expires_at)
-         VALUES ($1, $2, $3)`,
-        [accountId, hashToken(rawToken), expiresAt],
+      // A token issued in the last ~5 minutes (more than 55 of its 60 minutes
+      // left) means this is a repeat click — keep that link, send nothing.
+      // Trade-off: within 5 minutes a re-request does not rotate the link.
+      const { rows: fresh } = await client.query(
+        `SELECT 1 FROM password_reset_tokens
+          WHERE account_id = $1 AND used_at IS NULL AND expires_at > NOW() + INTERVAL '55 minutes'
+          LIMIT 1`,
+        [accountId],
       );
+      // Quota is spent only when an email is actually about to be sent.
+      if (fresh.length > 0 || !consumeResetEmailQuota(normalized, byIp(req))) {
+        duplicate = true;
+      } else {
+        await client.query('DELETE FROM password_reset_tokens WHERE account_id = $1 AND used_at IS NULL', [
+          accountId,
+        ]);
+        await client.query(
+          `INSERT INTO password_reset_tokens (account_id, token_hash, expires_at)
+           VALUES ($1, $2, NOW() + INTERVAL '60 minutes')`,
+          [accountId, hashToken(rawToken)],
+        );
+      }
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK');
@@ -345,11 +362,12 @@ authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Respo
     } finally {
       client.release();
     }
+    if (duplicate) return;
 
     const resetUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/reset-password?token=${rawToken}`;
 
     await sendMail({
-      to: email.toLowerCase(),
+      to: normalized,
       subject: 'Reset your Vernal password',
       text: `Click this link to reset your password (expires in 1 hour):
 

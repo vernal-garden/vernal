@@ -23,17 +23,22 @@ function signToken(token: string): string {
   return `${token}.${sig}`;
 }
 
-function verifyToken(signed: string): string | null {
+// `unknown` because cookie-parser can hand back non-strings (e.g. `j:1` → 1).
+function verifyToken(signed: unknown): string | null {
+  if (typeof signed !== 'string') return null;
   const parts = signed.split('.');
   if (parts.length !== 2) return null;
   const [token, sig] = parts;
   const expected = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(token).digest('hex');
+  // timingSafeEqual throws on unequal byte lengths. Comparing string length isn't enough
+  // (multi-byte chars), so only exactly 64 lowercase hex chars can be a valid signature.
+  if (!/^[0-9a-f]{64}$/.test(sig)) return null;
   if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   return token;
 }
 
 // Exported wrapper — lets auth.ts check expired-but-HMAC-valid cookies without a DB lookup
-export function verifySignedToken(signed: string): string | null {
+export function verifySignedToken(signed: unknown): string | null {
   return verifyToken(signed);
 }
 

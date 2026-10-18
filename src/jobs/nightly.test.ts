@@ -700,6 +700,123 @@ describe('purgeExpiredGuests', () => {
   });
 });
 
+describe('purgeExpiredGuests — empty guests and batching', () => {
+  beforeEach(async () => {
+    await resetDb();
+    await pool.query('TRUNCATE email_change_tokens');
+    deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
+  });
+
+  let tokenCounter = 0;
+  async function insertGuest(createdAgo: string, opts: { expired?: boolean; migratedTo?: number } = {}) {
+    tokenCounter += 1;
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO guest_sessions (token, created_at, expires_at, migrated_at, account_id)
+       VALUES ($1, NOW() - $2::interval,
+               CASE WHEN $3::boolean THEN NOW() - INTERVAL '1 hour' ELSE NOW() + INTERVAL '20 days' END,
+               CASE WHEN $4::int IS NULL THEN NULL ELSE NOW() END, $4::int)
+       RETURNING id`,
+      [`empty-guest-${tokenCounter}`, createdAgo, opts.expired ?? false, opts.migratedTo ?? null],
+    );
+    return rows[0].id;
+  }
+
+  async function existingIds(): Promise<string[]> {
+    const { rows } = await pool.query<{ id: string }>('SELECT id FROM guest_sessions');
+    return rows.map((r) => r.id);
+  }
+
+  it('deletes a guest older than 2 days that owns nothing', async () => {
+    const id = await insertGuest('3 days');
+    const { affected } = await purgeExpiredGuests();
+    expect(affected).toBe(1);
+    expect(await existingIds()).not.toContain(id);
+  });
+
+  it('keeps an old guest that has a garden', async () => {
+    const id = await insertGuest('3 days');
+    await pool.query(
+      `INSERT INTO gardens (guest_session_id, name, style, zone) VALUES ($1, 'Kept', 'grid', '7a')`,
+      [id],
+    );
+    await purgeExpiredGuests();
+    expect(await existingIds()).toContain(id);
+  });
+
+  it('keeps an old guest that has a seed', async () => {
+    const id = await insertGuest('3 days');
+    await pool.query(
+      `INSERT INTO seeds (guest_session_id, common_name, origin) VALUES ($1, 'Tomato', 'user_created')`,
+      [id],
+    );
+    await purgeExpiredGuests();
+    expect(await existingIds()).toContain(id);
+  });
+
+  it('keeps an empty guest younger than 2 days', async () => {
+    const id = await insertGuest('1 day');
+    await purgeExpiredGuests();
+    expect(await existingIds()).toContain(id);
+  });
+
+  it('keeps an old session that belongs to an account', async () => {
+    const accountId = await createAccount();
+    const id = await insertGuest('3 days', { migratedTo: accountId });
+    await purgeExpiredGuests();
+    expect(await existingIds()).toContain(id);
+  });
+
+  it('works through more empty guests than one batch', async () => {
+    for (let i = 0; i < 5; i++) await insertGuest('3 days');
+    const { affected } = await purgeExpiredGuests({ batchSize: 2 });
+    expect(affected).toBe(5);
+    expect(await existingIds()).toHaveLength(0);
+  });
+
+  it('works through more expired guests than one batch, even when one is kept', async () => {
+    const BASE = 'https://cdn.example.com';
+    const saved = process.env.R2_PUBLIC_BASE_URL;
+    process.env.R2_PUBLIC_BASE_URL = BASE;
+    try {
+      const ids: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const id = await insertGuest('1 hour', { expired: true });
+        const { rows } = await pool.query<{ id: number }>(
+          `INSERT INTO gardens (guest_session_id, name, style, zone) VALUES ($1, 'G', 'grid', '7a') RETURNING id`,
+          [id],
+        );
+        await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [
+          `${BASE}/garden-thumbnails/${rows[0].id}/x.png`,
+          rows[0].id,
+        ]);
+        ids.push(id);
+      }
+      deleteFromR2Mock.mockRejectedValueOnce(new Error('R2 down'));
+
+      const { affected } = await purgeExpiredGuests({ batchSize: 1 });
+
+      expect(affected).toBe(2);
+      expect(await existingIds()).toHaveLength(1);
+    } finally {
+      if (saved === undefined) delete process.env.R2_PUBLIC_BASE_URL;
+      else process.env.R2_PUBLIC_BASE_URL = saved;
+    }
+  });
+
+  it('drops email-change tokens older than 30 days and keeps newer ones', async () => {
+    const accountId = await createAccount();
+    await pool.query(
+      `INSERT INTO email_change_tokens (account_id, token_hash, new_email, expires_at, created_at, used_at)
+       VALUES ($1, 'old-hash', 'old@example.com', NOW() - INTERVAL '30 days', NOW() - INTERVAL '31 days', NOW()),
+              ($1, 'new-hash', 'new@example.com', NOW() + INTERVAL '1 day', NOW() - INTERVAL '1 day', NULL)`,
+      [accountId],
+    );
+    await purgeExpiredGuests();
+    const { rows } = await pool.query<{ token_hash: string }>('SELECT token_hash FROM email_change_tokens');
+    expect(rows.map((r) => r.token_hash)).toEqual(['new-hash']);
+  });
+});
+
 describe('purgeReadNotifications', () => {
   beforeEach(resetDb);
 

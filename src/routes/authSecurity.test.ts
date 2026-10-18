@@ -5,6 +5,8 @@ import { Pool } from 'pg';
 import app from '../index';
 import * as mailer from '../lib/mailer';
 import { hashToken } from '../lib/tokens';
+import { ipKeyGenerator } from 'express-rate-limit';
+import { consumeResetEmailQuota, clearResetEmailQuota } from '../middleware/rateLimiters';
 
 vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
 const sendMailMock = vi.mocked(mailer.sendMail);
@@ -194,6 +196,11 @@ describe('password reset', () => {
 
     await request(app).post('/api/auth/forgot-password').send({ email });
     const first = await mailTokenTo(email);
+    // Age the first token past the 5-minute duplicate window.
+    await pool.query(
+      `UPDATE password_reset_tokens SET expires_at = NOW() + INTERVAL '50 minutes' WHERE account_id = $1`,
+      [accountId],
+    );
     sendMailMock.mockClear();
     await request(app).post('/api/auth/forgot-password').send({ email });
     const second = await mailTokenTo(email);
@@ -277,6 +284,72 @@ describe('password reset', () => {
   it('rejects non-string token/password with 400', async () => {
     const res = await request(app).post('/api/auth/reset-password').send({ token: ['x'], password: 'NewPassword1!' });
     expect(res.status).toBe(400);
+  });
+
+  it('a repeat request within 5 minutes sends nothing and keeps the token', async () => {
+    const email = nextEmail('reset-dedupe');
+    const accountId = await createUser(email);
+    await request(app).post('/api/auth/forgot-password').send({ email });
+    const first = await mailTokenTo(email);
+
+    const again = await request(app).post('/api/auth/forgot-password').send({ email });
+    expect(again.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(sendMailMock.mock.calls.filter(([o]) => o.to === email)).toHaveLength(1);
+    const { rows } = await pool.query<{ token_hash: string }>(
+      'SELECT token_hash FROM password_reset_tokens WHERE account_id = $1 AND used_at IS NULL',
+      [accountId],
+    );
+    expect(rows.map((r) => r.token_hash)).toEqual([hashToken(first)]);
+  });
+
+  it('does nothing once the per-email daily quota is used, but still returns 200', async () => {
+    const email = nextEmail('reset-quota');
+    await createUser(email);
+    process.env.ENFORCE_RATE_LIMITS = 'true';
+    try {
+      clearResetEmailQuota();
+      for (let i = 0; i < 5; i++) consumeResetEmailQuota(email, ipKeyGenerator('192.0.2.40'));
+      const res = await request(app)
+        .post('/api/auth/forgot-password')
+        .set('X-Forwarded-For', '192.0.2.40')
+        .send({ email });
+      expect(res.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 300));
+      expect(sendMailMock.mock.calls.filter(([o]) => o.to === email)).toHaveLength(0);
+    } finally {
+      delete process.env.ENFORCE_RATE_LIMITS;
+      clearResetEmailQuota();
+    }
+  });
+  it('unknown-email and deduped requests do not spend quota', async () => {
+    const real = nextEmail('reset-nospend');
+    await createUser(real);
+    const ip = '192.0.2.41';
+    process.env.ENFORCE_RATE_LIMITS = 'true';
+    try {
+      clearResetEmailQuota();
+      // 9 requests total from this IP — authLimiter (enforced here) allows 10 per 15 min.
+      for (let i = 0; i < 5; i++) {
+        await request(app).post('/api/auth/forgot-password').set('X-Forwarded-For', ip).send({ email: 'nobody-here@example.com' });
+      }
+      await request(app).post('/api/auth/forgot-password').set('X-Forwarded-For', ip).send({ email: real });
+      await mailTokenTo(real);
+      for (let i = 0; i < 3; i++) {
+        await request(app).post('/api/auth/forgot-password').set('X-Forwarded-For', ip).send({ email: real });
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      expect(sendMailMock.mock.calls.filter(([o]) => o.to === real)).toHaveLength(1);
+      // Only the one real send was recorded: 4 more fit in the pair quota.
+      const key = ipKeyGenerator(ip);
+      for (let i = 0; i < 4; i++) expect(consumeResetEmailQuota(real, key)).toBe(true);
+      expect(consumeResetEmailQuota(real, key)).toBe(false);
+      for (let i = 0; i < 5; i++) expect(consumeResetEmailQuota('nobody-here@example.com', key)).toBe(true);
+    } finally {
+      delete process.env.ENFORCE_RATE_LIMITS;
+      clearResetEmailQuota();
+    }
   });
 });
 

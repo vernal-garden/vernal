@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
@@ -1063,5 +1063,68 @@ describe('DELETE /api/me and cancel-deletion — Stripe renewal', () => {
     resumeRenewalMock.mockClear();
     expect((await agent.post('/api/me/cancel-deletion')).status).toBe(200);
     expect(resumeRenewalMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /api/me/email abuse limits', () => {
+  it('rejects a second request to the same address within 10 minutes', async () => {
+    await createUser('cooldown-a@example.com');
+    const agent = await loginAgent('cooldown-a@example.com');
+    expect((await agent.patch('/api/me/email').send({ newEmail: 'cooldown-target@example.com' })).status).toBe(200);
+    const res = await agent.patch('/api/me/email').send({ newEmail: 'cooldown-target@example.com' });
+    expect(res.status).toBe(429);
+  });
+
+  it('keeps the cooldown across accounts after a cancel', async () => {
+    await createUser('cooldown-b1@example.com');
+    await createUser('cooldown-b2@example.com');
+    const a = await loginAgent('cooldown-b1@example.com');
+    const b = await loginAgent('cooldown-b2@example.com');
+    expect((await a.patch('/api/me/email').send({ newEmail: 'shared-target@example.com' })).status).toBe(200);
+    expect((await a.delete('/api/me/email')).status).toBe(200);
+    expect((await b.patch('/api/me/email').send({ newEmail: 'shared-target@example.com' })).status).toBe(429);
+  });
+
+  it('rejects a 4th request to one address within 24 hours', async () => {
+    const accountId = await createUser('cooldown-c@example.com');
+    await pool.query(
+      `INSERT INTO email_change_tokens (account_id, token_hash, new_email, expires_at, created_at, used_at)
+       SELECT $1, md5(random()::text || g::text), 'busy-target@example.com', NOW(), NOW() - INTERVAL '2 hours', NOW()
+       FROM generate_series(1, 3) g`,
+      [accountId],
+    );
+    const agent = await loginAgent('cooldown-c@example.com');
+    expect((await agent.patch('/api/me/email').send({ newEmail: 'busy-target@example.com' })).status).toBe(429);
+  });
+
+  it('a cancel marks the token used instead of deleting it', async () => {
+    const accountId = await createUser('cooldown-d@example.com');
+    const agent = await loginAgent('cooldown-d@example.com');
+    await agent.patch('/api/me/email').send({ newEmail: 'kept-history@example.com' });
+    await agent.delete('/api/me/email');
+    const { rows } = await pool.query<{ used_at: Date | null }>(
+      'SELECT used_at FROM email_change_tokens WHERE account_id = $1',
+      [accountId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].used_at).not.toBeNull();
+  });
+
+  describe('per-account limiter', () => {
+    beforeEach(() => {
+      process.env.ENFORCE_RATE_LIMITS = 'true';
+    });
+    afterEach(() => {
+      delete process.env.ENFORCE_RATE_LIMITS;
+    });
+
+    it('allows 3 requests per hour, then 429', async () => {
+      await createUser('limit-e@example.com');
+      const agent = await loginAgent('limit-e@example.com');
+      for (let i = 1; i <= 3; i++) {
+        expect((await agent.patch('/api/me/email').send({ newEmail: `limit-e-${i}@example.com` })).status).toBe(200);
+      }
+      expect((await agent.patch('/api/me/email').send({ newEmail: 'limit-e-4@example.com' })).status).toBe(429);
+    });
   });
 });

@@ -45,6 +45,12 @@ const validBody = {
   appVersion: '0.1.0',
 };
 
+async function guestAgent() {
+  const agent = request.agent(app);
+  await agent.post('/api/auth/guest');
+  return agent;
+}
+
 const ORIGINAL_NOTIFY = process.env.FEEDBACK_NOTIFY_EMAIL;
 
 beforeAll(resetDb);
@@ -78,10 +84,9 @@ describe('POST /api/feedback', () => {
     expect(row.status).toBe('new');
   });
 
-  it('accepts a submission with no session cookie at all', async () => {
+  it('rejects a submission with no session cookie with 401', async () => {
     const res = await request(app).post('/api/feedback').send(validBody);
-    expect(res.status).toBe(201);
-    expect((await getRow(res.body.id)).user_id).toBeNull();
+    expect(res.status).toBe(401);
   });
 
   it('records user_id for a signed-in submission', async () => {
@@ -99,13 +104,13 @@ describe('POST /api/feedback', () => {
   });
 
   it.each(['idea', 'data_quality', undefined])('rejects category %s with 400', async (category) => {
-    const res = await request(app).post('/api/feedback').send({ ...validBody, category });
+    const res = await (await guestAgent()).post('/api/feedback').send({ ...validBody, category });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Invalid category.');
   });
 
   it('rejects a message under 10 characters after trimming', async () => {
-    const res = await request(app)
+    const res = await (await guestAgent())
       .post('/api/feedback')
       .send({ ...validBody, message: '   short    ' });
     expect(res.status).toBe(400);
@@ -113,7 +118,7 @@ describe('POST /api/feedback', () => {
   });
 
   it('rejects a message over 5000 characters', async () => {
-    const res = await request(app)
+    const res = await (await guestAgent())
       .post('/api/feedback')
       .send({ ...validBody, message: 'x'.repeat(5001) });
     expect(res.status).toBe(400);
@@ -121,7 +126,7 @@ describe('POST /api/feedback', () => {
   });
 
   it('truncates sourceSurface and appVersion to 64 characters', async () => {
-    const res = await request(app)
+    const res = await (await guestAgent())
       .post('/api/feedback')
       .send({ ...validBody, sourceSurface: 's'.repeat(100), appVersion: 'v'.repeat(100) });
     expect(res.status).toBe(201);
@@ -133,7 +138,7 @@ describe('POST /api/feedback', () => {
   it('emails FEEDBACK_NOTIFY_EMAIL once with an escaped HTML body', async () => {
     process.env.FEEDBACK_NOTIFY_EMAIL = 'owner@example.test';
 
-    const res = await request(app)
+    const res = await (await guestAgent())
       .post('/api/feedback')
       .send({ ...validBody, message: '<script>alert(1)</script> broke' });
 
@@ -152,7 +157,7 @@ describe('POST /api/feedback', () => {
     process.env.FEEDBACK_NOTIFY_EMAIL = 'owner@example.test';
     sendMailMock.mockRejectedValue(new Error('SMTP down'));
 
-    const res = await request(app).post('/api/feedback').send(validBody);
+    const res = await (await guestAgent()).post('/api/feedback').send(validBody);
 
     expect(res.status).toBe(201);
     await vi.waitFor(() => expect(sendMailMock).toHaveBeenCalledTimes(1));
@@ -160,10 +165,77 @@ describe('POST /api/feedback', () => {
   });
 
   it('does not send email when FEEDBACK_NOTIFY_EMAIL is unset', async () => {
-    const res = await request(app).post('/api/feedback').send(validBody);
+    const res = await (await guestAgent()).post('/api/feedback').send(validBody);
 
     expect(res.status).toBe(201);
     await new Promise((r) => setTimeout(r, 50));
+    expect(sendMailMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('feedback rate limits', () => {
+  beforeEach(() => {
+    process.env.ENFORCE_RATE_LIMITS = 'true';
+  });
+  afterEach(() => {
+    delete process.env.ENFORCE_RATE_LIMITS;
+  });
+
+  it('allows 5 submissions per session per hour, then 429', async () => {
+    // A different IP per request, so only the per-session limiter can produce the 429.
+    const agent = request.agent(app);
+    await agent.post('/api/auth/guest').set('X-Forwarded-For', '192.0.2.30');
+    for (let i = 0; i < 5; i++) {
+      const res = await agent.post('/api/feedback').set('X-Forwarded-For', `192.0.2.${50 + i}`).send(validBody);
+      expect(res.status).toBe(201);
+    }
+    const blocked = await agent.post('/api/feedback').set('X-Forwarded-For', '192.0.2.55').send(validBody);
+    expect(blocked.status).toBe(429);
+  });
+
+  it('caps one IP at 5 per hour across sessions', async () => {
+    const ip = '192.0.2.31';
+    const first = request.agent(app);
+    await first.post('/api/auth/guest').set('X-Forwarded-For', ip);
+    for (let i = 0; i < 5; i++) {
+      expect((await first.post('/api/feedback').set('X-Forwarded-For', ip).send(validBody)).status).toBe(201);
+    }
+    const second = request.agent(app);
+    await second.post('/api/auth/guest').set('X-Forwarded-For', ip);
+    expect((await second.post('/api/feedback').set('X-Forwarded-For', ip).send(validBody)).status).toBe(429);
+  });
+});
+
+describe('feedback email budget', () => {
+  beforeEach(async () => {
+    await pool.query('TRUNCATE feedback_submissions RESTART IDENTITY');
+    process.env.FEEDBACK_NOTIFY_EMAIL = 'owner@example.test';
+  });
+
+  async function seedRecent(count: number) {
+    await pool.query(
+      `INSERT INTO feedback_submissions (category, message)
+       SELECT 'general', 'Seeded feedback message' FROM generate_series(1, $1)`,
+      [count],
+    );
+  }
+
+  it('still emails when under the hourly budget', async () => {
+    await seedRecent(19);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/guest');
+    const res = await agent.post('/api/feedback').send(validBody);
+    expect(res.status).toBe(201);
+    expect(sendMailMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves the submission but skips the email once the budget is used up', async () => {
+    await seedRecent(20);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/guest');
+    const res = await agent.post('/api/feedback').send(validBody);
+    expect(res.status).toBe(201);
+    expect(await getRow(res.body.id)).toBeDefined();
     expect(sendMailMock).not.toHaveBeenCalled();
   });
 });

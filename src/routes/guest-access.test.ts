@@ -445,3 +445,16 @@ describe('Test 14: Authenticated gardens behavior unchanged', () => {
     expect((await request(app).get('/api/gardens')).status).toBe(401);
   });
 });
+
+describe('Guest garden limit under concurrency', () => {
+  it('two parallel creates produce exactly one garden', async () => {
+    const agent = await createGuestAgent();
+    const results = await Promise.all([
+      agent.post('/api/gardens').send({ ...BASE_GARDEN, name: 'Race A' }),
+      agent.post('/api/gardens').send({ ...BASE_GARDEN, name: 'Race B' }),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual([201, 403]);
+    const list = await agent.get('/api/gardens');
+    expect(list.body.data).toHaveLength(1);
+  });
+});

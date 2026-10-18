@@ -229,35 +229,58 @@ router.post('/', writeLimiter, async (req, res) => {
   }
 
   try {
+    const insertSql = `INSERT INTO gardens (owner_id, guest_session_id, name, style, growing_method, zone, description, zone_location_label)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING ${GARDEN_SELECT}`;
+    const insertValues = [
+      accountId,
+      accountId === null ? sessionId : null,
+      name.trim(),
+      style,
+      growingMethod,
+      zone.trim(),
+      typeof description === 'string' ? description.trim() || null : null,
+      typeof zoneLocationLabel === 'string' ? zoneLocationLabel.trim() || null : null,
+    ];
+
     if (accountId === null) {
-      // Enforce single-garden limit for guests
-      const { rows: limitRows } = await db.query<{ count: string }>(
-        'SELECT COUNT(*)::text AS count FROM gardens WHERE guest_session_id = $1',
-        [sessionId],
-      );
-      if (parseInt(limitRows[0].count, 10) >= 1) {
-        return res.status(403).json({
-          error: 'Guest sessions can have one garden — create a free account for more',
-          guest_limit: true,
-        });
+      // Guests get one garden. Lock the session row so two parallel creates
+      // can't both pass the count check before either inserts.
+      const client = await db.connect();
+      try {
+        await client.query('BEGIN');
+        const locked = await client.query('SELECT 1 FROM guest_sessions WHERE id = $1 FOR UPDATE', [
+          sessionId,
+        ]);
+        if (locked.rowCount === 0) {
+          // Purged between the session lookup and now (nightly cleanup).
+          await client.query('ROLLBACK');
+          return res.status(401).json({ error: 'Session expired' });
+        }
+        const { rows: limitRows } = await client.query<{ count: string }>(
+          'SELECT COUNT(*)::text AS count FROM gardens WHERE guest_session_id = $1',
+          [sessionId],
+        );
+        if (parseInt(limitRows[0].count, 10) >= 1) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({
+            error: 'Guest sessions can have one garden — create a free account for more',
+            guest_limit: true,
+          });
+        }
+        const result = await client.query<GardenRow>(insertSql, insertValues);
+        await client.query('COMMIT');
+        return res.status(201).json(formatGarden(result.rows[0]));
+      } catch (txErr) {
+        // Don't let a failed ROLLBACK (e.g. dropped connection) mask the real error.
+        await client.query('ROLLBACK').catch(() => {});
+        throw txErr;
+      } finally {
+        client.release();
       }
     }
 
-    const result = await db.query<GardenRow>(
-      `INSERT INTO gardens (owner_id, guest_session_id, name, style, growing_method, zone, description, zone_location_label)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING ${GARDEN_SELECT}`,
-      [
-        accountId,
-        accountId === null ? sessionId : null,
-        name.trim(),
-        style,
-        growingMethod,
-        zone.trim(),
-        typeof description === 'string' ? description.trim() || null : null,
-        typeof zoneLocationLabel === 'string' ? zoneLocationLabel.trim() || null : null,
-      ],
-    );
+    const result = await db.query<GardenRow>(insertSql, insertValues);
     res.status(201).json(formatGarden(result.rows[0]));
   } catch (err) {
     console.error('POST /gardens error:', err);

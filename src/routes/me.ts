@@ -6,8 +6,9 @@ import { clearSessionCookie, revokeAccountSessions } from '../lib/sessions';
 import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
 import { sendVerificationEmail } from '../lib/emailVerification';
-import { verificationResendLimiter } from '../middleware/rateLimiters';
+import { verificationResendLimiter, emailChangeLimiter } from '../middleware/rateLimiters';
 import { logger } from '../lib/logger';
+import { isValidEmail } from '../lib/validation';
 import { stopRenewal, resumeRenewal } from '../lib/billing';
 import { processExportJob } from '../lib/exportWorker';
 import { invalidateMetrics } from '../lib/metricsCache';
@@ -16,7 +17,6 @@ const router = Router();
 router.use(requireAuth);
 
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS ?? '12', 10);
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Fields that may never be updated via PATCH /api/me
 const REJECTED_PATCH_FIELDS = new Set(['onboardingCompletedAt', 'email', 'role', 'subscriptionTier']);
@@ -298,11 +298,11 @@ router.patch('/password', async (req, res) => {
 // Starts an email change: stores a hashed confirmation token and emails the
 // raw token to the new address. The account's email column is untouched
 // until GET /email/confirm succeeds.
-router.patch('/email', async (req, res) => {
+router.patch('/email', emailChangeLimiter, async (req, res) => {
   const { newEmail } = req.body as { newEmail?: unknown };
   const accountId = req.session!.account!.id;
 
-  if (typeof newEmail !== 'string' || !EMAIL_RE.test(newEmail)) {
+  if (!isValidEmail(newEmail)) {
     return res.status(400).json({ error: 'Invalid email address.' });
   }
   const normalizedEmail = newEmail.toLowerCase();
@@ -335,14 +335,30 @@ router.patch('/email', async (req, res) => {
       return res.status(409).json({ error: 'That email address is already in use.' });
     }
 
+    // Per-recipient cooldown across all accounts, so many accounts can't be
+    // used to flood one inbox. Tokens are never deleted here (only marked
+    // used), so created_at keeps the full history.
+    const { rows: recent } = await db.query<{ last10m: number; last24h: number }>(
+      `SELECT COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '10 minutes')::int AS last10m,
+              COUNT(*)::int AS last24h
+         FROM email_change_tokens
+        WHERE new_email = $1 AND created_at > NOW() - INTERVAL '24 hours'`,
+      [normalizedEmail],
+    );
+    if (recent[0].last10m > 0 || recent[0].last24h >= 3) {
+      return res.status(429).json({ error: 'Too many requests for that address — please try again later' });
+    }
+
     const rawToken = generateRawToken();
     const tokenHash = hashToken(rawToken);
 
     const client = await db.connect();
     try {
       await client.query('BEGIN');
+      // Invalidate earlier links by marking them used; keeping the rows
+      // preserves the history the cooldown above counts.
       await client.query(
-        'DELETE FROM email_change_tokens WHERE account_id = $1 AND used_at IS NULL',
+        'UPDATE email_change_tokens SET used_at = NOW() WHERE account_id = $1 AND used_at IS NULL',
         [accountId],
       );
       await client.query(
@@ -388,7 +404,7 @@ router.delete('/email', async (req, res) => {
       [accountId],
     );
     await db.query(
-      'DELETE FROM email_change_tokens WHERE account_id = $1 AND used_at IS NULL',
+      'UPDATE email_change_tokens SET used_at = NOW() WHERE account_id = $1 AND used_at IS NULL',
       [accountId],
     );
     res.json({ data: { pendingEmail: null } });

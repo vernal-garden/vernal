@@ -23,7 +23,11 @@ export type SessionState =
   | { kind: 'guest'; expiresAt: string; daysRemaining: number; gardenCount: number }
   | { kind: 'account'; account: SessionAccount; pendingGuestData: PendingGuestData | null; gardenCount: number }
   | { kind: 'expired'; recoverable: boolean }
-  | { kind: 'unreachable' };
+  | { kind: 'unreachable'; reason: UnreachableReason };
+
+// network: the request never reached the server. server: it answered 5xx.
+// busy: it answered 429 (rate limited — e.g. many new visitors on one network).
+export type UnreachableReason = 'network' | 'server' | 'busy';
 
 export interface AuthContextValue {
   state: SessionState;
@@ -42,6 +46,17 @@ export interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 // ── Provider ──────────────────────────────────────────────────────────────────
+
+// Maps a failed session resolve to the state the user should see. Only a 4xx
+// other than 429 means the session itself is bad.
+function failureState(err: unknown): SessionState {
+  if (err instanceof api.ApiError) {
+    if (err.status === 429) return { kind: 'unreachable', reason: 'busy' };
+    if (err.status >= 500) return { kind: 'unreachable', reason: 'server' };
+    return { kind: 'expired', recoverable: false };
+  }
+  return { kind: 'unreachable', reason: 'network' };
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<SessionState>({ kind: 'loading' });
@@ -121,14 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     resolveSession().catch((err: unknown) => {
-      // fetch() rejects with a non-ApiError (e.g. TypeError) when the request
-      // never reached the server at all — that's a connectivity problem, not
-      // an actual expired/invalid session.
-      if (err instanceof api.ApiError) {
-        setState({ kind: 'expired', recoverable: false });
-      } else {
-        setState({ kind: 'unreachable' });
-      }
+      setState(failureState(err));
     });
   }, [resolveSession]);
 
