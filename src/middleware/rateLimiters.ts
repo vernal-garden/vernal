@@ -1,5 +1,6 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import type { Request } from 'express';
+import type { Request, RequestHandler } from 'express';
+import { verifySignedToken, COOKIE_NAME } from '../lib/sessions';
 
 // Explicit key generator — express-rate-limit falls back to req.ip on its own,
 // but with trust proxy set we want that dependency spelled out rather than implicit.
@@ -7,14 +8,14 @@ import type { Request } from 'express';
 // Routed through express-rate-limit's own ipKeyGenerator so IPv6 addresses are
 // normalized to a /64 subnet instead of keying per-address (else a single IPv6
 // client can rotate through its assigned block to dodge the limit entirely).
-const byIp = (req: Request) => ipKeyGenerator(req.ip ?? 'unknown');
+export const byIp = (req: Request) => ipKeyGenerator(req.ip ?? 'unknown');
 
 // Every request in the test suite originates from the same loopback IP, so a
-// per-IP login/reset cap that's meaningful against a real attacker (10 per 15
-// min) is exhausted almost immediately by unrelated test files that legitimately
-// log in many times. Skip these two limiters under test — production behavior
-// (the actual max/window below) is unchanged; only counting is bypassed.
-const skipInTest = () => process.env.NODE_ENV === 'test';
+// per-IP cap that's meaningful against a real attacker is exhausted almost
+// immediately by unrelated test files. Limiters that use this skip under test;
+// a test that exercises a limiter sets ENFORCE_RATE_LIMITS=true for its duration.
+// Production behavior (the actual max/window) is unchanged.
+const skipInTest = () => process.env.NODE_ENV === 'test' && process.env.ENFORCE_RATE_LIMITS !== 'true';
 
 // /api/auth/login, /api/auth/register, /api/auth/forgot-password
 export const authLimiter = rateLimit({
@@ -59,3 +60,152 @@ export const verificationResendLimiter = rateLimit({
   keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
   message: { error: 'Too many verification emails — please try again later' },
 });
+
+// The raw session token when the cookie's HMAC verifies — no DB lookup, so this
+// is safe to run before the session middleware.
+function signedSessionToken(req: Request): string | null {
+  return verifySignedToken(req.cookies?.[COOKIE_NAME]);
+}
+
+interface ApiLimiterOptions {
+  sessionMax: number;
+  ipMax: number;
+  ceilingMax: number;
+  windowMs: number;
+  skip?: () => boolean;
+}
+
+// Global /api limiters. A request with a validly signed cookie is counted per
+// session (higher limit); anything else per IP. A separate per-IP ceiling stops
+// one IP from rotating through many sessions.
+export function makeApiLimiters(opts: ApiLimiterOptions): RequestHandler[] {
+  const skip = opts.skip ?? (() => false);
+  const ceiling = rateLimit({
+    windowMs: opts.windowMs,
+    max: opts.ceilingMax,
+    standardHeaders: false,
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => `ip:${byIp(req)}`,
+    skip,
+    message: { error: 'Too many requests — please try again later' },
+  });
+  const main = rateLimit({
+    windowMs: opts.windowMs,
+    max: (req: Request) => (signedSessionToken(req) ? opts.sessionMax : opts.ipMax),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => {
+      const token = signedSessionToken(req);
+      return token ? `sid:${token}` : `ip:${byIp(req)}`;
+    },
+    skip,
+    message: { error: 'Too many requests — please try again later' },
+  });
+  return [ceiling, main];
+}
+
+export const apiLimiters = makeApiLimiters({
+  sessionMax: 600,
+  ipMax: 300,
+  ceilingMax: 1500,
+  windowMs: 60 * 1000,
+  skip: skipInTest,
+});
+
+// POST /api/auth/guest — new guest sessions per IP. A request that already has
+// a session gets its existing session back and is not counted.
+export const guestCreateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: byIp,
+  skip: (req: Request) => skipInTest() || req.session != null,
+  // A failed create (e.g. DB outage → 500) shouldn't burn a shared network's allowance.
+  skipFailedRequests: true,
+  message: { error: 'Too many new visitors from your network — please try again in a few minutes' },
+});
+
+// POST /api/feedback — each submission emails the owner, so cap it per session
+// and, separately, per IP (a script can mint many guest sessions).
+export const feedbackSessionLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => `session:${req.session?.id ?? 'none'}`,
+  skip: skipInTest,
+  message: { error: 'Thanks — you’ve sent a lot of feedback recently. Please try again later.' },
+});
+
+export const feedbackIpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: byIp,
+  skip: skipInTest,
+  message: { error: 'Thanks — you’ve sent a lot of feedback recently. Please try again later.' },
+});
+
+// PATCH /api/me/email — each request emails an arbitrary address.
+export const emailChangeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
+  skip: skipInTest,
+  message: { error: 'Too many email change requests — please try again later' },
+});
+
+// POST /api/auth/forgot-password — send quotas, spent only when a reset email
+// is actually about to go out (never for unknown addresses or deduped
+// repeats). Two tiers: a strict cap per requester (email + IP pair) and a
+// looser per-address backstop against mail-bombing from many IPs. Because the
+// strict cap is per pair, one attacker IP cannot lock a victim out of resets.
+// In-memory (single pm2 process).
+const RESET_PER_EMAIL_IP_PER_DAY = 5;
+const RESET_PER_EMAIL_PER_DAY = 20;
+const RESET_WINDOW_MS = 24 * 60 * 60 * 1000;
+const RESET_MAX_KEYS = 50_000;
+const resetHits = new Map<string, number[]>();
+
+function recentHits(key: string, now: number): number[] {
+  return (resetHits.get(key) ?? []).filter((t) => now - t < RESET_WINDOW_MS);
+}
+
+// Re-insert so Map order tracks recency; evict the stalest keys past the cap.
+function storeHits(key: string, hits: number[]): void {
+  resetHits.delete(key);
+  resetHits.set(key, hits);
+  while (resetHits.size > RESET_MAX_KEYS) {
+    const oldest = resetHits.keys().next().value;
+    if (oldest === undefined) break;
+    resetHits.delete(oldest);
+  }
+}
+
+export function consumeResetEmailQuota(email: string, ip: string, now = Date.now()): boolean {
+  if (skipInTest()) return true;
+  const normalized = email.trim().toLowerCase();
+  const pairKey = `pair:${normalized}|${ip}`;
+  const emailKey = `email:${normalized}`;
+  const pair = recentHits(pairKey, now);
+  const all = recentHits(emailKey, now);
+  if (pair.length >= RESET_PER_EMAIL_IP_PER_DAY || all.length >= RESET_PER_EMAIL_PER_DAY) {
+    storeHits(pairKey, pair);
+    storeHits(emailKey, all);
+    return false;
+  }
+  pair.push(now);
+  all.push(now);
+  storeHits(pairKey, pair);
+  storeHits(emailKey, all);
+  return true;
+}
+
+// Test helper — empties the quota map.
+export function clearResetEmailQuota(): void {
+  resetHits.clear();
+}

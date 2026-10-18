@@ -37,7 +37,7 @@ export default function SessionExpiredPage() {
   const { state, refetch } = useAuth();
   const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
-  const [startFailed, setStartFailed] = useState(false);
+  const [startProblem, setStartProblem] = useState<null | 'busy' | 'failed'>(null);
 
   // While a new guest session is being minted the state flips away from
   // 'expired'; `starting` keeps the redirect below from racing our navigate.
@@ -48,15 +48,15 @@ export default function SessionExpiredPage() {
 
   async function startNewGarden() {
     setStarting(true);
-    setStartFailed(false);
+    setStartProblem(null);
     try {
       // Same bootstrap as AuthContext: mint a guest session, then re-resolve.
       // The server replaces the stale cookie because it no longer resolves to a session.
       await api.post('/api/auth/guest');
       await refetch();
       navigate('/onboarding', { replace: true });
-    } catch {
-      setStartFailed(true);
+    } catch (err) {
+      setStartProblem(err instanceof api.ApiError && err.status === 429 ? 'busy' : 'failed');
       setStarting(false);
     }
   }
@@ -102,12 +102,12 @@ export default function SessionExpiredPage() {
       >
         {recoverable
           ? 'Your session expired. Your data may still be recoverable — log in to restore it.'
-          : 'Your garden has been deleted.'}
+          : 'Your guest session has ended.'}
       </h1>
 
       {!recoverable && (
         <p style={{ margin: 0, maxWidth: 420, fontSize: 16, lineHeight: 1.5, color: 'var(--c-text-2)' }}>
-          Guest gardens are kept for 30 days. Create a free account to save your gardens in future.
+          Guest sessions don't last forever. Start a new garden, or create a free account to keep your gardens.
         </p>
       )}
 
@@ -151,13 +151,15 @@ export default function SessionExpiredPage() {
         )}
       </div>
 
-      {startFailed && (
+      {startProblem && (
         <p
           role="status"
           data-testid="session-expired-start-problem"
           style={{ margin: 0, fontSize: 14, color: 'var(--c-text-2)' }}
         >
-          We couldn't start a new garden just now. Please try again.
+          {startProblem === 'busy'
+            ? 'Lots of new visitors from your network right now. Please try again in a few minutes.'
+            : "We couldn't start a new garden just now. Please try again."}
         </p>
       )}
     </main>

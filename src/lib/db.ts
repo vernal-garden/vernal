@@ -25,12 +25,40 @@ const config: PoolConfig = {
     process.env.NODE_ENV === 'test' || process.env.DATABASE_SSL === 'false'
       ? false
       : { rejectUnauthorized: false },
-  max: 10,
+  max: 20,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
+  // Server-side cap on any one statement (sent as a startup parameter; Neon's
+  // pooled endpoint accepts it).
+  statement_timeout: 10_000,
+  // Client-side cap: rejects the query promise if the server hasn't answered.
+  query_timeout: 15_000,
 };
 
 export const db = new Pool(config);
+
+// An idle client can error (e.g. the server drops the connection). With no
+// listener, pg re-emits it as an uncaught exception and the process dies.
+db.on('error', (err) => {
+  console.error('[db] Idle client error:', err.message);
+});
+
+// Background work (nightly job, data exports) gets its own small pool with a
+// much longer statement cap, so the 10s web limit can't cancel a legitimately
+// long purge — scheduled account deletions must actually finish. No
+// query_timeout here for the same reason.
+export const jobDb = new Pool({
+  ...config,
+  max: 3,
+  // Exports and the nightly job can overlap on 3 connections; wait for one.
+  connectionTimeoutMillis: 30_000,
+  statement_timeout: 5 * 60_000,
+  query_timeout: undefined,
+});
+
+jobDb.on('error', (err) => {
+  console.error('[db] Idle job client error:', err.message);
+});
 
 // Verify connection at startup — fail fast rather than surface confusing errors later.
 // Retries with a short delay: Neon's serverless compute auto-suspends when idle and
