@@ -17,6 +17,26 @@ if (!connectionString) {
   );
 }
 
+// Neon silently drops pg's `statement_timeout` startup setting, and its pooled
+// endpoint rejects it in `options` ("unsupported startup parameter"), so the
+// cap only works through `options` on a direct (non -pooler) host.
+export function statementTimeoutOptions(connectionString: string, ms: number): string | undefined {
+  let host = '';
+  try {
+    host = new URL(connectionString).hostname;
+  } catch {
+    // Leave a malformed string for pg to report.
+  }
+  return host.includes('-pooler') ? undefined : `-c statement_timeout=${ms}`;
+}
+
+const webTimeoutOptions = statementTimeoutOptions(connectionString, 10_000);
+if (webTimeoutOptions === undefined) {
+  console.warn(
+    "[db] DATABASE_URL uses Neon's pooled endpoint; statement_timeout is not applied. Use the direct (non -pooler) host.",
+  );
+}
+
 const config: PoolConfig = {
   connectionString,
   // SSL is required for Neon; test mode targets a local/throwaway Postgres
@@ -28,9 +48,8 @@ const config: PoolConfig = {
   max: 20,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
-  // Server-side cap on any one statement (sent as a startup parameter; Neon's
-  // pooled endpoint accepts it).
-  statement_timeout: 10_000,
+  // Server-side cap on any one statement (see statementTimeoutOptions).
+  options: webTimeoutOptions,
   // Client-side cap: rejects the query promise if the server hasn't answered.
   query_timeout: 15_000,
 };
@@ -52,13 +71,29 @@ export const jobDb = new Pool({
   max: 3,
   // Exports and the nightly job can overlap on 3 connections; wait for one.
   connectionTimeoutMillis: 30_000,
-  statement_timeout: 5 * 60_000,
+  options: statementTimeoutOptions(connectionString, 5 * 60_000),
   query_timeout: undefined,
 });
 
 jobDb.on('error', (err) => {
   console.error('[db] Idle job client error:', err.message);
 });
+
+// Logs the cap each pool actually got, so a host or provider change that
+// silently drops it shows up in the pm2 log.
+async function reportStatementTimeouts(): Promise<void> {
+  try {
+    const [web, jobs] = await Promise.all([
+      db.query('SHOW statement_timeout'),
+      jobDb.query('SHOW statement_timeout'),
+    ]);
+    console.info(
+      `[db] statement_timeout: web=${web.rows[0].statement_timeout} jobs=${jobs.rows[0].statement_timeout}`,
+    );
+  } catch (err) {
+    console.warn('[db] Could not read statement_timeout:', err instanceof Error ? err.message : String(err));
+  }
+}
 
 // Verify connection at startup — fail fast rather than surface confusing errors later.
 // Retries with a short delay: Neon's serverless compute auto-suspends when idle and
@@ -67,6 +102,7 @@ async function verifyConnection(attempts = 3, delayMs = 2_000): Promise<void> {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       await db.query('SELECT 1');
+      if (process.env.NODE_ENV !== 'test') await reportStatementTimeouts();
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
