@@ -177,8 +177,8 @@ async function purgeExpiredGuestBatch(sessionIds: string[]): Promise<number> {
 // guest sessions over 2 days old that never created anything — those are
 // mostly bots and bounced visitors, and own nothing in R2. Both passes work in
 // batches so a flood of junk rows can't exhaust memory. Also deletes expired
-// password reset and email verification tokens, and email-change tokens over
-// 30 days old.
+// password reset and email verification tokens, and email-change and
+// email-revert tokens over 30 days old.
 export async function purgeExpiredGuests(
   { batchSize = GUEST_PURGE_BATCH }: { batchSize?: number } = {},
 ): Promise<{ affected: number }> {
@@ -255,12 +255,18 @@ export async function purgeExpiredGuests(
   const emailChangeResult = await db.query(
     `DELETE FROM email_change_tokens WHERE created_at < NOW() - INTERVAL '30 days'`,
   );
+  // Revert links work for 7 days, but the rows hold both addresses, so drop
+  // them on the same 30-day schedule as email-change tokens.
+  const emailRevertResult = await db.query(
+    `DELETE FROM email_revert_tokens WHERE created_at < NOW() - INTERVAL '30 days'`,
+  );
   return {
     affected:
       guestsAffected +
       (tokensResult.rowCount ?? 0) +
       (verificationResult.rowCount ?? 0) +
-      (emailChangeResult.rowCount ?? 0),
+      (emailChangeResult.rowCount ?? 0) +
+      (emailRevertResult.rowCount ?? 0),
   };
 }
 
@@ -268,6 +274,15 @@ export async function purgeExpiredGuests(
 export async function purgeReadNotifications(): Promise<{ affected: number }> {
   const result = await db.query(
     `DELETE FROM notifications WHERE read_at IS NOT NULL AND read_at < NOW() - INTERVAL '90 days'`,
+  );
+  return { affected: result.rowCount ?? 0 };
+}
+
+// The webhook's exactly-once check only needs recent ids: Stripe stops
+// retrying an event after 3 days.
+export async function purgeStripeEvents(): Promise<{ affected: number }> {
+  const result = await db.query(
+    `DELETE FROM stripe_events WHERE processed_at < NOW() - INTERVAL '90 days'`,
   );
   return { affected: result.rowCount ?? 0 };
 }
@@ -415,6 +430,7 @@ export async function runNightlyJob(): Promise<void> {
     ['refreshGardenBadges', refreshGardenBadges],
     ['purgeExpiredGuests', purgeExpiredGuests],
     ['purgeReadNotifications', purgeReadNotifications],
+    ['purgeStripeEvents', purgeStripeEvents],
     ['purgeScheduledAccounts', purgeScheduledAccounts],
     ['checkSubscriptionDowngrades', checkSubscriptionDowngrades],
     ['purgeExpiredExports', purgeExpiredExports],

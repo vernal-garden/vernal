@@ -252,6 +252,20 @@ describe('password reset', () => {
     expect(reuse.status).toBe(400);
   });
 
+  it('emails a password-changed notice after a successful reset', async () => {
+    const email = nextEmail('reset-notice');
+    await createUser(email);
+    await request(app).post('/api/auth/forgot-password').send({ email });
+    const token = await mailTokenTo(email);
+
+    sendMailMock.mockClear();
+    const res = await request(app).post('/api/auth/reset-password').send({ token, password: 'Another123!' });
+    expect(res.status).toBe(200);
+    expect(
+      sendMailMock.mock.calls.some(([o]) => o.to === email && /password was changed/i.test(o.subject)),
+    ).toBe(true);
+  });
+
   it('old cookie after reset is plain unauthenticated, not guestExpired', async () => {
     const email = nextEmail('reset-cold');
     await createUser(email);

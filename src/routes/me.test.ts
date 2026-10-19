@@ -363,6 +363,31 @@ describe('PATCH /api/me/password', () => {
   });
 });
 
+describe('PATCH /api/me/password — notice', () => {
+  it('emails the account after a change', async () => {
+    await createUser('pw-notice@example.com');
+    const a = await loginAgent('pw-notice@example.com');
+    sendMailMock.mockClear();
+    const res = await a
+      .patch('/api/me/password')
+      .send({ currentPassword: 'Password123!', newPassword: 'Changed123!' });
+    expect(res.status).toBe(200);
+    expect(sendMailMock).toHaveBeenCalledTimes(1);
+    const mail = sendMailMock.mock.calls[0][0];
+    expect(mail.to).toBe('pw-notice@example.com');
+    expect(mail.subject).toMatch(/password was changed/i);
+    expect(mail.text).toContain('/login');
+  });
+
+  it('sends nothing when the current password is wrong', async () => {
+    await createUser('pw-notice-wrong@example.com');
+    const a = await loginAgent('pw-notice-wrong@example.com');
+    sendMailMock.mockClear();
+    await a.patch('/api/me/password').send({ currentPassword: 'WrongPass!', newPassword: 'Changed123!' });
+    expect(sendMailMock).not.toHaveBeenCalled();
+  });
+});
+
 // ── Tests 10-11: DELETE / ─────────────────────────────────────────────────────
 
 describe('DELETE /api/me', () => {
@@ -531,7 +556,7 @@ describe('PATCH /api/me/email', () => {
     sendMailMock.mockClear();
     const res = await agent
       .patch('/api/me/email')
-      .send({ newEmail: 'new-address@example.com' });
+      .send({ newEmail: 'new-address@example.com', currentPassword: 'Password123!' });
 
     expect(res.status).toBe(200);
     expect(res.body.data.pendingEmail).toBe('new-address@example.com');
@@ -549,13 +574,13 @@ describe('PATCH /api/me/email', () => {
   it('rejects the same email as the current one with 400 (test 15)', async () => {
     const res = await agent
       .patch('/api/me/email')
-      .send({ newEmail: 'me-email-change@example.com' });
+      .send({ newEmail: 'me-email-change@example.com', currentPassword: 'Password123!' });
     expect(res.status).toBe(400);
   });
 
   it('rejects an email already in use with 409 (test 16)', async () => {
     await createUser('me-email-taken@example.com');
-    const res = await agent.patch('/api/me/email').send({ newEmail: 'me-email-taken@example.com' });
+    const res = await agent.patch('/api/me/email').send({ newEmail: 'me-email-taken@example.com', currentPassword: 'Password123!' });
     expect(res.status).toBe(409);
   });
 
@@ -574,7 +599,7 @@ describe('PATCH /api/me/email', () => {
     const res = await request(app)
       .patch('/api/me/email')
       .set('Cookie', `_vernal_sid=${encodeURIComponent(signedToken)}`)
-      .send({ newEmail: 'wont-work@example.com' });
+      .send({ newEmail: 'wont-work@example.com', currentPassword: 'Password123!' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/oauth/i);
   });
@@ -588,7 +613,7 @@ describe('PATCH /api/me/email', () => {
 
     const res = await agent
       .patch('/api/me/email')
-      .send({ newEmail: 'second-address@example.com' });
+      .send({ newEmail: 'second-address@example.com', currentPassword: 'Password123!' });
     expect(res.status).toBe(200);
 
     const second = await pool.query<{ id: number; token_hash: string }>(
@@ -599,6 +624,38 @@ describe('PATCH /api/me/email', () => {
     expect(second.rows[0].id).not.toBe(first.rows[0].id);
     expect(second.rows[0].token_hash).not.toBe(first.rows[0].token_hash);
   });
+
+  it('rejects a missing currentPassword with 400 and issues no token', async () => {
+    const id = await createUser('reauth-missing@example.com');
+    const a = await loginAgent('reauth-missing@example.com');
+    const res = await a.patch('/api/me/email').send({ newEmail: 'reauth-missing-new@example.com' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('currentPassword is required');
+    const { rowCount } = await pool.query('SELECT 1 FROM email_change_tokens WHERE account_id = $1', [id]);
+    expect(rowCount).toBe(0);
+  });
+
+  it('rejects a wrong currentPassword with 400 and issues no token', async () => {
+    const id = await createUser('reauth-wrong@example.com');
+    const a = await loginAgent('reauth-wrong@example.com');
+    const res = await a
+      .patch('/api/me/email')
+      .send({ newEmail: 'reauth-wrong-new@example.com', currentPassword: 'WrongPass!' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/incorrect/i);
+    const { rowCount } = await pool.query('SELECT 1 FROM email_change_tokens WHERE account_id = $1', [id]);
+    expect(rowCount).toBe(0);
+  });
+
+  it('checks the password before revealing that an address is in use', async () => {
+    await createUser('reauth-probe@example.com');
+    await createUser('reauth-probe-taken@example.com');
+    const a = await loginAgent('reauth-probe@example.com');
+    const res = await a
+      .patch('/api/me/email')
+      .send({ newEmail: 'reauth-probe-taken@example.com', currentPassword: 'WrongPass!' });
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('DELETE /api/me/email', () => {
@@ -608,7 +665,7 @@ describe('DELETE /api/me/email', () => {
   beforeAll(async () => {
     accountId = await createUser('me-email-cancel@example.com');
     agent = await loginAgent('me-email-cancel@example.com');
-    await agent.patch('/api/me/email').send({ newEmail: 'cancel-target@example.com' });
+    await agent.patch('/api/me/email').send({ newEmail: 'cancel-target@example.com', currentPassword: 'Password123!' });
   });
 
   it('clears pending_email and deletes the unused token (test 19)', async () => {
@@ -642,7 +699,7 @@ describe('GET /api/me/email/confirm', () => {
     sendMailMock.mockClear();
     const patchRes = await agent
       .patch('/api/me/email')
-      .send({ newEmail: 'confirmed-address@example.com' });
+      .send({ newEmail: 'confirmed-address@example.com', currentPassword: 'Password123!' });
     expect(patchRes.status).toBe(200);
     const rawToken = extractToken(sendMailMock.mock.calls[0][0].html);
 
@@ -675,7 +732,7 @@ describe('GET /api/me/email/confirm', () => {
     sendMailMock.mockClear();
     const patchRes = await otherAgent
       .patch('/api/me/email')
-      .send({ newEmail: 'resetkill-new@example.com' });
+      .send({ newEmail: 'resetkill-new@example.com', currentPassword: 'Password123!' });
     expect(patchRes.status).toBe(200);
     const rawToken = extractToken(sendMailMock.mock.calls[0][0].html);
 
@@ -724,7 +781,7 @@ describe('GET /api/me/email/confirm', () => {
 
     const patchRes = await raceAgent
       .patch('/api/me/email')
-      .send({ newEmail: 'raced-address@example.com' });
+      .send({ newEmail: 'raced-address@example.com', currentPassword: 'Password123!' });
     expect(patchRes.status).toBe(200);
     const rawToken = extractToken(
       sendMailMock.mock.calls[sendMailMock.mock.calls.length - 1][0].html,
@@ -761,7 +818,7 @@ describe('GET /api/me/email/confirm', () => {
     const other = await loginAgent(email);
 
     sendMailMock.mockClear();
-    const start = await current.patch('/api/me/email').send({ newEmail: 'confirm-revoke-new@example.com' });
+    const start = await current.patch('/api/me/email').send({ newEmail: 'confirm-revoke-new@example.com', currentPassword: 'Password123!' });
     expect(start.status).toBe(200);
     const token = extractToken(sendMailMock.mock.calls[0][0].html);
 
@@ -776,6 +833,53 @@ describe('GET /api/me/email/confirm', () => {
       [accountId],
     );
     expect(rows[0].email_verified).toBe(true);
+  });
+
+  it('issues a 7-day revert token and emails the old address with the new one masked', async () => {
+    const accountId = await createUser('revert-src@example.com');
+    const a = await loginAgent('revert-src@example.com');
+
+    sendMailMock.mockClear();
+    await a.patch('/api/me/email').send({ newEmail: 'zed-new@example.com', currentPassword: 'Password123!' });
+    const confirmToken = extractToken(sendMailMock.mock.calls[0][0].html);
+
+    sendMailMock.mockClear();
+    const res = await a.get(`/api/me/email/confirm?token=${confirmToken}`);
+    expect(res.status).toBe(200);
+
+    const { rows } = await pool.query<{ old_email: string; new_email: string; used_at: Date | null; days: number }>(
+      `SELECT old_email, new_email, used_at,
+              EXTRACT(EPOCH FROM (expires_at - NOW())) / 86400 AS days
+         FROM email_revert_tokens WHERE account_id = $1`,
+      [accountId],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].old_email).toBe('revert-src@example.com');
+    expect(rows[0].new_email).toBe('zed-new@example.com');
+    expect(rows[0].used_at).toBeNull();
+    expect(Number(rows[0].days)).toBeGreaterThan(6.9);
+    expect(Number(rows[0].days)).toBeLessThanOrEqual(7);
+
+    expect(sendMailMock).toHaveBeenCalledTimes(1);
+    const mail = sendMailMock.mock.calls[0][0];
+    expect(mail.to).toBe('revert-src@example.com');
+    expect(mail.subject).toMatch(/email address was changed/i);
+    expect(mail.text).toContain('z•••@example.com');
+    expect(mail.text).not.toContain('zed-new');
+    expect(mail.text).toMatch(/\/account\/email\/revert\?token=[a-f0-9]{64}/);
+  });
+
+  it('still confirms when the old-address notice fails to send', async () => {
+    await createUser('revert-mailfail@example.com');
+    const a = await loginAgent('revert-mailfail@example.com');
+    sendMailMock.mockClear();
+    await a.patch('/api/me/email').send({ newEmail: 'revert-mailfail-new@example.com', currentPassword: 'Password123!' });
+    const confirmToken = extractToken(sendMailMock.mock.calls[0][0].html);
+
+    sendMailMock.mockRejectedValueOnce(new Error('SMTP down'));
+    const res = await a.get(`/api/me/email/confirm?token=${confirmToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.email).toBe('revert-mailfail-new@example.com');
   });
 });
 
@@ -1070,8 +1174,8 @@ describe('PATCH /api/me/email abuse limits', () => {
   it('rejects a second request to the same address within 10 minutes', async () => {
     await createUser('cooldown-a@example.com');
     const agent = await loginAgent('cooldown-a@example.com');
-    expect((await agent.patch('/api/me/email').send({ newEmail: 'cooldown-target@example.com' })).status).toBe(200);
-    const res = await agent.patch('/api/me/email').send({ newEmail: 'cooldown-target@example.com' });
+    expect((await agent.patch('/api/me/email').send({ newEmail: 'cooldown-target@example.com', currentPassword: 'Password123!' })).status).toBe(200);
+    const res = await agent.patch('/api/me/email').send({ newEmail: 'cooldown-target@example.com', currentPassword: 'Password123!' });
     expect(res.status).toBe(429);
   });
 
@@ -1080,9 +1184,9 @@ describe('PATCH /api/me/email abuse limits', () => {
     await createUser('cooldown-b2@example.com');
     const a = await loginAgent('cooldown-b1@example.com');
     const b = await loginAgent('cooldown-b2@example.com');
-    expect((await a.patch('/api/me/email').send({ newEmail: 'shared-target@example.com' })).status).toBe(200);
+    expect((await a.patch('/api/me/email').send({ newEmail: 'shared-target@example.com', currentPassword: 'Password123!' })).status).toBe(200);
     expect((await a.delete('/api/me/email')).status).toBe(200);
-    expect((await b.patch('/api/me/email').send({ newEmail: 'shared-target@example.com' })).status).toBe(429);
+    expect((await b.patch('/api/me/email').send({ newEmail: 'shared-target@example.com', currentPassword: 'Password123!' })).status).toBe(429);
   });
 
   it('rejects a 4th request to one address within 24 hours', async () => {
@@ -1094,13 +1198,13 @@ describe('PATCH /api/me/email abuse limits', () => {
       [accountId],
     );
     const agent = await loginAgent('cooldown-c@example.com');
-    expect((await agent.patch('/api/me/email').send({ newEmail: 'busy-target@example.com' })).status).toBe(429);
+    expect((await agent.patch('/api/me/email').send({ newEmail: 'busy-target@example.com', currentPassword: 'Password123!' })).status).toBe(429);
   });
 
   it('a cancel marks the token used instead of deleting it', async () => {
     const accountId = await createUser('cooldown-d@example.com');
     const agent = await loginAgent('cooldown-d@example.com');
-    await agent.patch('/api/me/email').send({ newEmail: 'kept-history@example.com' });
+    await agent.patch('/api/me/email').send({ newEmail: 'kept-history@example.com', currentPassword: 'Password123!' });
     await agent.delete('/api/me/email');
     const { rows } = await pool.query<{ used_at: Date | null }>(
       'SELECT used_at FROM email_change_tokens WHERE account_id = $1',
@@ -1122,9 +1226,9 @@ describe('PATCH /api/me/email abuse limits', () => {
       await createUser('limit-e@example.com');
       const agent = await loginAgent('limit-e@example.com');
       for (let i = 1; i <= 3; i++) {
-        expect((await agent.patch('/api/me/email').send({ newEmail: `limit-e-${i}@example.com` })).status).toBe(200);
+        expect((await agent.patch('/api/me/email').send({ newEmail: `limit-e-${i}@example.com`, currentPassword: 'Password123!' })).status).toBe(200);
       }
-      expect((await agent.patch('/api/me/email').send({ newEmail: 'limit-e-4@example.com' })).status).toBe(429);
+      expect((await agent.patch('/api/me/email').send({ newEmail: 'limit-e-4@example.com', currentPassword: 'Password123!' })).status).toBe(429);
     });
   });
 });

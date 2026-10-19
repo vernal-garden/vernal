@@ -6,6 +6,7 @@ import { clearSessionCookie, revokeAccountSessions } from '../lib/sessions';
 import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
 import { sendVerificationEmail } from '../lib/emailVerification';
+import { sendEmailChangedNotice, sendPasswordChangedNotice } from '../lib/accountSecurity';
 import { verificationResendLimiter, emailChangeLimiter } from '../middleware/rateLimiters';
 import { logger } from '../lib/logger';
 import { isValidEmail } from '../lib/validation';
@@ -248,8 +249,8 @@ router.patch('/password', async (req, res) => {
   const sessionToken = req.session!.token;
 
   try {
-    const { rows } = await db.query<{ password_hash: string | null }>(
-      'SELECT password_hash FROM accounts WHERE id = $1',
+    const { rows } = await db.query<{ email: string | null; password_hash: string | null }>(
+      'SELECT email, password_hash FROM accounts WHERE id = $1',
       [accountId],
     );
 
@@ -288,6 +289,7 @@ router.patch('/password', async (req, res) => {
     }
 
     res.json({ data: { message: 'Password updated' } });
+    if (rows[0].email) await sendPasswordChangedNotice(rows[0].email);
   } catch (err) {
     console.error('PATCH /me/password error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -297,13 +299,16 @@ router.patch('/password', async (req, res) => {
 // PATCH /api/me/email
 // Starts an email change: stores a hashed confirmation token and emails the
 // raw token to the new address. The account's email column is untouched
-// until GET /email/confirm succeeds.
+// until GET /email/confirm succeeds. Requires the current password.
 router.patch('/email', emailChangeLimiter, async (req, res) => {
-  const { newEmail } = req.body as { newEmail?: unknown };
+  const { newEmail, currentPassword } = req.body as { newEmail?: unknown; currentPassword?: unknown };
   const accountId = req.session!.account!.id;
 
   if (!isValidEmail(newEmail)) {
     return res.status(400).json({ error: 'Invalid email address.' });
+  }
+  if (!currentPassword || typeof currentPassword !== 'string') {
+    return res.status(400).json({ error: 'currentPassword is required' });
   }
   const normalizedEmail = newEmail.toLowerCase();
 
@@ -321,6 +326,13 @@ router.patch('/email', emailChangeLimiter, async (req, res) => {
       return res
         .status(400)
         .json({ error: 'Email change is not available for accounts using OAuth sign-in.' });
+    }
+
+    // Checked before the in-use test below, so a stolen session cookie alone
+    // can't probe which addresses have accounts.
+    const match = await bcrypt.compare(currentPassword, rows[0].password_hash);
+    if (!match) {
+      return res.status(400).json({ error: 'Current password is incorrect' });
     }
 
     if (normalizedEmail === rows[0].email.toLowerCase()) {
@@ -478,6 +490,9 @@ router.get('/email/confirm', async (req, res) => {
       return res.status(409).json({ error: 'That email address was taken before you could confirm.' });
     }
 
+    const revertToken = generateRawToken();
+    let oldEmail = '';
+
     const client = await db.connect();
     try {
       await client.query('BEGIN');
@@ -490,6 +505,11 @@ router.get('/email/confirm', async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(400).json(invalidError);
       }
+      const { rows: before } = await client.query<{ email: string }>(
+        'SELECT email FROM accounts WHERE id = $1 FOR UPDATE',
+        [accountId],
+      );
+      oldEmail = before[0].email;
       // Clicking the link proves control of the new inbox.
       await client.query(
         `UPDATE accounts SET email = $1, pending_email = NULL, email_verified = true, updated_at = NOW()
@@ -502,6 +522,13 @@ router.get('/email/confirm', async (req, res) => {
         [accountId],
       );
       await revokeAccountSessions(client, accountId, req.session!.token);
+      // The replaced address gets an undo link, in case whoever confirmed
+      // this change wasn't the owner.
+      await client.query(
+        `INSERT INTO email_revert_tokens (account_id, token_hash, old_email, new_email, expires_at)
+         VALUES ($1, $2, $3, $4, NOW() + INTERVAL '7 days')`,
+        [accountId, hashToken(revertToken), oldEmail, matchedToken.new_email],
+      );
       await client.query('COMMIT');
     } catch (txErr) {
       await client.query('ROLLBACK');
@@ -511,6 +538,7 @@ router.get('/email/confirm', async (req, res) => {
     }
 
     res.json({ data: { email: matchedToken.new_email } });
+    await sendEmailChangedNotice({ to: oldEmail, newEmail: matchedToken.new_email, rawToken: revertToken });
   } catch (err) {
     console.error('GET /me/email/confirm error:', err);
     res.status(500).json({ error: 'Internal server error' });
