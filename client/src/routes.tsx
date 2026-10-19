@@ -25,6 +25,7 @@ import AmendmentPage from './pages/AmendmentPage';
 import AccountPage from './pages/AccountPage';
 import EmailConfirmPage from './pages/EmailConfirmPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
+import RevertEmailPage from './pages/RevertEmailPage';
 import AboutPage from './pages/AboutPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminRoute from './components/admin/AdminRoute';
@@ -224,6 +225,11 @@ const routes: RouteObject[] = [
   {
     path: '/verify-email',
     element: <VerifyEmailPage />,
+  },
+  {
+    // Public: the undo link goes to the old address, whose owner may have no session.
+    path: '/account/email/revert',
+    element: <RevertEmailPage />,
   },
   {
     path: '/account/email/confirm',

@@ -18,7 +18,7 @@ function isMissing(err: unknown): boolean {
 }
 
 // Returns the subscription, or null if Stripe no longer has it.
-async function retrieveSubscription(subId: string): Promise<Stripe.Subscription | null> {
+export async function retrieveSubscription(subId: string): Promise<Stripe.Subscription | null> {
   try {
     return await stripe.subscriptions.retrieve(subId);
   } catch (err) {
@@ -54,6 +54,18 @@ export async function resumeRenewal(subId: string): Promise<void> {
   });
 }
 
+// Ends a subscription immediately (a lifetime purchase replaces it). One that
+// has already ended, or that Stripe no longer has, counts as done.
+export async function cancelSubscriptionNow(subId: string): Promise<void> {
+  const sub = await retrieveSubscription(subId);
+  if (!sub || ENDED.has(sub.status)) return;
+  try {
+    await stripe.subscriptions.cancel(subId);
+  } catch (err) {
+    if (!isMissing(err)) throw err;
+  }
+}
+
 // Account purge: end any remaining subscription now and delete the customer
 // (and with it the stored email and payment methods).
 export async function teardownCustomer({
@@ -63,10 +75,7 @@ export async function teardownCustomer({
   subId: string | null;
   customerId: string | null;
 }): Promise<void> {
-  if (subId) {
-    const sub = await retrieveSubscription(subId);
-    if (sub && !ENDED.has(sub.status)) await stripe.subscriptions.cancel(subId);
-  }
+  if (subId) await cancelSubscriptionNow(subId);
   if (customerId) {
     try {
       await stripe.customers.del(customerId);

@@ -14,8 +14,8 @@ import {
 } from '../lib/sessions';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
-import { generateRawToken, hashToken } from '../lib/tokens';
-import { sendMail } from '../lib/mailer';
+import { hashToken } from '../lib/tokens';
+import { issuePasswordResetToken, sendPasswordResetEmail, sendPasswordChangedNotice } from '../lib/accountSecurity';
 import { sendVerificationEmail, consumeVerificationToken } from '../lib/emailVerification';
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
@@ -324,7 +324,7 @@ authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Respo
     if (rows.length === 0) return;
 
     const accountId = rows[0].id;
-    const rawToken = generateRawToken();
+    let rawToken = '';
 
     // One live token per account: a new request invalidates earlier links.
     const client = await db.connect();
@@ -346,14 +346,7 @@ authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Respo
       if (fresh.length > 0 || !consumeResetEmailQuota(normalized, byIp(req))) {
         duplicate = true;
       } else {
-        await client.query('DELETE FROM password_reset_tokens WHERE account_id = $1 AND used_at IS NULL', [
-          accountId,
-        ]);
-        await client.query(
-          `INSERT INTO password_reset_tokens (account_id, token_hash, expires_at)
-           VALUES ($1, $2, NOW() + INTERVAL '60 minutes')`,
-          [accountId, hashToken(rawToken)],
-        );
+        rawToken = await issuePasswordResetToken(client, accountId);
       }
       await client.query('COMMIT');
     } catch (err) {
@@ -364,18 +357,7 @@ authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Respo
     }
     if (duplicate) return;
 
-    const resetUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/reset-password?token=${rawToken}`;
-
-    await sendMail({
-      to: normalized,
-      subject: 'Reset your Vernal password',
-      text: `Click this link to reset your password (expires in 1 hour):
-
-${resetUrl}
-
-If you didn't request this, you can ignore this email.`,
-      html: `<p>Click this link to reset your password (expires in 1 hour):</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>If you didn't request this, you can ignore this email.</p>`,
-    });
+    await sendPasswordResetEmail(normalized, rawToken);
   } catch (err) {
     logger.error('forgot-password background work failed', err);
   }
@@ -409,6 +391,7 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
 
   const newHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
+  let email: string | null = null;
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -423,10 +406,11 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
       return;
     }
     // Completing a reset proves control of the inbox, so the email is verified.
-    await client.query(
-      'UPDATE accounts SET password_hash = $1, email_verified = true, pending_email = NULL, updated_at = now() WHERE id = $2',
+    const { rows: updated } = await client.query<{ email: string | null }>(
+      'UPDATE accounts SET password_hash = $1, email_verified = true, pending_email = NULL, updated_at = now() WHERE id = $2 RETURNING email',
       [newHash, accountId],
     );
+    email = updated[0]?.email ?? null;
     // A pending email change must not survive a reset (its link may be in an attacker's inbox).
     await client.query('DELETE FROM email_change_tokens WHERE account_id = $1', [accountId]);
     await client.query(
@@ -443,6 +427,96 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
   }
 
   res.json({ data: { success: true, message: 'Password updated. You can now log in.' } });
+  if (email) await sendPasswordChangedNotice(email);
+});
+
+// POST /api/auth/email/revert
+// Public: the link was mailed to the replaced address, and whoever made the
+// change may hold every session and the password. Puts the old address back,
+// scrambles the password, signs out every device, and mails a reset link.
+authRouter.post('/email/revert', passwordResetLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { token } = req.body as { token?: unknown };
+  const invalid = { error: 'This link is invalid or has expired.' };
+  const taken = { error: 'That address is now used by another account. Please contact support.' };
+  if (typeof token !== 'string' || !token) {
+    res.status(400).json(invalid);
+    return;
+  }
+
+  // Hashed before the transaction: bcrypt is slow and shouldn't hold row locks.
+  const scrambledHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), BCRYPT_ROUNDS);
+
+  let restored: { email: string; resetToken: string } | null = null;
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query<{ id: number; account_id: number; old_email: string }>(
+      `UPDATE email_revert_tokens SET used_at = NOW()
+        WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+        RETURNING id, account_id, old_email`,
+      [hashToken(token)],
+    );
+    if (rows.length === 0) {
+      await client.query('ROLLBACK');
+      res.status(400).json(invalid);
+      return;
+    }
+    const { id: tokenId, account_id: accountId, old_email: oldEmail } = rows[0];
+
+    await client.query('SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+    const { rows: owner } = await client.query('SELECT 1 FROM accounts WHERE email = $1 AND id <> $2', [
+      oldEmail,
+      accountId,
+    ]);
+    if (owner.length > 0) {
+      await client.query('ROLLBACK');
+      res.status(409).json(taken);
+      return;
+    }
+
+    await client.query(
+      `UPDATE accounts
+          SET email = $1, email_verified = true, pending_email = NULL, password_hash = $2, updated_at = NOW()
+        WHERE id = $3`,
+      [oldEmail, scrambledHash, accountId],
+    );
+    // Only newer links are cancelled: after a chain of changes (A→B→C) the
+    // link mailed to A stays valid, so the one closest to the owner wins.
+    await client.query(
+      'UPDATE email_revert_tokens SET used_at = NOW() WHERE account_id = $1 AND used_at IS NULL AND id > $2',
+      [accountId, tokenId],
+    );
+    await client.query('UPDATE email_change_tokens SET used_at = NOW() WHERE account_id = $1 AND used_at IS NULL', [
+      accountId,
+    ]);
+    // Google auto-links by email, so whoever changed the address could have
+    // linked their own Google account. The owner re-links by signing in with
+    // Google as the restored address.
+    await client.query('DELETE FROM oauth_identities WHERE account_id = $1', [accountId]);
+    await revokeAccountSessions(client, accountId);
+    const resetToken = await issuePasswordResetToken(client, accountId);
+    await client.query('COMMIT');
+    restored = { email: oldEmail, resetToken };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    // Another account claimed the address between the check and the update.
+    if ((err as { code?: string }).code === '23505') {
+      res.status(409).json(taken);
+      return;
+    }
+    logger.error('POST /auth/email/revert failed', err);
+    res.status(500).json({ error: 'Internal server error' });
+    return;
+  } finally {
+    client.release();
+  }
+
+  res.json({ data: { email: restored.email } });
+  try {
+    await sendPasswordResetEmail(restored.email, restored.resetToken);
+  } catch (err) {
+    logger.error('Email revert: reset email failed to send', err);
+  }
 });
 
 // POST /api/auth/verify-email

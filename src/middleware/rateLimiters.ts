@@ -159,6 +159,17 @@ export const emailChangeLimiter = rateLimit({
   message: { error: 'Too many email change requests — please try again later' },
 });
 
+// POST /api/subscription/checkout — each request can create Stripe objects.
+export const checkoutLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
+  skip: skipInTest,
+  message: { error: 'Too many checkout attempts — please try again later' },
+});
+
 // POST /api/auth/forgot-password — send quotas, spent only when a reset email
 // is actually about to go out (never for unknown addresses or deduped
 // repeats). Two tiers: a strict cap per requester (email + IP pair) and a

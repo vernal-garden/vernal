@@ -1,8 +1,10 @@
-import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
+import { Router } from 'express';
 import Stripe from 'stripe';
 import { db } from '../lib/db';
 import { stripe } from '../lib/stripe';
 import { requireAuth } from '../middleware/auth';
+import { checkoutLimiter } from '../middleware/rateLimiters';
 
 type Interval = 'monthly' | 'annual' | 'lifetime';
 
@@ -11,6 +13,16 @@ const PRICE_IDS: Record<Interval, string> = {
   annual: process.env.STRIPE_PRICE_ANNUAL!,
   lifetime: process.env.STRIPE_PRICE_LIFETIME!,
 };
+
+const LIVE_STATUSES = new Set(['active', 'trialing']);
+
+// Account ids repeat across databases (dev, CI, local) that share one Stripe
+// test key, so the idempotency key carries a short id of the database.
+const DB_SCOPE = crypto
+  .createHash('sha256')
+  .update((process.env.NODE_ENV === 'test' ? process.env.TEST_DATABASE_URL : process.env.DATABASE_URL) ?? '')
+  .digest('hex')
+  .slice(0, 12);
 
 const router = Router();
 router.use(requireAuth);
@@ -52,7 +64,7 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/subscription/checkout
-router.post('/checkout', async (req, res) => {
+router.post('/checkout', checkoutLimiter, async (req, res) => {
   const { interval } = req.body as { interval?: unknown };
   if (interval !== 'monthly' && interval !== 'annual' && interval !== 'lifetime') {
     return res.status(400).json({ error: 'interval must be monthly, annual, or lifetime' });
@@ -68,8 +80,12 @@ router.post('/checkout', async (req, res) => {
       display_name: string | null;
       stripe_customer_id: string | null;
       deletion_scheduled_at: string | null;
+      subscription_tier: 'free' | 'supporter';
+      subscription_interval: string | null;
     }>(
-      'SELECT email, display_name, stripe_customer_id, deletion_scheduled_at FROM accounts WHERE id = $1',
+      `SELECT email, display_name, stripe_customer_id, deletion_scheduled_at,
+              subscription_tier, subscription_interval
+       FROM accounts WHERE id = $1`,
       [accountId],
     );
 
@@ -82,18 +98,46 @@ router.post('/checkout', async (req, res) => {
         .json({ error: 'Your account is scheduled for deletion. Cancel the deletion before subscribing.' });
     }
 
+    // A supporter can only move up to lifetime; anything else is a duplicate
+    // purchase (a second subscription, or a second lifetime payment).
+    const current = rows[0];
+    if (
+      current.subscription_tier === 'supporter' &&
+      (current.subscription_interval === 'lifetime' || interval !== 'lifetime')
+    ) {
+      return res.status(409).json({ error: "You're already a supporter.", code: 'already_supporter' });
+    }
+
     let customerId = rows[0].stripe_customer_id;
+    if (customerId && interval !== 'lifetime') {
+      // The tier may lag Stripe (a second checkout before the first one's
+      // webhook lands), so ask Stripe for a live subscription too.
+      const { data } = await stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 10 });
+      if (data.some((s) => LIVE_STATUSES.has(s.status))) {
+        return res.status(409).json({ error: "You're already a supporter.", code: 'already_supporter' });
+      }
+    }
     if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: rows[0].email,
-        name: rows[0].display_name ?? undefined,
-        metadata: { accountId: String(accountId) },
-      });
-      customerId = customer.id;
-      await db.query(
-        'UPDATE accounts SET stripe_customer_id = $1, updated_at = NOW() WHERE id = $2',
-        [customerId, accountId],
+      // The idempotency key makes a double-click or retry return the same
+      // Stripe customer instead of creating a second one.
+      const customer = await stripe.customers.create(
+        {
+          email: rows[0].email,
+          name: rows[0].display_name ?? undefined,
+          metadata: { accountId: String(accountId) },
+        },
+        { idempotencyKey: `customer-create-${DB_SCOPE}-${accountId}` },
       );
+      await db.query(
+        'UPDATE accounts SET stripe_customer_id = $1, updated_at = NOW() WHERE id = $2 AND stripe_customer_id IS NULL',
+        [customer.id, accountId],
+      );
+      // A concurrent request may have stored its customer first; use that one.
+      const { rows: stored } = await db.query<{ stripe_customer_id: string | null }>(
+        'SELECT stripe_customer_id FROM accounts WHERE id = $1',
+        [accountId],
+      );
+      customerId = stored[0]?.stripe_customer_id ?? customer.id;
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -142,107 +186,5 @@ router.post('/portal', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-
-// POST /api/webhooks/stripe — mounted directly in src/index.ts (not on this router)
-// so it can use express.raw() ahead of the global express.json() middleware.
-export async function handleStripeWebhook(req: Request, res: Response) {
-  const signature = req.headers['stripe-signature'] as string;
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET as string;
-
-  let event: Stripe.Event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body as Buffer, signature, webhookSecret);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Invalid signature';
-    return res.status(400).json({ error: message });
-  }
-
-  try {
-    switch (event.type) {
-      case 'customer.subscription.created':
-      case 'customer.subscription.updated': {
-        const sub = event.data.object;
-
-        let tier: 'supporter' | 'free' | undefined;
-        if (['active', 'trialing'].includes(sub.status)) {
-          tier = 'supporter';
-        } else if (['canceled', 'unpaid', 'incomplete_expired'].includes(sub.status)) {
-          tier = 'free';
-        }
-
-        const recurringInterval = sub.items.data[0]?.price.recurring?.interval;
-        let interval: 'monthly' | 'annual' | undefined;
-        if (recurringInterval === 'month') interval = 'monthly';
-        else if (recurringInterval === 'year') interval = 'annual';
-
-        const periodEnd = sub.items.data[0]?.current_period_end ?? null;
-        const cancelledAt = sub.cancel_at_period_end ? (sub.cancel_at ?? null) : null;
-
-        const updates: string[] = ['stripe_subscription_id = $1', 'updated_at = NOW()'];
-        const values: unknown[] = [sub.id];
-        let idx = 2;
-
-        if (tier) {
-          updates.push(`subscription_tier = $${idx++}`);
-          values.push(tier);
-        }
-        if (interval) {
-          updates.push(`subscription_interval = $${idx++}`);
-          values.push(interval);
-        }
-        updates.push(`subscription_period_end = to_timestamp($${idx++}::double precision)`);
-        values.push(periodEnd);
-        updates.push(`subscription_cancelled_at = to_timestamp($${idx++}::double precision)`);
-        values.push(cancelledAt);
-
-        values.push(sub.customer as string);
-        await db.query(
-          `UPDATE accounts SET ${updates.join(', ')} WHERE stripe_customer_id = $${idx}`,
-          values,
-        );
-        break;
-      }
-
-      case 'customer.subscription.deleted': {
-        const sub = event.data.object;
-        await db.query(
-          `UPDATE accounts
-           SET subscription_tier = 'free',
-               stripe_subscription_id = NULL,
-               subscription_period_end = NULL,
-               updated_at = NOW()
-           WHERE stripe_customer_id = $1`,
-          [sub.customer as string],
-        );
-        break;
-      }
-
-      case 'checkout.session.completed': {
-        const session = event.data.object;
-        if (session.mode === 'payment') {
-          await db.query(
-            `UPDATE accounts
-             SET subscription_tier = 'supporter',
-                 subscription_interval = 'lifetime',
-                 subscription_period_end = NULL,
-                 stripe_subscription_id = NULL,
-                 updated_at = NOW()
-             WHERE stripe_customer_id = $1`,
-            [session.customer as string],
-          );
-        }
-        break;
-      }
-
-      default:
-        break;
-    }
-
-    res.json({ received: true });
-  } catch (err) {
-    console.error('POST /webhooks/stripe error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-}
 
 export default router;

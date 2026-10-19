@@ -23,6 +23,7 @@ import {
   refreshGardenBadges,
   purgeExpiredGuests,
   purgeReadNotifications,
+  purgeStripeEvents,
   purgeScheduledAccounts,
   checkSubscriptionDowngrades,
   purgeExpiredExports,
@@ -1143,5 +1144,41 @@ describe('runNightlyJob', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('ok');
     expect(rows[0].finished_at).not.toBeNull();
+  });
+});
+
+describe('purgeExpiredGuests — email revert tokens', () => {
+  beforeEach(resetDb);
+
+  it('deletes revert tokens created over 30 days ago and keeps newer ones', async () => {
+    await pool.query('TRUNCATE email_revert_tokens');
+    const accountId = await createAccount();
+    await pool.query(
+      `INSERT INTO email_revert_tokens (account_id, token_hash, old_email, new_email, expires_at, created_at)
+       VALUES ($1, 'old-hash', 'a@example.com', 'b@example.com', NOW() - INTERVAL '24 days', NOW() - INTERVAL '31 days'),
+              ($1, 'new-hash', 'a@example.com', 'b@example.com', NOW() + INTERVAL '6 days', NOW() - INTERVAL '1 day')`,
+      [accountId],
+    );
+
+    await purgeExpiredGuests();
+
+    const { rows } = await pool.query<{ token_hash: string }>('SELECT token_hash FROM email_revert_tokens');
+    expect(rows.map((r) => r.token_hash)).toEqual(['new-hash']);
+  });
+});
+
+describe('purgeStripeEvents', () => {
+  it('deletes event ids processed over 90 days ago', async () => {
+    await pool.query('TRUNCATE stripe_events');
+    await pool.query(
+      `INSERT INTO stripe_events (event_id, processed_at)
+       VALUES ('evt_old', NOW() - INTERVAL '91 days'), ('evt_new', NOW() - INTERVAL '1 day')`,
+    );
+
+    const { affected } = await purgeStripeEvents();
+
+    expect(affected).toBe(1);
+    const { rows } = await pool.query<{ event_id: string }>('SELECT event_id FROM stripe_events');
+    expect(rows.map((r) => r.event_id)).toEqual(['evt_new']);
   });
 });

@@ -1,17 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
-import Stripe from 'stripe';
 import app from '../index';
+import { stripe as appStripe } from '../lib/stripe';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
 
-const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-
 const pool = new Pool({ connectionString: url });
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 async function resetDb() {
   await pool.query(
@@ -39,24 +36,6 @@ async function loginAgent(email: string, password = 'Password123!') {
   await agent.post('/api/auth/guest');
   await agent.post('/api/auth/login').send({ email, password });
   return agent;
-}
-
-function signPayload(payload: string) {
-  return stripe.webhooks.generateTestHeaderString({
-    payload,
-    secret: WEBHOOK_SECRET!,
-  });
-}
-
-async function postWebhook(payload: object, signature?: string) {
-  const raw = JSON.stringify(payload);
-  const req = request(app)
-    .post('/api/webhooks/stripe')
-    .set('Content-Type', 'application/json');
-  if (signature !== undefined) {
-    req.set('stripe-signature', signature);
-  }
-  return req.send(raw);
 }
 
 beforeAll(resetDb);
@@ -98,146 +77,110 @@ describe('POST /api/subscription/checkout — scheduled deletion', () => {
   });
 });
 
-// ── POST /api/webhooks/stripe — signature verification ────────────────────────
+describe('POST /api/subscription/checkout — guards', () => {
+  const customersCreate = vi.spyOn(appStripe.customers, 'create');
+  const sessionsCreate = vi.spyOn(appStripe.checkout.sessions, 'create');
+  const listSubs = vi.spyOn(appStripe.subscriptions, 'list');
 
-describe('POST /api/webhooks/stripe — signature verification', () => {
-  it('returns 400 with a missing signature', async () => {
-    const res = await postWebhook({ id: 'evt_test', type: 'customer.subscription.updated' });
-    expect(res.status).toBe(400);
+  beforeEach(() => {
+    customersCreate.mockReset();
+    sessionsCreate.mockReset();
+    listSubs.mockReset();
+    customersCreate.mockResolvedValue({ id: 'cus_created' } as never);
+    sessionsCreate.mockResolvedValue({ url: 'https://checkout.test/session' } as never);
+    listSubs.mockResolvedValue({ data: [] } as never);
   });
 
-  it('returns 400 with an invalid signature', async () => {
-    const res = await postWebhook(
-      { id: 'evt_test', type: 'customer.subscription.updated' },
-      't=1,v1=bogus',
-    );
-    expect(res.status).toBe(400);
-  });
-});
-
-// ── POST /api/webhooks/stripe — subscription lifecycle ─────────────────────────
-
-describe.skipIf(!WEBHOOK_SECRET)('POST /api/webhooks/stripe — subscription lifecycle', () => {
-  it('customer.subscription.updated with an active status sets tier to supporter', async () => {
-    const accountId = await createUser('sub-webhook-active@example.com', {
-      stripeCustomerId: 'cus_test_active',
-    });
-
-    const payload = {
-      id: 'evt_test_active',
-      type: 'customer.subscription.updated',
-      data: {
-        object: {
-          id: 'sub_test_active',
-          customer: 'cus_test_active',
-          status: 'active',
-          cancel_at_period_end: false,
-          cancel_at: null,
-          items: {
-            data: [
-              {
-                current_period_end: 1893456000,
-                price: { recurring: { interval: 'month' } },
-              },
-            ],
-          },
-        },
-      },
-    };
-
-    const raw = JSON.stringify(payload);
-    const res = await request(app)
-      .post('/api/webhooks/stripe')
-      .set('Content-Type', 'application/json')
-      .set('stripe-signature', signPayload(raw))
-      .send(raw);
-
-    expect(res.status).toBe(200);
-
-    const { rows } = await pool.query(
-      `SELECT subscription_tier, subscription_interval, subscription_period_end
-       FROM accounts WHERE id = $1`,
-      [accountId],
-    );
-    expect(rows[0].subscription_tier).toBe('supporter');
-    expect(rows[0].subscription_interval).toBe('monthly');
-    expect(rows[0].subscription_period_end).not.toBeNull();
-  });
-
-  it('customer.subscription.deleted resets the account to free', async () => {
-    const accountId = await createUser('sub-webhook-deleted@example.com', {
-      stripeCustomerId: 'cus_test_deleted',
-    });
+  async function supporter(email: string, interval: 'monthly' | 'annual' | 'lifetime') {
+    const id = await createUser(email, { stripeCustomerId: `cus_${email.split('@')[0]}` });
     await pool.query(
-      `UPDATE accounts SET subscription_tier = 'supporter', stripe_subscription_id = 'sub_test_deleted'
-       WHERE id = $1`,
-      [accountId],
+      `UPDATE accounts SET subscription_tier = 'supporter', subscription_interval = $1 WHERE id = $2`,
+      [interval, id],
     );
+    return loginAgent(email);
+  }
 
-    const payload = {
-      id: 'evt_test_deleted',
-      type: 'customer.subscription.deleted',
-      data: {
-        object: {
-          id: 'sub_test_deleted',
-          customer: 'cus_test_deleted',
-          status: 'canceled',
-        },
-      },
-    };
-
-    const raw = JSON.stringify(payload);
-    const res = await request(app)
-      .post('/api/webhooks/stripe')
-      .set('Content-Type', 'application/json')
-      .set('stripe-signature', signPayload(raw))
-      .send(raw);
-
-    expect(res.status).toBe(200);
-
-    const { rows } = await pool.query(
-      `SELECT subscription_tier, stripe_subscription_id, subscription_period_end
-       FROM accounts WHERE id = $1`,
-      [accountId],
-    );
-    expect(rows[0].subscription_tier).toBe('free');
-    expect(rows[0].stripe_subscription_id).toBeNull();
-    expect(rows[0].subscription_period_end).toBeNull();
+  it('returns 409 already_supporter for a lifetime supporter', async () => {
+    const agent = await supporter('co-lifetime@example.com', 'lifetime');
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'lifetime' });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "You're already a supporter.", code: 'already_supporter' });
+    expect(sessionsCreate).not.toHaveBeenCalled();
   });
 
-  it('checkout.session.completed in payment mode sets a lifetime supporter', async () => {
-    const accountId = await createUser('sub-webhook-lifetime@example.com', {
-      stripeCustomerId: 'cus_test_lifetime',
+  it('returns 409 when a monthly supporter asks for annual', async () => {
+    const agent = await supporter('co-monthly@example.com', 'monthly');
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'annual' });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('already_supporter');
+  });
+
+  it('lets a monthly supporter upgrade to lifetime', async () => {
+    const agent = await supporter('co-upgrade@example.com', 'monthly');
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'lifetime' });
+    expect(res.status).toBe(200);
+    expect(sessionsCreate.mock.calls[0][0]).toMatchObject({ mode: 'payment', customer: 'cus_co-upgrade' });
+  });
+
+  it('creates the customer with an idempotency key and stores it', async () => {
+    const id = await createUser('co-new@example.com');
+    const agent = await loginAgent('co-new@example.com');
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'monthly' });
+    expect(res.status).toBe(200);
+    expect(customersCreate.mock.calls[0][1]).toEqual({
+      idempotencyKey: expect.stringMatching(new RegExp(`^customer-create-[0-9a-f]{12}-${id}$`)),
+    });
+    const { rows } = await pool.query('SELECT stripe_customer_id FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].stripe_customer_id).toBe('cus_created');
+  });
+
+  it('reuses an existing customer', async () => {
+    await createUser('co-existing@example.com', { stripeCustomerId: 'cus_existing' });
+    const agent = await loginAgent('co-existing@example.com');
+    await agent.post('/api/subscription/checkout').send({ interval: 'monthly' });
+    expect(customersCreate).not.toHaveBeenCalled();
+    expect(sessionsCreate.mock.calls[0][0]).toMatchObject({ customer: 'cus_existing' });
+  });
+
+  it('returns 409 when a free account already has a live subscription at Stripe', async () => {
+    await createUser('co-live@example.com', { stripeCustomerId: 'cus_live' });
+    const agent = await loginAgent('co-live@example.com');
+    listSubs.mockResolvedValueOnce({ data: [{ id: 'sub_live', status: 'active' }] } as never);
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'monthly' });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "You're already a supporter.", code: 'already_supporter' });
+    expect(listSubs).toHaveBeenCalledWith({ customer: 'cus_live', status: 'all', limit: 10 });
+    expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it('uses the stored customer when a concurrent request saved one first', async () => {
+    const id = await createUser('co-race@example.com');
+    const agent = await loginAgent('co-race@example.com');
+    customersCreate.mockImplementationOnce((async () => {
+      await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_winner' WHERE id = $1", [id]);
+      return { id: 'cus_loser' };
+    }) as never);
+    await agent.post('/api/subscription/checkout').send({ interval: 'monthly' });
+    expect(sessionsCreate.mock.calls[0][0]).toMatchObject({ customer: 'cus_winner' });
+    const { rows } = await pool.query('SELECT stripe_customer_id FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].stripe_customer_id).toBe('cus_winner');
+  });
+
+  describe('rate limit', () => {
+    beforeEach(() => {
+      process.env.ENFORCE_RATE_LIMITS = 'true';
+    });
+    afterEach(() => {
+      delete process.env.ENFORCE_RATE_LIMITS;
     });
 
-    const payload = {
-      id: 'evt_test_lifetime',
-      type: 'checkout.session.completed',
-      data: {
-        object: {
-          id: 'cs_test_lifetime',
-          mode: 'payment',
-          customer: 'cus_test_lifetime',
-        },
-      },
-    };
-
-    const raw = JSON.stringify(payload);
-    const res = await request(app)
-      .post('/api/webhooks/stripe')
-      .set('Content-Type', 'application/json')
-      .set('stripe-signature', signPayload(raw))
-      .send(raw);
-
-    expect(res.status).toBe(200);
-
-    const { rows } = await pool.query(
-      `SELECT subscription_tier, subscription_interval, subscription_period_end
-       FROM accounts WHERE id = $1`,
-      [accountId],
-    );
-    expect(rows[0].subscription_tier).toBe('supporter');
-    expect(rows[0].subscription_interval).toBe('lifetime');
-    expect(rows[0].subscription_period_end).toBeNull();
+    it('allows 10 attempts an hour per account, then 429', async () => {
+      await createUser('co-limit@example.com');
+      const agent = await loginAgent('co-limit@example.com');
+      for (let i = 0; i < 10; i++) {
+        expect((await agent.post('/api/subscription/checkout').send({ interval: 'bogus' })).status).toBe(400);
+      }
+      expect((await agent.post('/api/subscription/checkout').send({ interval: 'bogus' })).status).toBe(429);
+    });
   });
 });

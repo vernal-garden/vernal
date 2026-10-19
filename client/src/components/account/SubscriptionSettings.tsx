@@ -150,7 +150,7 @@ function IntervalSelector({
 
 // ── Free tier ─────────────────────────────────────────────────────────────────
 
-function FreeView() {
+function FreeView({ onAlreadySupporter }: { onAlreadySupporter: (message: string) => void }) {
   const [revealed, setRevealed] = useState(false);
   const [interval, setInterval_] = useState<Interval>('annual');
   const [whyOpen, setWhyOpen] = useState(false);
@@ -168,8 +168,13 @@ function FreeView() {
       const res = await post<{ url: string }>('/api/subscription/checkout', { interval });
       if (!res?.url) throw new Error('No checkout URL returned');
       window.location.href = res.url;
-    } catch {
-      setCheckoutError("Couldn't start checkout. Please try again.");
+    } catch (e) {
+      const body = e instanceof ApiError ? (e.body as { error?: string; code?: string } | null) : null;
+      if (body?.code === 'already_supporter') {
+        onAlreadySupporter(body.error ?? "You're already a supporter.");
+        return;
+      }
+      setCheckoutError(body?.error ?? "Couldn't start checkout. Please try again.");
       setCheckoutLoading(false);
     }
   }
@@ -291,6 +296,7 @@ export default function SubscriptionSettings() {
   const { data, loading, error, reload } = useSubscription();
   const [searchParams] = useSearchParams();
   const subscribed = searchParams.get('subscribed') === 'true';
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!subscribed) return;
@@ -340,6 +346,12 @@ export default function SubscriptionSettings() {
         </div>
       )}
 
+      {notice && (
+        <p role="status" style={{ ...bodyTextSt, marginBottom: 'var(--sp-4)' }}>
+          {notice}
+        </p>
+      )}
+
       {loading && <p style={bodyTextSt}>Loading…</p>}
 
       {!loading && error && (
@@ -351,7 +363,20 @@ export default function SubscriptionSettings() {
         </div>
       )}
 
-      {!loading && !error && data && (data.isSupporter ? <SupporterView data={data} /> : <FreeView />)}
+      {!loading &&
+        !error &&
+        data &&
+        (data.isSupporter ? (
+          <SupporterView data={data} />
+        ) : (
+          <FreeView
+            onAlreadySupporter={(message) => {
+              // The page was stale: reload shows the supporter view and its billing button.
+              setNotice(message);
+              reload();
+            }}
+          />
+        ))}
     </section>
   );
 }

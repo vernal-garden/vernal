@@ -70,6 +70,7 @@ function VerifyEmailBanner({
 
 function EmailSection({ account, onUpdate }: Props) {
   const [newEmail, setNewEmail] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,9 +80,10 @@ function EmailSection({ account, onUpdate }: Props) {
     setError(null);
     setSending(true);
     try {
-      const res = await patch<{ data: { pendingEmail: string } }>('/api/me/email', { newEmail });
+      const res = await patch<{ data: { pendingEmail: string } }>('/api/me/email', { newEmail, currentPassword });
       onUpdate({ pendingEmail: res!.data.pendingEmail });
       setNewEmail('');
+      setCurrentPassword('');
     } catch (err) {
       setError(apiErrorMessage(err, 'Could not start the email change.'));
     } finally {
@@ -130,16 +132,31 @@ function EmailSection({ account, onUpdate }: Props) {
         </div>
       ) : (
         <form onSubmit={handleSend} style={{ marginTop: 'var(--sp-4)' }}>
-          <label htmlFor="newEmail" style={labelSt}>New email address</label>
-          <div style={{ display: 'flex', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-            <input
-              id="newEmail"
-              type="email"
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              style={{ ...inputSt, flex: '1 1 240px' }}
-            />
-            <button type="submit" disabled={sending || !newEmail} style={primaryButtonSt}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
+            <div>
+              <label htmlFor="newEmail" style={labelSt}>New email address</label>
+              <input
+                id="newEmail"
+                type="email"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                style={inputSt}
+              />
+            </div>
+            <div>
+              <label htmlFor="emailCurrentPassword" style={labelSt}>Current password</label>
+              <input
+                id="emailCurrentPassword"
+                type="password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                style={inputSt}
+              />
+            </div>
+          </div>
+          <div style={{ marginTop: 'var(--sp-4)' }}>
+            <button type="submit" disabled={sending || !newEmail || !currentPassword} style={primaryButtonSt}>
               {sending ? 'Sending…' : 'Send confirmation'}
             </button>
           </div>
