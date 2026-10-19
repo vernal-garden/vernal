@@ -22,7 +22,9 @@ export type SessionState =
   | { kind: 'loading' }
   | { kind: 'guest'; expiresAt: string; daysRemaining: number; gardenCount: number }
   | { kind: 'account'; account: SessionAccount; pendingGuestData: PendingGuestData | null; gardenCount: number }
-  | { kind: 'expired'; recoverable: boolean }
+  // cookiesBlocked: the server issued a session cookie but the browser never sent
+  // it back (cookies blocked for this site), so no sign-in can stick.
+  | { kind: 'expired'; recoverable: boolean; cookiesBlocked?: boolean }
   | { kind: 'unreachable'; reason: UnreachableReason };
 
 // network: the request never reached the server. server: it answered 5xx.
@@ -99,24 +101,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Expired guest session
-    if (data['guestExpired']) {
-      setState({
-        kind: 'expired',
-        recoverable: data['guestExpired'] === 'recoverable',
-      });
+    // Expired guest session whose data can still be claimed by logging in
+    if (data['guestExpired'] === 'recoverable') {
+      setState({ kind: 'expired', recoverable: true });
       return;
     }
 
-    // No session (first visit or just signed out) — bootstrap, then re-resolve
+    // No session, or a cookie whose session row is gone (nothing left to
+    // recover) — bootstrap a fresh guest session, then re-resolve
     if (allowBootstrap) {
       await api.post('/api/auth/guest');
       await resolveSession(false);
       return;
     }
 
-    // Degenerate: bootstrap ran but still no session — show expired UI
-    setState({ kind: 'expired', recoverable: false });
+    // Bootstrap returned a cookie but the browser didn't send it back
+    setState({ kind: 'expired', recoverable: false, cookiesBlocked: true });
   }, []);
 
   const markSupporterPromptShown = useCallback(async (): Promise<void> => {

@@ -33,6 +33,21 @@ const SECONDARY_BUTTON: CSSProperties = {
   color: 'var(--c-text)',
 };
 
+const PAGE_STYLE: CSSProperties = {
+  minHeight: '100vh',
+  boxSizing: 'border-box',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  textAlign: 'center',
+  gap: 'var(--sp-4)',
+  padding: 'var(--sp-6)',
+  background: 'var(--c-bg)',
+  color: 'var(--c-text)',
+  fontFamily: 'var(--font-ui)',
+};
+
 export default function SessionExpiredPage() {
   const { state, refetch } = useAuth();
   const navigate = useNavigate();
@@ -45,6 +60,63 @@ export default function SessionExpiredPage() {
   if (state.kind !== 'expired' && !starting) return <Navigate to="/" replace />;
 
   const recoverable = state.kind === 'expired' && state.recoverable;
+  const cookiesBlocked = state.kind === 'expired' && state.cookiesBlocked === true;
+
+  async function retry() {
+    setStarting(true);
+    setStartProblem(null);
+    try {
+      await refetch();
+      navigate('/', { replace: true });
+    } catch (err) {
+      setStartProblem(err instanceof api.ApiError && err.status === 429 ? 'busy' : 'failed');
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  if (cookiesBlocked) {
+    return (
+      <main
+        data-testid="session-cookies-blocked"
+        style={PAGE_STYLE}
+      >
+        <h1
+          style={{
+            margin: 0,
+            fontFamily: 'var(--font-display)',
+            fontSize: 24,
+            fontWeight: 600,
+            lineHeight: 1.3,
+            maxWidth: 480,
+            color: 'var(--c-primary-dark)',
+          }}
+        >
+          Your browser isn't saving cookies for Vernal
+        </h1>
+        <p style={{ margin: 0, maxWidth: 420, fontSize: 16, lineHeight: 1.5, color: 'var(--c-text-2)' }}>
+          Vernal needs a cookie to keep you signed in. Allow cookies for {window.location.hostname} in your
+          browser's site settings (in Brave, check Shields for this site), then try again.
+        </p>
+        <button
+          type="button"
+          data-testid="session-cookies-retry"
+          onClick={retry}
+          disabled={starting}
+          style={{ ...PRIMARY_BUTTON, marginTop: 'var(--sp-2)', opacity: starting ? 0.6 : 1, cursor: starting ? 'default' : 'pointer' }}
+        >
+          Try again
+        </button>
+        {startProblem && (
+          <p role="status" style={{ margin: 0, fontSize: 14, color: 'var(--c-text-2)' }}>
+            {startProblem === 'busy'
+              ? 'Lots of new visitors from your network right now. Please try again in a few minutes.'
+              : "We couldn't reach Vernal just now. Please try again."}
+          </p>
+        )}
+      </main>
+    );
+  }
 
   async function startNewGarden() {
     setStarting(true);
@@ -66,20 +138,7 @@ export default function SessionExpiredPage() {
       className="vernal-expired"
       data-testid="session-expired"
       data-recoverable={recoverable ? 'true' : 'false'}
-      style={{
-        minHeight: '100vh',
-        boxSizing: 'border-box',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        textAlign: 'center',
-        gap: 'var(--sp-4)',
-        padding: 'var(--sp-6)',
-        background: 'var(--c-bg)',
-        color: 'var(--c-text)',
-        fontFamily: 'var(--font-ui)',
-      }}
+      style={PAGE_STYLE}
     >
       <style>{`
         @keyframes vernal-expired-in { from { opacity: 0; } to { opacity: 1; } }
