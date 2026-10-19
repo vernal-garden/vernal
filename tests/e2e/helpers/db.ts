@@ -148,6 +148,14 @@ export async function setGuestExpiry(signedCookie: string, interval: string): Pr
   if (result.rowCount !== 1) throw new Error('setGuestExpiry: guest session not found');
 }
 
+// Deletes the session row behind a signed cookie value, as the nightly purge
+// does, leaving the browser holding a cookie that verifies but points nowhere.
+export async function deleteGuestSession(signedCookie: string): Promise<void> {
+  const token = decodeURIComponent(signedCookie).split('.')[0];
+  const result = await getPool().query('DELETE FROM guest_sessions WHERE token = $1', [token]);
+  if (result.rowCount !== 1) throw new Error('deleteGuestSession: session not found');
+}
+
 // Moderation queue rows, inserted directly. `createdAt` is a Postgres interval
 // literal subtracted from now() (e.g. '2 hours'), so tests can order items
 // deterministically. resetTestDb's TRUNCATE ... CASCADE on accounts clears
