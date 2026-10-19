@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
+import { readFileSync } from 'fs';
+import path from 'path';
 
 // Mock the db module before importing app so Pool is never instantiated
 vi.mock('../lib/db', () => ({
@@ -29,6 +31,16 @@ describe('GET /health', () => {
     expect(res.body.db).toBe('ok');
     expect(typeof res.body.timestamp).toBe('string');
     expect(typeof res.body.version).toBe('string');
+  });
+
+  it('reports the version from package.json', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 } as any);
+    const pkg = JSON.parse(readFileSync(path.join(__dirname, '../../package.json'), 'utf-8')) as { version: string };
+
+    const res = await request(app).get('/health');
+
+    expect(res.body.version).toBe(pkg.version);
   });
 
   it('returns 503 with db:error when database is unreachable', async () => {
