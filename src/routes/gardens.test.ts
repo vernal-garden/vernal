@@ -9,7 +9,13 @@ vi.mock('../lib/r2', async (importOriginal) => ({
   deleteFromR2: vi.fn(async () => {}),
 }));
 
+vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2Cleanup')>()),
+  drainSoon: vi.fn(),
+}));
+
 import { uploadToR2, deleteFromR2 } from '../lib/r2';
+import { drainSoon } from '../lib/r2Cleanup';
 import app from '../index';
 import { currentSeason } from '../lib/season';
 
@@ -20,8 +26,15 @@ const pool = new Pool({ connectionString: url });
 
 async function resetDb() {
   await pool.query(
-    'TRUNCATE accounts, guest_sessions, gardens, beds RESTART IDENTITY CASCADE',
+    'TRUNCATE accounts, guest_sessions, gardens, beds, harvest_entries, r2_deletions RESTART IDENTITY CASCADE',
   );
+}
+
+async function queued() {
+  const { rows } = await pool.query<{ bucket: string; path: string; is_prefix: boolean }>(
+    'SELECT bucket, path, is_prefix FROM r2_deletions ORDER BY id',
+  );
+  return rows;
 }
 
 async function createUser(email: string, password = 'Password123!'): Promise<number> {
@@ -432,9 +445,11 @@ describe('Garden thumbnails', () => {
     else process.env.R2_PUBLIC_BASE_URL = prevBaseUrl;
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.mocked(uploadToR2).mockClear();
     vi.mocked(deleteFromR2).mockClear();
+    vi.mocked(drainSoon).mockClear();
+    await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
   });
 
   it('account uploads to its garden → 200 and stores the URL', async () => {
@@ -503,12 +518,33 @@ describe('Garden thumbnails', () => {
     const gardenId = await createGarden(agent);
     const first = await upload(agent, gardenId);
     expect(first.status).toBe(200);
-    expect(deleteFromR2).not.toHaveBeenCalled();
+    expect(await queued()).toEqual([]);
 
     const second = await upload(agent, gardenId);
     expect(second.status).toBe(200);
-    expect(deleteFromR2).toHaveBeenCalledTimes(1);
-    expect(deleteFromR2).toHaveBeenCalledWith(first.body.thumbnailUrl.slice(BASE_URL.length + 1));
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: first.body.thumbnailUrl.slice(BASE_URL.length + 1), is_prefix: false },
+    ]);
+    expect(drainSoon).toHaveBeenCalled();
+    expect(await thumbnailUrl(gardenId)).toBe(second.body.thumbnailUrl);
+  });
+
+  it('queues the thumbnail that is current at commit, not the one read before the upload', async () => {
+    const gardenId = await createGarden(agent);
+    const first = await upload(agent, gardenId);
+    expect(first.status).toBe(200);
+    await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
+
+    // A concurrent upload replaces the thumbnail while this one is uploading.
+    const racedKey = `garden-thumbnails/${gardenId}/raced.png`;
+    vi.mocked(uploadToR2).mockImplementationOnce(async (key: string) => {
+      await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [`${BASE_URL}/${racedKey}`, gardenId]);
+      return `${BASE_URL}/${key}`;
+    });
+    const second = await upload(agent, gardenId);
+    expect(second.status).toBe(200);
+
+    expect(await queued()).toEqual([{ bucket: 'public', path: racedKey, is_prefix: false }]);
     expect(await thumbnailUrl(gardenId)).toBe(second.body.thumbnailUrl);
   });
 
@@ -523,7 +559,7 @@ describe('Garden thumbnails', () => {
     const res2 = await upload(agent, gardenId);
     expect(res2.status).toBe(200);
 
-    expect(deleteFromR2).not.toHaveBeenCalled();
+    expect(await queued()).toEqual([]);
   });
 
   it('R2 not configured → 503 and thumbnail_url unchanged', async () => {
@@ -555,21 +591,32 @@ describe('Garden thumbnails', () => {
     expect(rows[0].updated_at.toISOString()).toBe('2020-01-01T00:00:00.000Z');
   });
 
-  it('DELETE a garden with a thumbnail → 204 and deletes its object', async () => {
+  it('DELETE queues the thumbnail folder and every harvest folder', async () => {
     const gardenId = await createGarden(agent);
-    const up = await upload(agent, gardenId);
-    expect(up.status).toBe(200);
-
+    const { rows: h } = await pool.query<{ id: number }>(
+      'INSERT INTO harvest_entries (garden_id) VALUES ($1), ($1) RETURNING id',
+      [gardenId],
+    );
     const res = await agent.delete(`/api/gardens/${gardenId}`);
     expect(res.status).toBe(204);
-    expect(deleteFromR2).toHaveBeenCalledWith(up.body.thumbnailUrl.slice(BASE_URL.length + 1));
+    expect(await queued()).toEqual(
+      expect.arrayContaining([
+        { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+        { bucket: 'public', path: `harvest-photos/${h[0].id}/`, is_prefix: true },
+        { bucket: 'public', path: `harvest-photos/${h[1].id}/`, is_prefix: true },
+      ]),
+    );
+    expect(await queued()).toHaveLength(3);
+    expect(drainSoon).toHaveBeenCalledWith(expect.any(Array));
   });
 
-  it('DELETE a garden without a thumbnail → 204 and deletes nothing', async () => {
-    const gardenId = await createGarden(agent);
+  it("DELETE of someone else's garden is 404 and queues nothing", async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    const gardenId = await createGarden(guest);
     const res = await agent.delete(`/api/gardens/${gardenId}`);
-    expect(res.status).toBe(204);
-    expect(deleteFromR2).not.toHaveBeenCalled();
+    expect(res.status).toBe(404);
+    expect(await queued()).toEqual([]);
   });
 });
 

@@ -5,8 +5,8 @@ import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
 import { currentSeason } from '../lib/season';
-import { uploadToR2, deleteFromR2, isR2ConfigError, ownedThumbnailKey } from '../lib/r2';
-import { logger } from '../lib/logger';
+import { uploadToR2, isR2ConfigError, ownedThumbnailKey } from '../lib/r2';
+import { queueR2Deletions, queueDeletedGardens, drainSoon } from '../lib/r2Cleanup';
 
 const router = Router();
 router.use(requireSession);
@@ -107,16 +107,6 @@ function formatBed(row: BedRow) {
 // ── Thumbnail helpers ─────────────────────────────────────────────────────────
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-// Fire-and-forget: a failed R2 delete leaves an orphan object, never a failed request.
-function deleteThumbnailObject(key: string): void {
-  deleteFromR2(key).catch((err: unknown) => {
-    logger.warn('garden thumbnail R2 delete failed', {
-      key,
-      errMsg: err instanceof Error ? err.message : String(err),
-    });
-  });
-}
 
 const VALID_STYLES = new Set(['grid', 'freeform']);
 const VALID_GROWING_METHODS = new Set(['square_foot', 'container', 'raised_bed', 'in_ground']);
@@ -432,16 +422,36 @@ router.delete('/:id', writeLimiter, async (req, res) => {
   if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
-    const result = await db.query<{ id: string; thumbnail_url: string | null }>(
-      `DELETE FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)
-       RETURNING id, thumbnail_url`,
-      [gardenId, accountId, sessionId],
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Garden not found' });
+    const client = await db.connect();
+    let queuedIds: number[] = [];
+    try {
+      await client.query('BEGIN');
+      // Only an owned garden becomes a candidate, so a request can't lock
+      // someone else's garden row.
+      const { rows: owned } = await client.query<{ id: number }>(
+        'SELECT id FROM gardens WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)',
+        [gardenId, accountId, sessionId],
+      );
+      const { deleted, ids } = await queueDeletedGardens(
+        client,
+        owned.map((r) => r.id),
+        `DELETE FROM gardens WHERE id = ANY($1::int[]) AND (owner_id = $2 OR guest_session_id = $3)
+         RETURNING id`,
+        [accountId, sessionId],
+      );
+      if (deleted.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Garden not found' });
+      }
+      await client.query('COMMIT');
+      queuedIds = ids;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
     }
-    const thumbKey = ownedThumbnailKey(result.rows[0].thumbnail_url, gardenId);
-    if (thumbKey) deleteThumbnailObject(thumbKey);
+    drainSoon(queuedIds);
     res.status(204).send();
   } catch (err) {
     console.error('DELETE /gardens/:id error:', err);
@@ -522,10 +532,32 @@ router.post(
         throw err;
       }
 
-      await db.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [url, gardenId]);
-
-      const oldKey = ownedThumbnailKey(existing.rows[0].thumbnail_url, gardenId);
-      if (oldKey) deleteThumbnailObject(oldKey);
+      const client = await db.connect();
+      let queuedIds: number[] = [];
+      try {
+        await client.query('BEGIN');
+        // Re-read under lock: a concurrent upload may have replaced the
+        // thumbnail since the read above, and that one is what we replace.
+        const current = await client.query<{ thumbnail_url: string | null }>(
+          'SELECT thumbnail_url FROM gardens WHERE id = $1 FOR UPDATE',
+          [gardenId],
+        );
+        if (current.rows.length === 0) {
+          // Deleted meanwhile. Its queued folder delete covers the new upload.
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Garden not found' });
+        }
+        const oldKey = ownedThumbnailKey(current.rows[0].thumbnail_url, gardenId);
+        await client.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [url, gardenId]);
+        if (oldKey) queuedIds = await queueR2Deletions(client, [{ bucket: 'public', path: oldKey, isPrefix: false }]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
+      drainSoon(queuedIds);
 
       res.json({ thumbnailUrl: url });
     } catch (err) {

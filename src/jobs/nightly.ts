@@ -1,6 +1,7 @@
 import { jobDb as db } from '../lib/db'; // long-running work: job pool, 5-min statement cap
 import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
-import { deleteFromR2, exportsBucket, ownedThumbnailKey } from '../lib/r2';
+import { gardenThumbnailFolder, seedPhotoFolder, exportFolder } from '../lib/r2';
+import { queueR2Deletions, gardenFiles, drainR2Deletions, type R2Deletion } from '../lib/r2Cleanup';
 import { logger } from '../lib/logger';
 import { teardownCustomer } from '../lib/billing';
 import { exportKey } from '../lib/exportWorker';
@@ -128,52 +129,34 @@ export async function refreshGardenBadges(): Promise<{ affected: number }> {
 
 const GUEST_PURGE_BATCH = 5000;
 
-// Purges one batch of expired, unmigrated guest sessions, deleting the garden
-// thumbnails they saved to R2 first (guests can't upload anything else). If a
-// thumbnail delete fails the session row is kept: its cascade would delete the
-// gardens that record the keys, so tomorrow's run could never find them again.
+// Purges one batch of expired, unmigrated guest sessions and queues the
+// thumbnail folders of their gardens (guests can't upload anything else, and
+// thumbnails are uploaded by the server, so gardens without one own nothing).
 async function purgeExpiredGuestBatch(sessionIds: string[]): Promise<number> {
-  const { rows: gardens } = await db.query<{
-    id: number;
-    guest_session_id: string;
-    thumbnail_url: string | null;
-  }>(
-    `SELECT id, guest_session_id, thumbnail_url FROM gardens
-     WHERE guest_session_id = ANY($1::uuid[]) AND thumbnail_url IS NOT NULL`,
-    [sessionIds],
-  );
-  const keysBySession = new Map<string, string[]>();
-  for (const garden of gardens) {
-    const key = ownedThumbnailKey(garden.thumbnail_url, String(garden.id));
-    if (!key) continue;
-    const keys = keysBySession.get(garden.guest_session_id) ?? [];
-    keys.push(key);
-    keysBySession.set(garden.guest_session_id, keys);
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: gardens } = await client.query<{ id: number }>(
+      `SELECT id FROM gardens
+        WHERE guest_session_id = ANY($1::uuid[]) AND thumbnail_url IS NOT NULL`,
+      [sessionIds],
+    );
+    await queueR2Deletions(
+      client,
+      gardens.map((g) => ({ bucket: 'public', path: gardenThumbnailFolder(g.id), isPrefix: true })),
+    );
+    const result = await client.query('DELETE FROM guest_sessions WHERE id = ANY($1::uuid[])', [sessionIds]);
+    await client.query('COMMIT');
+    return result.rowCount ?? 0;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-
-  const purgeable: string[] = [];
-  for (const id of sessionIds) {
-    let key: string | undefined;
-    try {
-      for (const k of keysBySession.get(id) ?? []) {
-        key = k;
-        await deleteFromR2(k);
-      }
-      purgeable.push(id);
-    } catch (err) {
-      logger.warn('Could not delete R2 object for expired guest; keeping session', {
-        sessionId: id,
-        key,
-        errMsg: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-  if (purgeable.length === 0) return 0;
-  const result = await db.query('DELETE FROM guest_sessions WHERE id = ANY($1::uuid[])', [purgeable]);
-  return result.rowCount ?? 0;
 }
 
-// Deletes expired, unmigrated guest sessions (with their R2 thumbnails), then
+// Deletes expired, unmigrated guest sessions (queueing their R2 thumbnails), then
 // guest sessions over 2 days old that never created anything — those are
 // mostly bots and bounced visitors, and own nothing in R2. Both passes work in
 // batches so a flood of junk rows can't exhaust memory. Also deletes expired
@@ -184,8 +167,7 @@ export async function purgeExpiredGuests(
 ): Promise<{ affected: number }> {
   let guestsAffected = 0;
 
-  // Keyset pagination by id: rows kept after a failed R2 delete are skipped,
-  // not re-selected forever.
+  // Keyset pagination by id.
   let afterId: string | null = null;
   for (;;) {
     // Annotated: afterId is reassigned from rows, which defeats inference.
@@ -287,53 +269,10 @@ export async function purgeStripeEvents(): Promise<{ affected: number }> {
   return { affected: result.rowCount ?? 0 };
 }
 
-// Every R2 object an account owns: seed photos, harvest photos and garden
-// thumbnails in the default bucket, and complete export ZIPs in the exports
-// bucket. exportsBucket() is only called when the account has such an export.
-async function accountStorageKeys(
-  accountId: number,
-): Promise<Array<{ key: string; bucket?: string }>> {
-  const { rows: photos } = await db.query<{ key: string }>(
-    `SELECT sp.r2_key AS key
-     FROM seed_photos sp
-     JOIN seeds s ON s.id = sp.seed_id
-     WHERE s.owner_id = $1
-     UNION ALL
-     SELECT jsonb_array_elements(h.photos) ->> 'key' AS key
-     FROM harvest_entries h
-     JOIN gardens g ON g.id = h.garden_id
-     WHERE g.owner_id = $1`,
-    [accountId],
-  );
-  const { rows: gardens } = await db.query<{ id: number; thumbnail_url: string | null }>(
-    `SELECT id, thumbnail_url FROM gardens WHERE owner_id = $1 AND thumbnail_url IS NOT NULL`,
-    [accountId],
-  );
-  const { rows: exports } = await db.query<{ id: number }>(
-    `SELECT id FROM data_export_jobs WHERE account_id = $1 AND status = 'complete'`,
-    [accountId],
-  );
-
-  const keys: Array<{ key: string; bucket?: string }> = [];
-  for (const { key } of photos) {
-    if (key) keys.push({ key });
-  }
-  for (const garden of gardens) {
-    const key = ownedThumbnailKey(garden.thumbnail_url, String(garden.id));
-    if (key) keys.push({ key });
-  }
-  if (exports.length > 0) {
-    const bucket = exportsBucket();
-    for (const job of exports) keys.push({ key: exportKey(accountId, job.id), bucket });
-  }
-  return keys;
-}
-
-// Deletes accounts 30 days past their scheduled deletion, after ending their
-// Stripe customer and deleting every R2 object they own. If any of that fails
-// (or the exports bucket is misconfigured) the account row is kept: its
-// cascade would delete the rows that record the keys/ids, so tomorrow's run
-// could never find them again.
+// Deletes accounts 30 days past their scheduled deletion. Stripe is torn down
+// first; if that fails the account is kept for tomorrow. Its R2 folders (every
+// seed, garden and harvest it owns, and its exports) are queued in the same
+// transaction as the delete, so the drain owns them from then on.
 export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
   const { rows } = await db.query<{
     id: number;
@@ -344,28 +283,70 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
        FROM accounts WHERE deletion_scheduled_at + INTERVAL '30 days' < NOW()`,
   );
 
-  const purgeable: number[] = [];
+  let affected = 0;
   for (const { id, stripe_subscription_id, stripe_customer_id } of rows) {
-    let key: string | undefined;
     try {
       await teardownCustomer({ subId: stripe_subscription_id, customerId: stripe_customer_id });
-      for (const object of await accountStorageKeys(id)) {
-        key = object.key;
-        await deleteFromR2(object.key, object.bucket);
-      }
-      purgeable.push(id);
     } catch (err) {
-      logger.warn('Could not clean up external data for purged account; keeping account', {
+      logger.warn('Could not end Stripe customer for purged account; keeping account', {
         accountId: id,
-        key,
         errMsg: err instanceof Error ? err.message : String(err),
       });
+      continue;
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      // Recheck under the lock: the user may have cancelled deletion meanwhile.
+      const { rows: due } = await client.query(
+        `SELECT 1 FROM accounts
+          WHERE id = $1 AND deletion_scheduled_at + INTERVAL '30 days' < NOW()
+          FOR UPDATE`,
+        [id],
+      );
+      if (due.length === 0) {
+        await client.query('ROLLBACK');
+        continue;
+      }
+      const { rows: seeds } = await client.query<{ id: number }>(
+        'SELECT id FROM seeds WHERE owner_id = $1',
+        [id],
+      );
+      // Owned gardens, plus unmerged guest gardens of the account's sessions:
+      // guest_sessions.account_id is ON DELETE SET NULL, so those sessions are
+      // deleted explicitly below. Locked so no harvest moves in or out before
+      // gardenFiles reads them (see queueDeletedGardens).
+      const { rows: gardens } = await client.query<{ id: number }>(
+        `SELECT id FROM gardens
+          WHERE owner_id = $1
+             OR guest_session_id IN (SELECT id FROM guest_sessions WHERE account_id = $1)
+          FOR UPDATE`,
+        [id],
+      );
+      const files: R2Deletion[] = [
+        ...seeds.map((s): R2Deletion => ({ bucket: 'public', path: seedPhotoFolder(s.id), isPrefix: true })),
+        ...[...(await gardenFiles(client, gardens.map((g) => g.id))).values()].flat(),
+        { bucket: 'exports', path: exportFolder(id), isPrefix: true },
+      ];
+      await queueR2Deletions(client, files);
+      // Cascades the sessions' guest gardens and seeds.
+      await client.query('DELETE FROM guest_sessions WHERE account_id = $1', [id]);
+      await client.query('DELETE FROM accounts WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      affected += 1;
+    } catch (err) {
+      // One bad account must not stop the others; it is retried tomorrow.
+      await client.query('ROLLBACK').catch(() => {});
+      logger.warn('Could not purge account; keeping it', {
+        accountId: id,
+        errMsg: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      client.release();
     }
   }
-  if (purgeable.length === 0) return { affected: 0 };
-
-  const result = await db.query('DELETE FROM accounts WHERE id = ANY($1::int[])', [purgeable]);
-  return { affected: result.rowCount ?? 0 };
+  return { affected };
 }
 
 // Lifetime accounts have subscription_interval = 'lifetime', excluded by the
@@ -385,34 +366,33 @@ export async function checkSubscriptionDowngrades(): Promise<{ affected: number 
   return { affected: result.rowCount ?? 0 };
 }
 
-// Deletes expired export ZIPs from the private exports bucket, then their job
-// rows. A failed object delete is logged and does not keep the row. If the
-// exports bucket is misconfigured this throws before any row is deleted.
+// Removes export jobs that are done with: complete ones past expiry, and
+// failed or stuck ones over a day old (a failure can come after the upload, so
+// their ZIP may exist). Each row's ZIP is queued in the same transaction as
+// the row delete, so a row never goes without its file being queued.
 export async function purgeExpiredExports(): Promise<{ affected: number }> {
-  const { rows } = await db.query<{ id: number; account_id: number }>(
-    `SELECT id, account_id FROM data_export_jobs
-     WHERE status = 'complete' AND expires_at < NOW()`,
-  );
-  if (rows.length === 0) return { affected: 0 };
-
-  const bucket = exportsBucket();
-  for (const row of rows) {
-    const key = exportKey(row.account_id, row.id);
-    try {
-      await deleteFromR2(key, bucket);
-    } catch (err) {
-      logger.warn('Could not delete expired export from R2', {
-        jobId: row.id,
-        key,
-        errMsg: err instanceof Error ? err.message : String(err),
-      });
-    }
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query<{ id: number; account_id: number }>(
+      `DELETE FROM data_export_jobs
+        WHERE (status = 'complete' AND expires_at < NOW())
+           OR (status IN ('failed', 'pending', 'processing')
+               AND requested_at < NOW() - INTERVAL '1 day')
+        RETURNING id, account_id`,
+    );
+    await queueR2Deletions(
+      client,
+      rows.map((r) => ({ bucket: 'exports', path: exportKey(r.account_id, r.id), isPrefix: false })),
+    );
+    await client.query('COMMIT');
+    return { affected: rows.length };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-
-  const result = await db.query('DELETE FROM data_export_jobs WHERE id = ANY($1::int[])', [
-    rows.map((r) => r.id),
-  ]);
-  return { affected: result.rowCount ?? 0 };
 }
 
 export async function runNightlyJob(): Promise<void> {
@@ -434,6 +414,8 @@ export async function runNightlyJob(): Promise<void> {
     ['purgeScheduledAccounts', purgeScheduledAccounts],
     ['checkSubscriptionDowngrades', checkSubscriptionDowngrades],
     ['purgeExpiredExports', purgeExpiredExports],
+    // Last: drains what tonight's purges queued.
+    ['drainR2Deletions', () => drainR2Deletions()],
   ];
 
   for (const [name, task] of tasks) {

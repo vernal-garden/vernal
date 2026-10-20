@@ -2,8 +2,15 @@ import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
+
+vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2Cleanup')>()),
+  drainSoon: vi.fn(),
+}));
+
 import app from '../index';
 import * as sessionsModule from '../lib/sessions';
+import { drainSoon } from '../lib/r2Cleanup';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -11,8 +18,15 @@ if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
 const pool = new Pool({ connectionString: url });
 
 async function resetDb() {
-  await pool.query('TRUNCATE accounts, guest_sessions RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE accounts, guest_sessions, r2_deletions RESTART IDENTITY CASCADE');
   await pool.query('TRUNCATE cambium.seeds RESTART IDENTITY CASCADE');
+}
+
+async function queued() {
+  const { rows } = await pool.query<{ bucket: string; path: string; is_prefix: boolean }>(
+    'SELECT bucket, path, is_prefix FROM r2_deletions ORDER BY id',
+  );
+  return rows;
 }
 
 async function createUser(email: string, password = 'Password123!'): Promise<number> {
@@ -49,6 +63,7 @@ const BASE_GARDEN = {
 let activeCambiumSeedId: number;
 
 beforeEach(async () => {
+  vi.mocked(drainSoon).mockClear();
   await resetDb();
   const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO cambium.seeds (common_name, moderation_status, source)
@@ -268,6 +283,7 @@ describe('Test 8: Login with pending garden that has plantings', () => {
       [gardenId],
     );
     expect(rows[0].guest_session_id).not.toBeNull();
+    expect(await queued()).toEqual([]);
   });
 });
 
@@ -335,6 +351,10 @@ describe('Test 9b: POST /guest-data/discard', () => {
 
     const { rows } = await pool.query('SELECT id FROM gardens WHERE id = $1', [gardenId]);
     expect(rows).toHaveLength(0);
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+    ]);
+    expect(drainSoon).toHaveBeenCalledWith(expect.any(Array));
   });
 });
 
@@ -352,9 +372,60 @@ describe('Test 10: Login silent-discard (no plantings)', () => {
 
     const { rows } = await pool.query('SELECT id FROM gardens WHERE id = $1', [gardenId]);
     expect(rows).toHaveLength(0);
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+    ]);
 
     const sessionRes = await guestAgent.get('/api/auth/session');
     expect(sessionRes.body.data.pendingGuestData).toBeNull();
+  });
+});
+
+// ── Test 10b: Session deletes queue the session's pending guest gardens ───────
+
+describe('Test 10b: Deleting a session with pending guest data', () => {
+  async function loginWithPendingGarden(email: string) {
+    await createUser(email);
+    const guestAgent = await createGuestAgent();
+    const { body: gardenBody } = await guestAgent.post('/api/gardens').send(BASE_GARDEN).expect(201);
+    const gardenId: string = gardenBody.id;
+    const { body: bedBody } = await guestAgent
+      .post(`/api/gardens/${gardenId}/beds`)
+      .send({ type: 'grid', grid: { x: 0, y: 0, cols: 2, rows: 2 } })
+      .expect(201);
+    await guestAgent
+      .post(`/api/gardens/${gardenId}/beds/${bedBody.id}/plantings`)
+      .send({ cambiumSeedId: activeCambiumSeedId, cell: { x: 0, y: 0 } })
+      .expect(201);
+    await guestAgent.post('/api/auth/login').send({ email, password: 'Password123!' }).expect(200);
+    expect(await queued()).toEqual([]);
+    return { guestAgent, gardenId };
+  }
+
+  it('logout deletes the pending garden and queues its thumbnail folder', async () => {
+    const { guestAgent, gardenId } = await loginWithPendingGarden('logoutpending@example.com');
+
+    await guestAgent.delete('/api/auth/session').expect(200);
+
+    const { rows } = await pool.query('SELECT id FROM gardens WHERE id = $1', [gardenId]);
+    expect(rows).toHaveLength(0);
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+    ]);
+    expect(drainSoon).toHaveBeenCalledWith([expect.any(Number)]);
+  });
+
+  it('DELETE /api/me deletes the pending garden and queues its thumbnail folder', async () => {
+    const { guestAgent, gardenId } = await loginWithPendingGarden('mepending@example.com');
+
+    await guestAgent.delete('/api/me').expect(204);
+
+    const { rows } = await pool.query('SELECT id FROM gardens WHERE id = $1', [gardenId]);
+    expect(rows).toHaveLength(0);
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+    ]);
+    expect(drainSoon).toHaveBeenCalledWith([expect.any(Number)]);
   });
 });
 

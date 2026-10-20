@@ -25,8 +25,41 @@ import { LOCATION_NOT_SET } from '../lib/constants';
 import { isValidEmail } from '../lib/validation';
 import { OAUTH_NONCE_COOKIE, OAUTH_NONCE_COOKIE_OPTIONS, buildOAuthState, verifyOAuthState } from '../lib/oauth/state';
 import { resolveOAuthAccount, OAuthUnverifiedEmailError } from '../lib/oauth/resolveAccount';
+import { queueDeletedGardens, queueSessionGardens, drainSoon } from '../lib/r2Cleanup';
 
 export const authRouter = Router();
+
+// Deletes this guest's gardens that have no plantings, queueing their R2
+// folders. The emptiness check is re-run in the DELETE, so a garden that gets
+// a planting in between survives and keeps its files.
+async function discardEmptyGuestGardens(sessionId: string): Promise<void> {
+  const client = await db.connect();
+  let queuedIds: number[] = [];
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query<{ id: number }>(
+      'SELECT id FROM gardens WHERE guest_session_id = $1',
+      [sessionId],
+    );
+    ({ ids: queuedIds } = await queueDeletedGardens(
+      client,
+      rows.map((r) => r.id),
+      `DELETE FROM gardens
+        WHERE id = ANY($1::int[]) AND guest_session_id = $2
+          AND NOT EXISTS (SELECT 1 FROM plantings p JOIN beds b ON b.id = p.bed_id
+                          WHERE b.garden_id = gardens.id)
+        RETURNING id`,
+      [sessionId],
+    ));
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    client.release();
+  }
+  drainSoon(queuedIds);
+}
 
 // POST /api/auth/guest
 // Creates a guest session for first-time visitors with no cookie.
@@ -107,10 +140,24 @@ authRouter.get('/session', async (req: Request, res: Response): Promise<void> =>
 // DELETE /api/auth/session
 // Clears the session cookie. For an account session the row is deleted too, so
 // a copied cookie stops working. Guest rows are kept: expired guest sessions
-// stay recoverable and are cleaned up by the nightly job.
+// stay recoverable and are cleaned up by the nightly job. The row's unmerged
+// guest gardens would cascade away with it, so they are deleted and queued first.
 authRouter.delete('/session', async (req: Request, res: Response): Promise<void> => {
   if (req.session && !req.session.isGuest) {
-    await db.query('DELETE FROM guest_sessions WHERE token = $1', [req.session.token]);
+    const client = await db.connect();
+    let queuedIds: number[] = [];
+    try {
+      await client.query('BEGIN');
+      queuedIds = await queueSessionGardens(client, [req.session.id]);
+      await client.query('DELETE FROM guest_sessions WHERE token = $1', [req.session.token]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    drainSoon(queuedIds);
   }
   clearSessionCookie(res);
   res.json({ data: { success: true } });
@@ -277,16 +324,7 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response): Prom
 
   // Silent-discard: delete any guest gardens with zero plantings (cascade removes beds).
   // Gardens with plantings survive for the merge prompt.
-  if (sessionId) {
-    await db.query(
-      `DELETE FROM gardens
-       WHERE guest_session_id = $1
-         AND (SELECT COUNT(*) FROM plantings p
-              JOIN beds b ON b.id = p.bed_id
-              WHERE b.garden_id = gardens.id) = 0`,
-      [sessionId],
-    );
-  }
+  if (sessionId) await discardEmptyGuestGardens(sessionId);
 
   res.json({
     data: {
@@ -579,14 +617,7 @@ authRouter.get(
 
       // Existing accounts: silent-discard guest gardens with zero plantings
       if (!isNew && guestSessionId) {
-        await db.query(
-          `DELETE FROM gardens
-           WHERE guest_session_id = $1
-             AND (SELECT COUNT(*) FROM plantings p
-                  JOIN beds b ON b.id = p.bed_id
-                  WHERE b.garden_id = gardens.id) = 0`,
-          [guestSessionId],
-        );
+        await discardEmptyGuestGardens(guestSessionId);
       }
 
       res.redirect(`${process.env.FRONTEND_URL}${returnTo}`);
@@ -631,11 +662,22 @@ authRouter.post(
   async (req: Request, res: Response): Promise<void> => {
     const sessionId = req.session!.id;
     const client = await db.connect();
+    let queuedIds: number[] = [];
     try {
       await client.query('BEGIN');
-      await client.query('DELETE FROM gardens WHERE guest_session_id = $1', [sessionId]);
+      const { rows } = await client.query<{ id: number }>(
+        'SELECT id FROM gardens WHERE guest_session_id = $1',
+        [sessionId],
+      );
+      ({ ids: queuedIds } = await queueDeletedGardens(
+        client,
+        rows.map((r) => r.id),
+        'DELETE FROM gardens WHERE id = ANY($1::int[]) AND guest_session_id = $2 RETURNING id',
+        [sessionId],
+      ));
       await client.query('DELETE FROM seeds    WHERE guest_session_id = $1', [sessionId]);
       await client.query('COMMIT');
+      drainSoon(queuedIds);
       res.json({ data: { discarded: true } });
     } catch (err) {
       await client.query('ROLLBACK');

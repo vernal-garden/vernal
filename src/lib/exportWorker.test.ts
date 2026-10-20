@@ -8,6 +8,7 @@ vi.mock('./r2', () => ({
   getPresignedDownloadUrl: vi.fn(),
   deleteFromR2: vi.fn(),
   exportsBucket: vi.fn(() => 'test-exports'),
+  exportFolder: (id: number) => `exports/${id}/`,
 }));
 
 // Minimal stand-in for archiver's ZipArchive: records entry names and writes a

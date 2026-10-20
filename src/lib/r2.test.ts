@@ -14,6 +14,8 @@ vi.mock('@aws-sdk/client-s3', () => {
     PutObjectCommand: class PutObjectCommand extends FakeCommand {},
     GetObjectCommand: class GetObjectCommand extends FakeCommand {},
     DeleteObjectCommand: class DeleteObjectCommand extends FakeCommand {},
+    ListObjectsV2Command: class ListObjectsV2Command extends FakeCommand {},
+    DeleteObjectsCommand: class DeleteObjectsCommand extends FakeCommand {},
   };
 });
 
@@ -21,13 +23,26 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: getSignedUrlMock,
 }));
 
-import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import {
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
+} from '@aws-sdk/client-s3';
 import {
   uploadToR2,
   getPresignedUploadUrl,
   getPresignedDownloadUrl,
   deleteFromR2,
   exportsBucket,
+  deletePrefixFromR2,
+  listFolders,
+  listKeys,
+  seedPhotoFolder,
+  harvestPhotoFolder,
+  gardenThumbnailFolder,
+  exportFolder,
 } from './r2';
 
 const R2_ENV = {
@@ -139,6 +154,77 @@ describe('r2', () => {
     const cmd = sendMock.mock.calls[0][0];
     expect(cmd).toBeInstanceOf(DeleteObjectCommand);
     expect(cmd.input).toEqual({ Bucket: 'test-exports', Key: 'exports/1/2.zip' });
+  });
+
+  describe('folders', () => {
+    it('builds folder paths with a trailing slash', () => {
+      expect(seedPhotoFolder(5)).toBe('seed-photos/5/');
+      expect(harvestPhotoFolder('7')).toBe('harvest-photos/7/');
+      expect(gardenThumbnailFolder(9)).toBe('garden-thumbnails/9/');
+      expect(exportFolder(3)).toBe('exports/3/');
+    });
+
+    it('deletePrefixFromR2 rejects a prefix without a trailing slash', async () => {
+      await expect(deletePrefixFromR2('seed-photos/5')).rejects.toThrow('must end with /');
+      expect(sendMock).not.toHaveBeenCalled();
+    });
+
+    it('deletePrefixFromR2 pages through the listing and deletes each page', async () => {
+      sendMock
+        .mockResolvedValueOnce({
+          Contents: [{ Key: 'seed-photos/5/a.jpg' }, { Key: 'seed-photos/5/b.jpg' }],
+          IsTruncated: true,
+          NextContinuationToken: 'tok',
+        })
+        .mockResolvedValueOnce({}) // DeleteObjects, page 1
+        .mockResolvedValueOnce({ Contents: [{ Key: 'seed-photos/5/c.jpg' }], IsTruncated: false })
+        .mockResolvedValueOnce({}); // DeleteObjects, page 2
+
+      await deletePrefixFromR2('seed-photos/5/');
+
+      const cmds = sendMock.mock.calls.map((c) => c[0]);
+      expect(cmds[0]).toBeInstanceOf(ListObjectsV2Command);
+      expect(cmds[0].input).toMatchObject({ Bucket: 'test-bucket', Prefix: 'seed-photos/5/' });
+      expect(cmds[1]).toBeInstanceOf(DeleteObjectsCommand);
+      expect(cmds[1].input).toMatchObject({
+        Bucket: 'test-bucket',
+        Delete: { Objects: [{ Key: 'seed-photos/5/a.jpg' }, { Key: 'seed-photos/5/b.jpg' }], Quiet: true },
+      });
+      expect(cmds[2].input).toMatchObject({ ContinuationToken: 'tok' });
+      expect(cmds[3].input).toMatchObject({ Delete: { Objects: [{ Key: 'seed-photos/5/c.jpg' }] } });
+    });
+
+    it('deletePrefixFromR2 sends no delete for an empty folder', async () => {
+      sendMock.mockResolvedValueOnce({ IsTruncated: false });
+      await deletePrefixFromR2('seed-photos/5/');
+      expect(sendMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('deletePrefixFromR2 throws when R2 reports per-key errors', async () => {
+      sendMock
+        .mockResolvedValueOnce({ Contents: [{ Key: 'seed-photos/5/a.jpg' }], IsTruncated: false })
+        .mockResolvedValueOnce({ Errors: [{ Key: 'seed-photos/5/a.jpg', Message: 'nope' }] });
+      await expect(deletePrefixFromR2('seed-photos/5/')).rejects.toThrow('1 object(s)');
+    });
+
+    it('deletePrefixFromR2 uses the given bucket', async () => {
+      sendMock.mockResolvedValueOnce({ IsTruncated: false });
+      await deletePrefixFromR2('exports/3/', 'test-exports');
+      expect(sendMock.mock.calls[0][0].input).toMatchObject({ Bucket: 'test-exports' });
+    });
+
+    it('listFolders returns CommonPrefixes across pages', async () => {
+      sendMock
+        .mockResolvedValueOnce({ CommonPrefixes: [{ Prefix: 'seed-photos/1/' }], IsTruncated: true, NextContinuationToken: 't' })
+        .mockResolvedValueOnce({ CommonPrefixes: [{ Prefix: 'seed-photos/2/' }], IsTruncated: false });
+      expect(await listFolders('seed-photos/')).toEqual(['seed-photos/1/', 'seed-photos/2/']);
+      expect(sendMock.mock.calls[0][0].input).toMatchObject({ Prefix: 'seed-photos/', Delimiter: '/' });
+    });
+
+    it('listKeys returns every key under a prefix', async () => {
+      sendMock.mockResolvedValueOnce({ Contents: [{ Key: 'exports/3/1.zip' }, { Key: 'exports/3/2.zip' }], IsTruncated: false });
+      expect(await listKeys('exports/3/', 'test-exports')).toEqual(['exports/3/1.zip', 'exports/3/2.zip']);
+    });
   });
 
   describe('exportsBucket', () => {

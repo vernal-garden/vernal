@@ -13,6 +13,7 @@ import { isValidEmail } from '../lib/validation';
 import { stopRenewal, resumeRenewal } from '../lib/billing';
 import { processExportJob } from '../lib/exportWorker';
 import { invalidateMetrics } from '../lib/metricsCache';
+import { queueSessionGardens, drainSoon } from '../lib/r2Cleanup';
 
 const router = Router();
 router.use(requireAuth);
@@ -553,6 +554,7 @@ router.get('/email/confirm', async (req, res) => {
 router.delete('/', async (req, res) => {
   const accountId = req.session!.account!.id;
   const sessionToken = req.session!.token;
+  const sessionId = req.session!.id;
 
   try {
     // Stop renewal before scheduling anything: if Stripe can't be reached we
@@ -577,6 +579,7 @@ router.delete('/', async (req, res) => {
     }
 
     const client = await db.connect();
+    let queuedIds: number[] = [];
     try {
       await client.query('BEGIN');
       await client.query(
@@ -586,6 +589,8 @@ router.delete('/', async (req, res) => {
          WHERE id = $1`,
         [accountId],
       );
+      // The session's unmerged guest gardens would cascade away with its row.
+      queuedIds = await queueSessionGardens(client, [sessionId]);
       await client.query('DELETE FROM guest_sessions WHERE token = $1', [sessionToken]);
       await client.query('COMMIT');
     } catch (txErr) {
@@ -594,6 +599,7 @@ router.delete('/', async (req, res) => {
     } finally {
       client.release();
     }
+    drainSoon(queuedIds);
     clearSessionCookie(res);
 
     res.status(204).send();

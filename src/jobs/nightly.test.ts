@@ -6,6 +6,7 @@ vi.mock('../lib/r2', async (importOriginal) => ({
   uploadToR2: vi.fn(),
   getPresignedDownloadUrl: vi.fn(),
   deleteFromR2: vi.fn(),
+  deletePrefixFromR2: vi.fn(),
   exportsBucket: vi.fn(() => 'test-exports'),
 }));
 
@@ -43,9 +44,17 @@ const CURRENT_YEAR = currentSeason();
 
 async function resetDb() {
   await pool.query(
-    'TRUNCATE accounts, guest_sessions, gardens, beds, plantings, seeds, password_reset_tokens, job_runs RESTART IDENTITY CASCADE',
+    `TRUNCATE accounts, guest_sessions, gardens, beds, plantings, seeds, seed_photos, harvest_entries,
+       data_export_jobs, password_reset_tokens, job_runs, r2_deletions RESTART IDENTITY CASCADE`,
   );
   await pool.query('TRUNCATE cambium.seeds, cambium.companions RESTART IDENTITY CASCADE');
+}
+
+async function queued() {
+  const { rows } = await pool.query<{ bucket: string; path: string; is_prefix: boolean }>(
+    'SELECT bucket, path, is_prefix FROM r2_deletions ORDER BY id',
+  );
+  return rows;
 }
 
 let emailCounter = 0;
@@ -593,7 +602,7 @@ describe('purgeExpiredGuests', () => {
 
   async function createGuestWithThumbnail(
     token: string,
-    opts: { migratedToAccountId?: number } = {},
+    opts: { migratedToAccountId?: number; thumbnail?: boolean } = {},
   ): Promise<{ sessionId: string; gardenId: number }> {
     const { rows: sessions } = await pool.query<{ id: string }>(
       `INSERT INTO guest_sessions (token, expires_at, migrated_at, account_id)
@@ -609,10 +618,12 @@ describe('purgeExpiredGuests', () => {
       [sessionId],
     );
     const gardenId = gardens[0].id;
-    await pool.query(`UPDATE gardens SET thumbnail_url = $1 WHERE id = $2`, [
-      `${BASE}/garden-thumbnails/${gardenId}/x.png`,
-      gardenId,
-    ]);
+    if (opts.thumbnail !== false) {
+      await pool.query(`UPDATE gardens SET thumbnail_url = $1 WHERE id = $2`, [
+        `${BASE}/garden-thumbnails/${gardenId}/x.png`,
+        gardenId,
+      ]);
+    }
     return { sessionId, gardenId };
   }
 
@@ -626,27 +637,31 @@ describe('purgeExpiredGuests', () => {
     return rows.map((r) => r.id);
   }
 
-  it('deletes the thumbnail of an expired guest before the session', async () => {
+  it('queues the thumbnail folder of an expired guest and deletes the session', async () => {
     const { sessionId, gardenId } = await createGuestWithThumbnail('nightly-guest-thumb');
 
     const { affected } = await purgeExpiredGuests();
 
     expect(affected).toBe(1);
-    expect(deleteFromR2Mock).toHaveBeenCalledTimes(1);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(`garden-thumbnails/${gardenId}/x.png`);
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+    ]);
+    expect(deleteFromR2Mock).not.toHaveBeenCalled();
     expect(await sessionIds()).not.toContain(sessionId);
     expect(await gardenIds()).not.toContain(gardenId);
   });
 
-  it('keeps an expired guest whose thumbnail delete fails', async () => {
-    const { sessionId, gardenId } = await createGuestWithThumbnail('nightly-guest-fail');
-    deleteFromR2Mock.mockRejectedValueOnce(new Error('R2 down'));
+  it('queues nothing for an expired guest garden without a thumbnail', async () => {
+    const { sessionId, gardenId } = await createGuestWithThumbnail('nightly-guest-nothumb', {
+      thumbnail: false,
+    });
 
     const { affected } = await purgeExpiredGuests();
 
-    expect(affected).toBe(0);
-    expect(await sessionIds()).toContain(sessionId);
-    expect(await gardenIds()).toContain(gardenId);
+    expect(affected).toBe(1);
+    expect(await queued()).toEqual([]);
+    expect(await sessionIds()).not.toContain(sessionId);
+    expect(await gardenIds()).not.toContain(gardenId);
   });
 
   it('does not touch a migrated guest session or its thumbnail', async () => {
@@ -657,7 +672,7 @@ describe('purgeExpiredGuests', () => {
 
     await purgeExpiredGuests();
 
-    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+    expect(await queued()).toEqual([]);
     expect(await sessionIds()).toContain(sessionId);
     expect(await gardenIds()).toContain(gardenId);
   });
@@ -774,7 +789,7 @@ describe('purgeExpiredGuests — empty guests and batching', () => {
     expect(await existingIds()).toHaveLength(0);
   });
 
-  it('works through more expired guests than one batch, even when one is kept', async () => {
+  it('works through more expired guests than one batch', async () => {
     const BASE = 'https://cdn.example.com';
     const saved = process.env.R2_PUBLIC_BASE_URL;
     process.env.R2_PUBLIC_BASE_URL = BASE;
@@ -792,12 +807,12 @@ describe('purgeExpiredGuests — empty guests and batching', () => {
         ]);
         ids.push(id);
       }
-      deleteFromR2Mock.mockRejectedValueOnce(new Error('R2 down'));
 
       const { affected } = await purgeExpiredGuests({ batchSize: 1 });
 
-      expect(affected).toBe(2);
-      expect(await existingIds()).toHaveLength(1);
+      expect(affected).toBe(3);
+      expect(await existingIds()).toHaveLength(0);
+      expect(await queued()).toHaveLength(3);
     } finally {
       if (saved === undefined) delete process.env.R2_PUBLIC_BASE_URL;
       else process.env.R2_PUBLIC_BASE_URL = saved;
@@ -884,7 +899,20 @@ describe('purgeScheduledAccounts', () => {
     const { affected } = await purgeScheduledAccounts();
     expect(affected).toBe(0);
     expect(await accountIds()).toContain(id);
-    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+    expect(await queued()).toEqual([]);
+  });
+
+  it('keeps the account when its deletion is cancelled between the scan and the purge', async () => {
+    const id = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    await createPersonalSeed(id, 60);
+    teardownCustomerMock.mockImplementationOnce(async () => {
+      await pool.query('UPDATE accounts SET deletion_scheduled_at = NULL WHERE id = $1', [id]);
+    });
+
+    const { affected } = await purgeScheduledAccounts();
+    expect(affected).toBe(0);
+    expect(await accountIds()).toContain(id);
+    expect(await queued()).toEqual([]);
   });
 
   it('purges the other accounts in a batch when one teardown fails', async () => {
@@ -910,16 +938,13 @@ describe('purgeScheduledAccounts', () => {
     );
   }
 
-  async function createHarvestEntry(gardenId: number, keys: string[]): Promise<void> {
+  async function createHarvestEntry(gardenId: number, keys: string[]): Promise<number> {
     const photos = keys.map((key) => ({ key, url: `${BASE}/${key}` }));
-    await pool.query(`INSERT INTO harvest_entries (garden_id, photos) VALUES ($1, $2::jsonb)`, [
-      gardenId,
-      JSON.stringify(photos),
-    ]);
-  }
-
-  async function setThumbnail(gardenId: number, url: string): Promise<void> {
-    await pool.query(`UPDATE gardens SET thumbnail_url = $1 WHERE id = $2`, [url, gardenId]);
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO harvest_entries (garden_id, photos) VALUES ($1, $2::jsonb) RETURNING id`,
+      [gardenId, JSON.stringify(photos)],
+    );
+    return rows[0].id;
   }
 
   async function createExportJob(accountId: number, status = 'complete'): Promise<number> {
@@ -946,80 +971,58 @@ describe('purgeScheduledAccounts', () => {
     expect(ids).toContain(idWithinGrace);
   });
 
-  it('deletes seed photos, owned thumbnails and complete exports before the account', async () => {
+  it('queues every folder the account owns in the same transaction as the delete', async () => {
     const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
     const seedId = await createPersonalSeed(accountId, 60);
-    await createSeedPhoto(seedId, 'seed-photos/a.jpg');
-    await createSeedPhoto(seedId, 'seed-photos/b.jpg');
+    await createSeedPhoto(seedId, `seed-photos/${seedId}/a.jpg`);
     const gardenId = await createGarden(accountId);
-    await setThumbnail(gardenId, `${BASE}/garden-thumbnails/${gardenId}/x.png`);
-    const jobId = await createExportJob(accountId);
-    await createExportJob(accountId, 'failed');
+    const harvestId = await createHarvestEntry(gardenId, ['harvest-photos/1/x.jpg']);
+    await createExportJob(accountId);
 
     const { affected } = await purgeScheduledAccounts();
 
     expect(affected).toBe(1);
-    expect(deleteFromR2Mock).toHaveBeenCalledTimes(4);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith('seed-photos/a.jpg', undefined);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith('seed-photos/b.jpg', undefined);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(
-      `garden-thumbnails/${gardenId}/x.png`,
-      undefined,
-    );
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(
-      `exports/${accountId}/${jobId}.zip`,
-      'test-exports',
-    );
     expect(await accountIds()).not.toContain(accountId);
-  });
-
-  it('deletes every harvest photo in the account gardens', async () => {
-    const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
-    const gardenId = await createGarden(accountId);
-    await createHarvestEntry(gardenId, ['harvest-photos/1.jpg', 'harvest-photos/2.jpg']);
-
-    const { affected } = await purgeScheduledAccounts();
-
-    expect(affected).toBe(1);
-    expect(deleteFromR2Mock).toHaveBeenCalledTimes(2);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith('harvest-photos/1.jpg', undefined);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith('harvest-photos/2.jpg', undefined);
-    expect(exportsBucketMock).not.toHaveBeenCalled();
-    expect(await accountIds()).not.toContain(accountId);
-  });
-
-  it('does not delete a thumbnail outside the garden own prefix', async () => {
-    const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
-    const gardenId = await createGarden(accountId);
-    await setThumbnail(gardenId, `${BASE}/garden-thumbnails/${gardenId + 1000}/x.png`);
-
-    const { affected } = await purgeScheduledAccounts();
-
-    expect(affected).toBe(1);
+    const rows = await queued();
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { bucket: 'public', path: `seed-photos/${seedId}/`, is_prefix: true },
+        { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+        { bucket: 'public', path: `harvest-photos/${harvestId}/`, is_prefix: true },
+        { bucket: 'exports', path: `exports/${accountId}/`, is_prefix: true },
+      ]),
+    );
+    expect(rows).toHaveLength(4);
     expect(deleteFromR2Mock).not.toHaveBeenCalled();
-    expect(await accountIds()).not.toContain(accountId);
   });
 
-  it('keeps an account whose object delete fails and still purges others', async () => {
-    const failingId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
-    const seedId = await createPersonalSeed(failingId, 60);
-    await createSeedPhoto(seedId, 'seed-photos/ok.jpg');
-    await createSeedPhoto(seedId, 'seed-photos/boom.jpg');
-    const emptyId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
-    deleteFromR2Mock.mockImplementation(async (key: string) => {
-      if (key === 'seed-photos/boom.jpg') throw new Error('R2 unavailable');
-    });
+  it("deletes the account's sessions and queues their pending guest gardens", async () => {
+    const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const { rows: sessions } = await pool.query<{ id: string }>(
+      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+       VALUES ('purge-linked', NOW() + INTERVAL '1 day', $1, NOW()) RETURNING id`,
+      [accountId],
+    );
+    const sessionId = sessions[0].id;
+    const { rows: gardens } = await pool.query<{ id: number }>(
+      `INSERT INTO gardens (guest_session_id, name, style, zone)
+       VALUES ($1, 'Pending guest garden', 'grid', '7a') RETURNING id`,
+      [sessionId],
+    );
+    const gardenId = gardens[0].id;
+    const harvestId = await createHarvestEntry(gardenId, ['harvest-photos/1/x.jpg']);
 
     const { affected } = await purgeScheduledAccounts();
 
     expect(affected).toBe(1);
-    const ids = await accountIds();
-    expect(ids).toContain(failingId);
-    expect(ids).not.toContain(emptyId);
-    const { rows } = await pool.query<{ r2_key: string }>(
-      'SELECT r2_key FROM seed_photos ORDER BY r2_key',
+    expect((await pool.query('SELECT id FROM gardens WHERE id = $1', [gardenId])).rows).toHaveLength(0);
+    expect((await pool.query('SELECT id FROM guest_sessions WHERE id = $1', [sessionId])).rows).toHaveLength(0);
+    expect(await queued()).toEqual(
+      expect.arrayContaining([
+        { bucket: 'public', path: `garden-thumbnails/${gardenId}/`, is_prefix: true },
+        { bucket: 'public', path: `harvest-photos/${harvestId}/`, is_prefix: true },
+      ]),
     );
-    expect(rows.map((r) => r.r2_key)).toEqual(['seed-photos/boom.jpg', 'seed-photos/ok.jpg']);
   });
 
   it('does not touch the files of an account still within its grace period', async () => {
@@ -1032,7 +1035,7 @@ describe('purgeScheduledAccounts', () => {
     const { affected } = await purgeScheduledAccounts();
 
     expect(affected).toBe(0);
-    expect(deleteFromR2Mock).not.toHaveBeenCalled();
+    expect(await queued()).toEqual([]);
     expect(await accountIds()).toContain(accountId);
   });
 });
@@ -1085,55 +1088,95 @@ describe('purgeExpiredExports', () => {
     exportsBucketMock.mockReset().mockReturnValue('test-exports');
   });
 
-  it('deletes expired export ZIPs from R2 and removes their rows, keeping unexpired ones', async () => {
-    const accountId = await createAccount();
+  async function insertJob(
+    accountId: number,
+    status: string,
+    { requestedAgo = '0 seconds', expiresIn = null }: { requestedAgo?: string; expiresIn?: string | null } = {},
+  ): Promise<number> {
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO data_export_jobs (account_id, status, download_url, expires_at)
-       VALUES ($1, 'complete', 'https://signed.example.com/old', NOW() - INTERVAL '1 day'),
-              ($1, 'complete', 'https://signed.example.com/new', NOW() + INTERVAL '3 days')
+      `INSERT INTO data_export_jobs (account_id, status, requested_at, expires_at)
+       VALUES ($1, $2, NOW() - $3::interval,
+               CASE WHEN $4::text IS NULL THEN NULL ELSE NOW() + $4::interval END)
        RETURNING id`,
-      [accountId],
+      [accountId, status, requestedAgo, expiresIn],
     );
-    const [expiredId, freshId] = rows.map((r) => r.id);
+    return rows[0].id;
+  }
+
+  async function jobIds(): Promise<number[]> {
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM data_export_jobs ORDER BY id');
+    return rows.map((r) => r.id);
+  }
+
+  it('deletes an expired complete job and queues its ZIP', async () => {
+    const accountId = await createAccount();
+    const jobId = await insertJob(accountId, 'complete', { expiresIn: '-1 day' });
 
     const { affected } = await purgeExpiredExports();
 
     expect(affected).toBe(1);
-    expect(deleteFromR2Mock).toHaveBeenCalledTimes(1);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(
-      `exports/${accountId}/${expiredId}.zip`,
-      'test-exports',
-    );
-    const { rows: remaining } = await pool.query<{ id: number }>(
-      'SELECT id FROM data_export_jobs ORDER BY id',
-    );
-    expect(remaining.map((r) => r.id)).toEqual([freshId]);
+    expect(await jobIds()).toEqual([]);
+    expect(await queued()).toEqual([
+      { bucket: 'exports', path: `exports/${accountId}/${jobId}.zip`, is_prefix: false },
+    ]);
+    expect(deleteFromR2Mock).not.toHaveBeenCalled();
   });
 
-  it('rejects and keeps the expired row when the exports bucket is not configured', async () => {
-    exportsBucketMock.mockImplementation(() => {
-      throw new Error('R2_EXPORTS_BUCKET_NAME is not set.');
-    });
+  it('keeps an unexpired complete job and queues nothing', async () => {
     const accountId = await createAccount();
-    const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO data_export_jobs (account_id, status, download_url, expires_at)
-       VALUES ($1, 'complete', 'https://signed.example.com/old', NOW() - INTERVAL '1 day')
-       RETURNING id`,
-      [accountId],
-    );
+    const jobId = await insertJob(accountId, 'complete', { expiresIn: '3 days' });
 
-    await expect(purgeExpiredExports()).rejects.toThrow('R2_EXPORTS_BUCKET_NAME is not set.');
+    const { affected } = await purgeExpiredExports();
 
-    expect(deleteFromR2Mock).not.toHaveBeenCalled();
-    const { rows: remaining } = await pool.query<{ id: number }>(
-      'SELECT id FROM data_export_jobs ORDER BY id',
-    );
-    expect(remaining.map((r) => r.id)).toEqual([rows[0].id]);
+    expect(affected).toBe(0);
+    expect(await jobIds()).toEqual([jobId]);
+    expect(await queued()).toEqual([]);
+  });
+
+  it('deletes a failed job requested over a day ago and queues its key', async () => {
+    const accountId = await createAccount();
+    const jobId = await insertJob(accountId, 'failed', { requestedAgo: '2 days' });
+
+    const { affected } = await purgeExpiredExports();
+
+    expect(affected).toBe(1);
+    expect(await jobIds()).toEqual([]);
+    expect(await queued()).toEqual([
+      { bucket: 'exports', path: `exports/${accountId}/${jobId}.zip`, is_prefix: false },
+    ]);
+  });
+
+  it('keeps a failed job requested an hour ago', async () => {
+    const accountId = await createAccount();
+    const jobId = await insertJob(accountId, 'failed', { requestedAgo: '1 hour' });
+
+    const { affected } = await purgeExpiredExports();
+
+    expect(affected).toBe(0);
+    expect(await jobIds()).toEqual([jobId]);
+    expect(await queued()).toEqual([]);
+  });
+
+  it('deletes a processing job stuck for over a day and queues its key', async () => {
+    const accountId = await createAccount();
+    const jobId = await insertJob(accountId, 'processing', { requestedAgo: '2 days' });
+
+    const { affected } = await purgeExpiredExports();
+
+    expect(affected).toBe(1);
+    expect(await jobIds()).toEqual([]);
+    expect(await queued()).toEqual([
+      { bucket: 'exports', path: `exports/${accountId}/${jobId}.zip`, is_prefix: false },
+    ]);
   });
 });
 
 describe('runNightlyJob', () => {
-  beforeEach(resetDb);
+  beforeEach(async () => {
+    await resetDb();
+    deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
+    exportsBucketMock.mockReset().mockReturnValue('test-exports');
+  });
 
   it('runs to completion and records an ok job_runs row', async () => {
     await runNightlyJob();
@@ -1144,6 +1187,23 @@ describe('runNightlyJob', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('ok');
     expect(rows[0].finished_at).not.toBeNull();
+  });
+
+  it('drains what the purges queued in the same run, as the last task', async () => {
+    const accountId = await createAccount();
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO data_export_jobs (account_id, status, expires_at)
+       VALUES ($1, 'complete', NOW() - INTERVAL '1 day') RETURNING id`,
+      [accountId],
+    );
+
+    await runNightlyJob();
+
+    expect(deleteFromR2Mock).toHaveBeenCalledWith(
+      `exports/${accountId}/${rows[0].id}.zip`,
+      'test-exports',
+    );
+    expect(await queued()).toEqual([]);
   });
 });
 

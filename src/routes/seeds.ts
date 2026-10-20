@@ -2,7 +2,9 @@ import { Router } from 'express';
 import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
 import { isNumericId } from '../lib/validation';
-import seedPhotosRouter, { deletePhotoObject } from './seedPhotos';
+import seedPhotosRouter from './seedPhotos';
+import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
+import { seedPhotoFolder } from '../lib/r2';
 
 const router = Router();
 router.use(requireAuth);
@@ -857,14 +859,28 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
-    const photoKeys = await db.query<{ r2_key: string }>(
-      'SELECT r2_key FROM seed_photos WHERE seed_id = $1',
-      [seedId],
-    );
-
-    await db.query('DELETE FROM seeds WHERE id = $1', [seedId]);
-    // The cascade removes the seed_photos rows; this removes the files.
-    for (const { r2_key } of photoKeys.rows) deletePhotoObject(r2_key);
+    const client = await db.connect();
+    let queuedIds: number[] = [];
+    try {
+      await client.query('BEGIN');
+      const { rows: gone } = await client.query(
+        'DELETE FROM seeds WHERE id = $1 AND owner_id = $2 RETURNING id',
+        [seedId, accountId],
+      );
+      // Queues the whole folder: catches photos that were uploaded but never confirmed.
+      if (gone.length > 0) {
+        queuedIds = await queueR2Deletions(client, [
+          { bucket: 'public', path: seedPhotoFolder(seedId), isPrefix: true },
+        ]);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    drainSoon(queuedIds);
     res.status(204).send();
   } catch (err) {
     console.error('DELETE /seeds/:id error:', err);

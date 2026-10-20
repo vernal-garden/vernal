@@ -9,7 +9,13 @@ vi.mock('../lib/r2', async (importOriginal) => ({
   deleteFromR2: vi.fn(),
 }));
 
+vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2Cleanup')>()),
+  drainSoon: vi.fn(),
+}));
+
 import { getPresignedUploadUrl, deleteFromR2 } from '../lib/r2';
+import { drainSoon } from '../lib/r2Cleanup';
 import { refreshGardenBadges } from '../jobs/nightly';
 import { addDays, currentSeason } from '../lib/plantingSchedule';
 import app from '../index';
@@ -33,10 +39,17 @@ const TODAY = new Intl.DateTimeFormat('en-CA', {
   day: '2-digit',
 }).format(new Date());
 
+async function queued() {
+  const { rows } = await pool.query<{ bucket: string; path: string; is_prefix: boolean }>(
+    'SELECT bucket, path, is_prefix FROM r2_deletions ORDER BY id',
+  );
+  return rows;
+}
+
 async function resetDb() {
   await pool.query(
     `TRUNCATE accounts, guest_sessions, gardens, beds, plantings, seeds, sowing_events,
-              harvest_entries RESTART IDENTITY CASCADE`,
+              harvest_entries, r2_deletions RESTART IDENTITY CASCADE`,
   );
   await pool.query('TRUNCATE cambium.seeds RESTART IDENTITY CASCADE');
 }
@@ -162,7 +175,9 @@ beforeAll(async () => {
   tomatoId = await createCambiumSeed('Tomato', 'Solanum lycopersicum');
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
+  vi.mocked(drainSoon).mockClear();
   getPresignedUploadUrlMock.mockReset();
   getPresignedUploadUrlMock.mockResolvedValue('https://r2.test/put');
   deleteFromR2Mock.mockReset();
@@ -791,7 +806,10 @@ describe('Photos', () => {
       keyFor(entryId, 1),
       keyFor(entryId, 3),
     ]);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(keyFor(entryId, 2));
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: keyFor(entryId, 2), is_prefix: false },
+    ]);
+    expect(drainSoon).toHaveBeenCalled();
 
     const missing = await supporter.delete(
       `/api/harvests/${entryId}/photos?key=${encodeURIComponent(keyFor(entryId, 2))}`,
@@ -819,7 +837,9 @@ describe('Photos', () => {
     );
     expect(removed.status).toBe(200);
     expect(removed.body.photos.map((p: { key: string }) => p.key)).toEqual([keyFor(ownId, 6)]);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(keyFor(ownId, 5));
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: keyFor(ownId, 5), is_prefix: false },
+    ]);
 
     const uploadUrl = await lapsed
       .post(`/api/harvests/${ownId}/photos/upload-url`)
@@ -835,11 +855,18 @@ describe('Photos', () => {
     expect(attach.body.upgrade_required).toBe(true);
   });
 
-  it('deleting the entry deletes its photo objects, and a failed R2 delete is not fatal', async () => {
-    deleteFromR2Mock.mockRejectedValue(new Error('boom'));
+  it("DELETE of another user's harvest → 404 and queues nothing", async () => {
+    const res = await free.delete(`/api/harvests/${entryId}`);
+    expect(res.status).toBe(404);
+    expect(await queued()).toEqual([]);
+  });
+
+  it("DELETE /api/harvests/:id queues the entry's photo folder", async () => {
     const res = await supporter.delete(`/api/harvests/${entryId}`);
     expect(res.status).toBe(204);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(keyFor(entryId, 1));
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(keyFor(entryId, 3));
+    expect(await queued()).toEqual([
+      { bucket: 'public', path: `harvest-photos/${entryId}/`, is_prefix: true },
+    ]);
+    expect(drainSoon).toHaveBeenCalled();
   });
 });

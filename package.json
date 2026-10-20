@@ -21,6 +21,7 @@
     "seed:cambium": "tsx scripts/seed-cambium.ts",
     "clean:test-seeds": "tsx scripts/clean-test-seeds.ts",
     "backfill:lifetime-pi": "tsx scripts/backfill-lifetime-payment-intents.ts",
+    "cleanup:r2-orphans": "tsx scripts/cleanup-r2-orphans.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

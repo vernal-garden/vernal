@@ -4,8 +4,8 @@ import { db } from '../lib/db';
 import { requireSupporter } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
-import { getPresignedUploadUrl, deleteFromR2, isR2ConfigError } from '../lib/r2';
-import { logger } from '../lib/logger';
+import { getPresignedUploadUrl, isR2ConfigError } from '../lib/r2';
+import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 
 // Mounted by seeds.ts at /api/seeds/:id/photos, after its router.use(requireAuth).
 const router = Router({ mergeParams: true });
@@ -73,16 +73,6 @@ async function photoCount(seedId: string): Promise<number> {
     [seedId],
   );
   return rows[0].count;
-}
-
-// Fire-and-forget: a failed R2 delete leaves an orphan object, never a failed request.
-export function deletePhotoObject(key: string): void {
-  deleteFromR2(key).catch((err: unknown) => {
-    logger.warn('seed photo R2 delete failed', {
-      key,
-      errMsg: err instanceof Error ? err.message : String(err),
-    });
-  });
 }
 
 // ── GET /api/seeds/:id/photos ─────────────────────────────────────────────────
@@ -290,15 +280,27 @@ router.delete('/:photoId', writeLimiter, async (req, res) => {
       return res.status(404).json({ error: 'Seed not found' });
     }
 
-    const { rows } = await db.query<{ r2_key: string }>(
-      'DELETE FROM seed_photos WHERE id = $1 AND seed_id = $2 RETURNING r2_key',
-      [photoId, seedId],
-    );
-    if (rows.length === 0) {
-      return res.status(404).json({ error: 'Photo not found' });
+    const client = await db.connect();
+    let queuedIds: number[] = [];
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query<{ r2_key: string }>(
+        'DELETE FROM seed_photos WHERE id = $1 AND seed_id = $2 RETURNING r2_key',
+        [photoId, seedId],
+      );
+      if (rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Photo not found' });
+      }
+      queuedIds = await queueR2Deletions(client, [{ bucket: 'public', path: rows[0].r2_key, isPrefix: false }]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
     }
-
-    deletePhotoObject(rows[0].r2_key);
+    drainSoon(queuedIds);
     res.status(204).send();
   } catch (err) {
     console.error('DELETE /seeds/:id/photos/:photoId error:', err);
