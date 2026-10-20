@@ -7,7 +7,19 @@ describe('isNumericId', () => {
   });
 
   it('accepts a single digit', () => {
-    expect(isNumericId('0')).toBe(true);
+    expect(isNumericId('7')).toBe(true);
+  });
+
+  it('accepts a two-digit id', () => {
+    expect(isNumericId('12')).toBe(true);
+  });
+
+  it('rejects zero', () => {
+    expect(isNumericId('0')).toBe(false);
+  });
+
+  it('rejects leading zeros', () => {
+    expect(isNumericId('012')).toBe(false);
   });
 
   it('rejects an empty string', () => {

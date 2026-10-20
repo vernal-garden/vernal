@@ -3,12 +3,12 @@ import { ZipArchive } from 'archiver';
 import { types as pgTypes, CustomTypesConfig } from 'pg';
 import { jobDb as db } from './db'; // long-running work: job pool, 5-min statement cap
 import { logger } from './logger';
-import { uploadToR2, getPresignedDownloadUrl, exportsBucket } from './r2';
+import { uploadToR2, getPresignedDownloadUrl, exportsBucket, exportFolder } from './r2';
 
 export const EXPORT_DOWNLOAD_TTL_SECONDS = 604800; // 7 days
 
 export function exportKey(accountId: number, jobId: number): string {
-  return `exports/${accountId}/${jobId}.zip`;
+  return `${exportFolder(accountId)}${jobId}.zip`;
 }
 
 // Export-only type parsing: DATE stays a plain 'YYYY-MM-DD' string (the

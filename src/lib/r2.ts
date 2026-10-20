@@ -3,6 +3,8 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -137,6 +139,67 @@ export async function deleteFromR2(key: string, bucket?: string): Promise<void> 
       Key: key,
     }),
   );
+}
+
+// Folder paths for each owner of R2 objects. Each ends in '/', so a prefix
+// delete for seed 5 can never match seed 50.
+export const seedPhotoFolder = (seedId: number | string) => `seed-photos/${seedId}/`;
+export const harvestPhotoFolder = (harvestId: number | string) => `harvest-photos/${harvestId}/`;
+export const gardenThumbnailFolder = (gardenId: number | string) => `garden-thumbnails/${gardenId}/`;
+export const exportFolder = (accountId: number | string) => `exports/${accountId}/`;
+
+// One page at a time through a listing; yields each page's response.
+async function* listPages(
+  client: S3Client,
+  input: { Bucket: string; Prefix: string; Delimiter?: string },
+) {
+  let token: string | undefined;
+  do {
+    const page = await client.send(new ListObjectsV2Command({ ...input, ContinuationToken: token }));
+    yield page;
+    token = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (token);
+}
+
+/**
+ * Delete every object under a folder prefix (which must end in '/').
+ * Listing pages hold at most 1,000 keys, the DeleteObjects limit.
+ * Throws if R2 reports any key it could not delete.
+ */
+export async function deletePrefixFromR2(prefix: string, bucket?: string): Promise<void> {
+  if (!prefix.endsWith('/')) throw new Error(`R2 prefix must end with /: ${prefix}`);
+  const client = getClient();
+  const Bucket = bucket ?? BUCKET();
+  for await (const page of listPages(client, { Bucket, Prefix: prefix })) {
+    const objects = (page.Contents ?? []).flatMap((o) => (o.Key ? [{ Key: o.Key }] : []));
+    if (objects.length === 0) continue;
+    const result = await client.send(
+      new DeleteObjectsCommand({ Bucket, Delete: { Objects: objects, Quiet: true } }),
+    );
+    if (result.Errors && result.Errors.length > 0) {
+      throw new Error(`R2 could not delete ${result.Errors.length} object(s) under ${prefix}`);
+    }
+  }
+}
+
+/** The immediate sub-folders of a prefix, e.g. 'seed-photos/' → ['seed-photos/1/', …]. */
+export async function listFolders(prefix: string, bucket?: string): Promise<string[]> {
+  const client = getClient();
+  const folders: string[] = [];
+  for await (const page of listPages(client, { Bucket: bucket ?? BUCKET(), Prefix: prefix, Delimiter: '/' })) {
+    for (const p of page.CommonPrefixes ?? []) if (p.Prefix) folders.push(p.Prefix);
+  }
+  return folders;
+}
+
+/** Every key under a prefix. */
+export async function listKeys(prefix: string, bucket?: string): Promise<string[]> {
+  const client = getClient();
+  const keys: string[] = [];
+  for await (const page of listPages(client, { Bucket: bucket ?? BUCKET(), Prefix: prefix })) {
+    for (const o of page.Contents ?? []) if (o.Key) keys.push(o.Key);
+  }
+  return keys;
 }
 
 // True for the plain Errors these helpers throw when R2 env vars are missing.

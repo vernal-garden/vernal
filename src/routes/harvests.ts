@@ -9,7 +9,8 @@ import { currentSeason, isIsoDate } from '../lib/plantingSchedule';
 import { seasonOf } from '../lib/season';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { recomputeHarvestableCount } from '../lib/gardenBadges';
-import { getPresignedUploadUrl, deleteFromR2 } from '../lib/r2';
+import { getPresignedUploadUrl, harvestPhotoFolder } from '../lib/r2';
+import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { logger } from '../lib/logger';
 import type { SessionData } from '../types';
 
@@ -165,19 +166,6 @@ function isR2ConfigError(err: unknown): boolean {
 function publicBaseUrl(): string | null {
   const u = process.env.R2_PUBLIC_BASE_URL;
   return u ? u.replace(/\/$/, '') : null;
-}
-
-// Fire-and-forget: a failed R2 delete leaves an orphan object, never a failed request.
-function deletePhotoObject(key: string): void {
-  // Wrapped so a synchronous throw (R2 not configured) is caught the same way.
-  Promise.resolve()
-    .then(() => deleteFromR2(key))
-    .catch((err: unknown) => {
-      logger.warn('harvest photo R2 delete failed', {
-        key,
-        errMsg: err instanceof Error ? err.message : String(err),
-      });
-    });
 }
 
 async function rollback(client: PoolClient): Promise<void> {
@@ -956,22 +944,34 @@ router.delete('/:id', writeLimiter, async (req: Request, res: Response) => {
   const id = req.params.id as string;
   if (!isNumericId(id)) return res.status(400).json({ error: 'Invalid id' });
 
+  const client = await db.connect();
   try {
-    const { rows } = await db.query<{ photos: Photo[] }>(
+    await client.query('BEGIN');
+    const { rows } = await client.query<{ id: number }>(
       `DELETE FROM harvest_entries h
        USING gardens g
        WHERE h.id = $1 AND g.id = h.garden_id AND (g.owner_id = $2 OR g.guest_session_id = $3)
-       RETURNING h.photos`,
+       RETURNING h.id`,
       [id, ...owner(session)],
     );
-    if (rows.length === 0) return res.status(404).json({ error: 'Harvest not found' });
-
-    for (const photo of rows[0].photos) deletePhotoObject(photo.key);
+    if (rows.length === 0) {
+      await rollback(client);
+      return res.status(404).json({ error: 'Harvest not found' });
+    }
+    // The folder, not the recorded keys: also catches unconfirmed uploads.
+    const queuedIds = await queueR2Deletions(client, [
+      { bucket: 'public', path: harvestPhotoFolder(id), isPrefix: true },
+    ]);
+    await client.query('COMMIT');
+    drainSoon(queuedIds);
     if (session.account) invalidateMetrics(session.account.id);
     return res.status(204).send();
   } catch (err) {
+    await rollback(client);
     logger.error('DELETE /api/harvests/:id failed', err);
     return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -1109,9 +1109,10 @@ router.delete('/:id/photos', requireAuth, writeLimiter, async (req: Request, res
     ]);
 
     const entry = await fetchEntry(client, id, session);
+    const queuedIds = await queueR2Deletions(client, [{ bucket: 'public', path: key, isPrefix: false }]);
     await client.query('COMMIT');
 
-    deletePhotoObject(key);
+    drainSoon(queuedIds);
     if (session.account) invalidateMetrics(session.account.id);
     return res.json(formatEntry(entry!));
   } catch (err) {

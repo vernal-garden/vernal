@@ -9,19 +9,29 @@ vi.mock('../lib/r2', async (importOriginal) => ({
   deleteFromR2: vi.fn(() => Promise.resolve()),
 }));
 
-import { deleteFromR2 } from '../lib/r2';
-import app from '../index';
+vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2Cleanup')>()),
+  drainSoon: vi.fn(),
+}));
 
-const deleteFromR2Mock = vi.mocked(deleteFromR2);
+import { drainSoon } from '../lib/r2Cleanup';
+import app from '../index';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
 
 const pool = new Pool({ connectionString: url });
 
+async function queued() {
+  const { rows } = await pool.query<{ bucket: string; path: string; is_prefix: boolean }>(
+    'SELECT bucket, path, is_prefix FROM r2_deletions ORDER BY id',
+  );
+  return rows;
+}
+
 async function resetDb() {
   await pool.query(
-    'TRUNCATE accounts, guest_sessions, seeds, moderation_items RESTART IDENTITY CASCADE',
+    'TRUNCATE accounts, guest_sessions, seeds, moderation_items, r2_deletions RESTART IDENTITY CASCADE',
   );
   await pool.query('TRUNCATE cambium.seeds RESTART IDENTITY CASCADE');
 }
@@ -392,10 +402,12 @@ describe('DELETE /api/seeds/:id', () => {
   afterAll(() => pool.query('DELETE FROM gardens WHERE id = $1', [gardenDbId]));
 
   it('DELETE planted seed → 409 with plantingCount 1', async () => {
+    await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
     const res = await agent1.delete(`/api/seeds/${plantedSeedId}`);
     expect(res.status).toBe(409);
     expect(res.body.plantingCount).toBe(1);
     expect(res.body.error).toMatch(/planted/);
+    expect(await queued()).toEqual([]);
   });
 
   it('DELETE after removing planting → 204', async () => {
@@ -404,18 +416,18 @@ describe('DELETE /api/seeds/:id', () => {
     expect(res.status).toBe(204);
   });
 
-  it('DELETE a seed with two photos removes both R2 objects and rows', async () => {
+  it('DELETE a seed with two photos queues its photo folder and removes the rows', async () => {
     const r = await agent1.post('/api/seeds').send({ commonName: 'Photo Delete Seed', plantFamily: 'Fam' });
     const sid = r.body.id as string;
-    const p1 = await insertPhoto(sid, 1);
-    const p2 = await insertPhoto(sid, 2);
-    deleteFromR2Mock.mockClear();
+    await insertPhoto(sid, 1);
+    await insertPhoto(sid, 2);
+    await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
+    vi.mocked(drainSoon).mockClear();
 
     const res = await agent1.delete(`/api/seeds/${sid}`);
     expect(res.status).toBe(204);
-    expect(deleteFromR2Mock).toHaveBeenCalledTimes(2);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(p1.key);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(p2.key);
+    expect(await queued()).toEqual([{ bucket: 'public', path: `seed-photos/${sid}/`, is_prefix: true }]);
+    expect(drainSoon).toHaveBeenCalled();
     const { rows } = await pool.query('SELECT 1 FROM seed_photos WHERE seed_id = $1', [sid]);
     expect(rows).toHaveLength(0);
   });

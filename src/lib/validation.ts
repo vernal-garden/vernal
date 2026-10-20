@@ -1,10 +1,12 @@
 // Shared request-validation helpers for the Vernal API.
 
-const NUMERIC_ID_RE = /^\d+$/;
+const NUMERIC_ID_RE = /^[1-9]\d*$/;
 
-// True when v is a string of one or more digits — the shape every serial
-// primary key takes once it's landed in req.params. Rejects '', '-1', '1.5',
-// '1e5', and 'NaN' (unlike Number()/parseInt(), which coerce all of those).
+// True when v is a positive integer string with no leading zeros — the shape
+// every serial primary key takes once it's landed in req.params. Rejects '',
+// '0', '012', '-1', '1.5', '1e5', and 'NaN' (unlike Number()/parseInt(), which
+// coerce all of those). One canonical form per id, so R2 keys built from
+// params can't alias ('012' and '12' naming the same row).
 export function isNumericId(v: unknown): v is string {
   return typeof v === 'string' && NUMERIC_ID_RE.test(v);
 }

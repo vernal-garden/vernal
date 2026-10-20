@@ -137,7 +137,7 @@ function parsePlantKey(v: unknown): SeedKey | null {
   return id > 0 && id <= MAX_INT_ID ? { kind: m[1] as SeedKey['kind'], id } : null;
 }
 
-// A numeric id string that fits a Postgres INTEGER, normalized ('007' → '7').
+// A numeric id string that fits a Postgres INTEGER.
 function parseIntId(v: unknown): string | null {
   if (!isNumericId(v)) return null;
   const n = parseInt(v, 10);

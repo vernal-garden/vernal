@@ -9,7 +9,13 @@ vi.mock('../lib/r2', async (importOriginal) => ({
   deleteFromR2: vi.fn(),
 }));
 
+vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2Cleanup')>()),
+  drainSoon: vi.fn(),
+}));
+
 import { getPresignedUploadUrl, deleteFromR2 } from '../lib/r2';
+import { drainSoon } from '../lib/r2Cleanup';
 import app from '../index';
 
 const getPresignedUploadUrlMock = vi.mocked(getPresignedUploadUrl);
@@ -26,9 +32,16 @@ const UUID_B = '22222222-2222-4222-8222-222222222222';
 const UUID_C = '33333333-3333-4333-8333-333333333333';
 const UUID_D = '44444444-4444-4444-8444-444444444444';
 
+async function queued() {
+  const { rows } = await pool.query<{ bucket: string; path: string; is_prefix: boolean }>(
+    'SELECT bucket, path, is_prefix FROM r2_deletions ORDER BY id',
+  );
+  return rows;
+}
+
 async function resetDb() {
   await pool.query(
-    'TRUNCATE accounts, guest_sessions, seeds, seed_photos RESTART IDENTITY CASCADE',
+    'TRUNCATE accounts, guest_sessions, seeds, seed_photos, r2_deletions RESTART IDENTITY CASCADE',
   );
 }
 
@@ -89,7 +102,9 @@ beforeAll(async () => {
   otherSupporter = await loginAgent('photos-other@example.com');
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
+  vi.mocked(drainSoon).mockClear();
   getPresignedUploadUrlMock.mockReset();
   getPresignedUploadUrlMock.mockResolvedValue('https://r2.test/put');
   deleteFromR2Mock.mockReset();
@@ -433,19 +448,20 @@ describe('DELETE photo', () => {
     seedId = await createSeed(supporter, 'Delete Photo Seed');
   });
 
-  it('204, row gone, deleteFromR2 called with the key', async () => {
+  it('204, row gone, file queued', async () => {
     const { id, key } = await insertPhoto(seedId, UUID_A);
     const res = await supporter.delete(`/api/seeds/${seedId}/photos/${id}`);
     expect(res.status).toBe(204);
     const { rows } = await pool.query('SELECT 1 FROM seed_photos WHERE id = $1', [id]);
     expect(rows).toHaveLength(0);
-    expect(deleteFromR2Mock).toHaveBeenCalledWith(key);
+    expect(await queued()).toEqual([{ bucket: 'public', path: key, is_prefix: false }]);
+    expect(drainSoon).toHaveBeenCalled();
   });
 
-  it('deleteFromR2 rejecting still returns 204', async () => {
-    deleteFromR2Mock.mockRejectedValue(new Error('R2 down'));
-    const { id } = await insertPhoto(seedId, UUID_B);
-    const res = await supporter.delete(`/api/seeds/${seedId}/photos/${id}`);
-    expect(res.status).toBe(204);
+  it('a photo id that does not exist → 404 and queues nothing', async () => {
+    const res = await supporter.delete(`/api/seeds/${seedId}/photos/999999`);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Photo not found');
+    expect(await queued()).toEqual([]);
   });
 });
