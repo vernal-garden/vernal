@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
 import * as bcrypt from 'bcrypt';
+import { createHash } from 'crypto';
 
 // Playwright can run multiple spec files in the same worker process (it only
 // restarts the worker after a file with failures), so this module's cache —
@@ -136,14 +137,19 @@ export async function setAccountRole(accountId: string, role: 'user' | 'admin'):
   await getPool().query('UPDATE accounts SET role = $2 WHERE id = $1', [accountId, role]);
 }
 
+// Session rows are keyed by sha256(token) hex (migration 021), as src/lib/tokens.ts hashes them.
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
 // Move a guest session's expiry. `signedCookie` is the raw _vernal_sid cookie
 // value ("<token>.<sig>", possibly URL-encoded). `interval` is a Postgres
 // interval literal evaluated against now(), e.g. '4 days 23 hours'.
 export async function setGuestExpiry(signedCookie: string, interval: string): Promise<void> {
   const token = decodeURIComponent(signedCookie).split('.')[0];
   const result = await getPool().query(
-    `UPDATE guest_sessions SET expires_at = now() + $2::interval WHERE token = $1`,
-    [token, interval],
+    `UPDATE guest_sessions SET expires_at = now() + $2::interval WHERE token_hash = $1`,
+    [hashToken(token), interval],
   );
   if (result.rowCount !== 1) throw new Error('setGuestExpiry: guest session not found');
 }
@@ -152,7 +158,7 @@ export async function setGuestExpiry(signedCookie: string, interval: string): Pr
 // does, leaving the browser holding a cookie that verifies but points nowhere.
 export async function deleteGuestSession(signedCookie: string): Promise<void> {
   const token = decodeURIComponent(signedCookie).split('.')[0];
-  const result = await getPool().query('DELETE FROM guest_sessions WHERE token = $1', [token]);
+  const result = await getPool().query('DELETE FROM guest_sessions WHERE token_hash = $1', [hashToken(token)]);
   if (result.rowCount !== 1) throw new Error('deleteGuestSession: session not found');
 }
 

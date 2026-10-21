@@ -11,6 +11,9 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3000,
+        // bcrypt hashes run on the libuv pool; the default of 4 lets a few
+        // logins stall other async crypto and file work.
+        UV_THREADPOOL_SIZE: 8,
       },
       error_file: '/var/log/pm2/vernal-error.log',
       out_file: '/var/log/pm2/vernal-out.log',

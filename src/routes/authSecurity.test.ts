@@ -1,12 +1,15 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
+import crypto from 'crypto';
 import { Pool } from 'pg';
 import app from '../index';
 import * as mailer from '../lib/mailer';
 import { hashToken } from '../lib/tokens';
 import { ipKeyGenerator } from 'express-rate-limit';
 import { consumeResetEmailQuota, clearResetEmailQuota } from '../middleware/rateLimiters';
+import passport from 'passport';
+import type { OAuthUser } from '../lib/oauth/providers/google';
 
 vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
 const sendMailMock = vi.mocked(mailer.sendMail);
@@ -83,8 +86,8 @@ describe('session rotation on login', () => {
     const guest = await request(app).post('/api/auth/guest');
     const guestCookie = cookiesOf(guest);
     const { rows: sess } = await pool.query<{ id: string }>(
-      'SELECT id FROM guest_sessions WHERE token = $1',
-      [rawTokenOf(guestCookie)],
+      'SELECT id FROM guest_sessions WHERE token_hash = $1',
+      [hashToken(rawTokenOf(guestCookie))],
     );
     const { rows: garden } = await pool.query<{ id: number }>(
       `INSERT INTO gardens (guest_session_id, name, style, zone)
@@ -115,8 +118,8 @@ describe('session rotation on login', () => {
     const guestCookie = cookiesOf(guest);
     const { rows: sess } = await pool.query<{ id: string }>(
       `UPDATE guest_sessions SET expires_at = now() - interval '1 day'
-       WHERE token = $1 RETURNING id`,
-      [rawTokenOf(guestCookie)],
+       WHERE token_hash = $1 RETURNING id`,
+      [hashToken(rawTokenOf(guestCookie))],
     );
     const { rows: garden } = await pool.query<{ id: number }>(
       `INSERT INTO gardens (guest_session_id, name, style, zone)
@@ -156,8 +159,8 @@ describe('session rotation on login', () => {
     expect(rawTokenOf(cookieB)).not.toBe(rawTokenOf(cookieA));
 
     const { rows } = await pool.query<{ account_id: number }>(
-      'SELECT account_id FROM guest_sessions WHERE token = $1',
-      [rawTokenOf(cookieA)],
+      'SELECT account_id FROM guest_sessions WHERE token_hash = $1',
+      [hashToken(rawTokenOf(cookieA))],
     );
     expect(Number(rows[0].account_id)).toBe(idA);
     expect((await request(app).get('/api/me').set('Cookie', cookieB)).status).toBe(200);
@@ -175,7 +178,7 @@ describe('DELETE /api/auth/session', () => {
     const out = await request(app).delete('/api/auth/session').set('Cookie', cookie);
     expect(out.status).toBe(200);
 
-    const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE token = $1', [rawTokenOf(cookie)]);
+    const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE token_hash = $1', [hashToken(rawTokenOf(cookie))]);
     expect(rows).toHaveLength(0);
     expect((await request(app).get('/api/me').set('Cookie', cookie)).status).toBe(401);
   });
@@ -184,7 +187,7 @@ describe('DELETE /api/auth/session', () => {
     const guest = await request(app).post('/api/auth/guest');
     const cookie = cookiesOf(guest);
     await request(app).delete('/api/auth/session').set('Cookie', cookie);
-    const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE token = $1', [rawTokenOf(cookie)]);
+    const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE token_hash = $1', [hashToken(rawTokenOf(cookie))]);
     expect(rows).toHaveLength(1);
   });
 });
@@ -344,7 +347,7 @@ describe('password reset', () => {
     process.env.ENFORCE_RATE_LIMITS = 'true';
     try {
       clearResetEmailQuota();
-      // 9 requests total from this IP — authLimiter (enforced here) allows 10 per 15 min.
+      // 9 requests total from this IP — forgotPasswordLimiter (enforced here) allows 10 per 15 min.
       for (let i = 0; i < 5; i++) {
         await request(app).post('/api/auth/forgot-password').set('X-Forwarded-For', ip).send({ email: 'nobody-here@example.com' });
       }
@@ -465,6 +468,46 @@ describe('OAuth callback state check', () => {
     expect(res.headers.location).toMatch(/^https:\/\/accounts\.google\.com\//);
   });
 
+  it('redirects to oauth_link_password when Google is not authoritative for an existing account', async () => {
+    const email = nextEmail('oauth-link');
+    const accountId = await createUser(email, 'Password123!', true);
+    const oauthUser: OAuthUser = {
+      provider: 'google',
+      accessToken: 'access',
+      refreshToken: undefined,
+      profile: {
+        id: 'g-link-password',
+        provider: 'google',
+        displayName: 'Gardener',
+        emails: [{ value: email, verified: true }],
+        photos: [],
+        _json: {},
+      } as unknown as OAuthUser['profile'],
+    };
+    // Stand-in for the Google strategy: completes the handshake with this
+    // profile, so the callback's own handler runs against the real database.
+    const registry = passport as unknown as { _strategy(name: string): passport.Strategy };
+    const google = registry._strategy('google');
+    passport.use('google', {
+      name: 'google',
+      authenticate(this: { success(user: unknown): void }) {
+        this.success(oauthUser);
+      },
+    } as unknown as passport.Strategy);
+    try {
+      const nonce = 'd'.repeat(32);
+      const res = await request(app)
+        .get(`/api/auth/oauth/google/callback?code=abc&state=${state(nonce)}`)
+        .set('Cookie', [`_vernal_oauth_nonce=${nonce}`]);
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toMatch(/\/login\?error=oauth_link_password$/);
+      expect((cookiesOf(res) ?? []).some((c) => c.startsWith('_vernal_sid='))).toBe(false);
+    } finally {
+      passport.use('google', google);
+    }
+    expect((await pool.query('SELECT 1 FROM oauth_identities WHERE account_id = $1', [accountId])).rows).toHaveLength(0);
+  });
+
   it('initiation sanitises returnTo inside state', async () => {
     const res = await request(app).get('/api/auth/oauth/google?returnTo=@evil.com');
     const location = new URL(res.headers.location);
@@ -488,5 +531,188 @@ describe('login credential re-check', () => {
     expect(res.headers['set-cookie']).toBeUndefined();
     const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE account_id = $1', [id]);
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe('hashed session tokens', () => {
+  it('stores only the hash for a new guest session', async () => {
+    const guest = await request(app).post('/api/auth/guest');
+    const raw = rawTokenOf(cookiesOf(guest));
+    const { rows } = await pool.query<{ token: string | null; token_hash: string }>(
+      'SELECT token, token_hash FROM guest_sessions WHERE token_hash = $1',
+      [hashToken(raw)],
+    );
+    expect(rows).toEqual([{ token: null, token_hash: hashToken(raw) }]);
+    expect((await pool.query('SELECT 1 FROM guest_sessions WHERE token = $1', [raw])).rows).toHaveLength(0);
+  });
+
+  it('stores only the hash after login, and the cookie authenticates', async () => {
+    const email = nextEmail('hashed-login');
+    await createUser(email);
+    const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123!' });
+    const cookie = cookiesOf(login);
+    const { rows } = await pool.query<{ token: string | null }>(
+      'SELECT token FROM guest_sessions WHERE token_hash = $1',
+      [hashToken(rawTokenOf(cookie))],
+    );
+    expect(rows).toEqual([{ token: null }]);
+    expect((await request(app).get('/api/me').set('Cookie', cookie)).status).toBe(200);
+  });
+
+  it('a session written the old way (raw token only) still authenticates', async () => {
+    const accountId = await createUser(nextEmail('hashed-legacy'));
+    const raw = crypto.randomBytes(32).toString('hex');
+    await pool.query(
+      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+       VALUES ($1, now() + interval '1 day', $2, now())`,
+      [raw, accountId],
+    );
+    const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
+    const res = await request(app).get('/api/me').set('Cookie', `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('logging in over an old-style session clears its plaintext token', async () => {
+    const email = nextEmail('hashed-rotate-legacy');
+    await createUser(email);
+    const raw = crypto.randomBytes(32).toString('hex');
+    await pool.query(`INSERT INTO guest_sessions (token, expires_at) VALUES ($1, now() + interval '1 day')`, [raw]);
+    const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
+    const login = await request(app)
+      .post('/api/auth/login')
+      .set('Cookie', `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`)
+      .send({ email, password: 'Password123!' });
+    expect(login.status).toBe(200);
+    expect((await pool.query('SELECT 1 FROM guest_sessions WHERE token = $1', [raw])).rows).toHaveLength(0);
+  });
+
+  it('GET /session cold path still reports a recoverable expired guest', async () => {
+    const guest = await request(app).post('/api/auth/guest');
+    const cookie = cookiesOf(guest);
+    await pool.query(
+      `UPDATE guest_sessions SET expires_at = now() - interval '1 day' WHERE token_hash = $1`,
+      [hashToken(rawTokenOf(cookie))],
+    );
+    const res = await request(app).get('/api/auth/session').set('Cookie', cookie);
+    expect(res.body.data.guestExpired).toBe('recoverable');
+  });
+
+  it('GET /session cold path reports gone when the row was deleted', async () => {
+    const guest = await request(app).post('/api/auth/guest');
+    const cookie = cookiesOf(guest);
+    await pool.query('DELETE FROM guest_sessions WHERE token_hash = $1', [hashToken(rawTokenOf(cookie))]);
+    const res = await request(app).get('/api/auth/session').set('Cookie', cookie);
+    expect(res.status).toBe(200);
+    expect(res.body.data.authenticated).toBe(false);
+    expect(res.body.data.guestExpired).toBe('gone');
+  });
+
+  it('logout deletes a session row written the old way (raw token only)', async () => {
+    const accountId = await createUser(nextEmail('hashed-legacy-logout'));
+    const raw = crypto.randomBytes(32).toString('hex');
+    await pool.query(
+      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+       VALUES ($1, now() + interval '1 day', $2, now())`,
+      [raw, accountId],
+    );
+    const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
+    const cookie = `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`;
+    const out = await request(app).delete('/api/auth/session').set('Cookie', cookie);
+    expect(out.status).toBe(200);
+    expect((await pool.query('SELECT 1 FROM guest_sessions WHERE account_id = $1', [accountId])).rows).toHaveLength(0);
+    expect((await request(app).get('/api/me').set('Cookie', cookie)).status).toBe(401);
+  });
+});
+
+describe('login limits', () => {
+  beforeEach(() => {
+    process.env.ENFORCE_RATE_LIMITS = 'true';
+  });
+  afterEach(() => {
+    delete process.env.ENFORCE_RATE_LIMITS;
+  });
+
+  it('5 failures from one IP block that IP for the email, but not the owner elsewhere', async () => {
+    const email = nextEmail('pair-capped');
+    await createUser(email);
+    for (let i = 0; i < 5; i++) {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .set('X-Forwarded-For', '192.0.2.100')
+        .send({ email, password: 'wrong-password' });
+      expect(res.status).toBe(401);
+    }
+    const blocked = await request(app)
+      .post('/api/auth/login')
+      .set('X-Forwarded-For', '192.0.2.100')
+      .send({ email, password: 'Password123!' });
+    expect(blocked.status).toBe(429);
+    const owner = await request(app)
+      .post('/api/auth/login')
+      .set('X-Forwarded-For', '192.0.2.101')
+      .send({ email, password: 'Password123!' });
+    expect(owner.status).toBe(200);
+  });
+
+  it('20 failures across IPs lock the email; the right password is refused too', async () => {
+    const email = nextEmail('stuffed');
+    await createUser(email);
+    for (let i = 0; i < 20; i++) {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .set('X-Forwarded-For', `192.0.2.${140 + Math.floor(i / 5)}`)
+        .send({ email, password: 'wrong-password' });
+      expect(res.status).toBe(401);
+    }
+    const res = await request(app)
+      .post('/api/auth/login')
+      .set('X-Forwarded-For', '192.0.2.160')
+      .send({ email, password: 'Password123!' });
+    expect(res.status).toBe(429);
+  });
+
+  it('a password reset clears the lockout for that address', async () => {
+    const email = nextEmail('reset-unlock');
+    await createUser(email);
+    for (let i = 0; i < 20; i++) {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .set('X-Forwarded-For', `192.0.2.${170 + Math.floor(i / 5)}`)
+        .send({ email, password: 'wrong-password' });
+      expect(res.status).toBe(401);
+    }
+    const ip = '192.0.2.171';
+    const locked = await request(app).post('/api/auth/login').set('X-Forwarded-For', ip).send({ email, password: 'Password123!' });
+    expect(locked.status).toBe(429);
+
+    clearResetEmailQuota();
+    try {
+      await request(app).post('/api/auth/forgot-password').set('X-Forwarded-For', ip).send({ email });
+      const token = await mailTokenTo(email);
+      const reset = await request(app)
+        .post('/api/auth/reset-password')
+        .set('X-Forwarded-For', ip)
+        .send({ token, password: 'NewPassword1!' });
+      expect(reset.status).toBe(200);
+    } finally {
+      clearResetEmailQuota();
+    }
+
+    const res = await request(app).post('/api/auth/login').set('X-Forwarded-For', ip).send({ email, password: 'NewPassword1!' });
+    expect(res.status).toBe(200);
+  });
+
+  it('register traffic does not use up the login allowance', async () => {
+    const ip = '192.0.2.130';
+    for (let i = 0; i < 10; i++) {
+      await request(app).post('/api/auth/register').set('X-Forwarded-For', ip).send({ email: 'bad', password: 'x' });
+    }
+    const email = nextEmail('separate-bucket');
+    await createUser(email);
+    const res = await request(app)
+      .post('/api/auth/login')
+      .set('X-Forwarded-For', ip)
+      .send({ email, password: 'Password123!' });
+    expect(res.status).toBe(200);
   });
 });

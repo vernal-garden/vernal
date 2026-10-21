@@ -20,11 +20,20 @@ import { sendVerificationEmail, consumeVerificationToken } from '../lib/emailVer
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
 import { requireAuth } from '../middleware/auth';
-import { authLimiter, passwordResetLimiter, guestCreateLimiter, consumeResetEmailQuota, byIp } from '../middleware/rateLimiters';
+import {
+  loginLimiters,
+  registerLimiter,
+  forgotPasswordLimiter,
+  verifyEmailLimiter,
+  passwordResetLimiter,
+  guestCreateLimiter,
+  consumeResetEmailQuota,
+  byIp,
+} from '../middleware/rateLimiters';
 import { LOCATION_NOT_SET } from '../lib/constants';
 import { isValidEmail } from '../lib/validation';
 import { OAUTH_NONCE_COOKIE, OAUTH_NONCE_COOKIE_OPTIONS, buildOAuthState, verifyOAuthState } from '../lib/oauth/state';
-import { resolveOAuthAccount, OAuthUnverifiedEmailError } from '../lib/oauth/resolveAccount';
+import { resolveOAuthAccount, OAuthUnverifiedEmailError, OAuthLinkRequiresPasswordError } from '../lib/oauth/resolveAccount';
 import { queueDeletedGardens, queueSessionGardens, drainSoon } from '../lib/r2Cleanup';
 
 export const authRouter = Router();
@@ -95,8 +104,8 @@ authRouter.get('/session', async (req: Request, res: Response): Promise<void> =>
       const token = verifySignedToken(rawCookie);
       if (token) {
         const { rows } = await db.query<{ migrated_at: Date | null }>(
-          'SELECT migrated_at FROM guest_sessions WHERE token = $1',
-          [token],
+          'SELECT migrated_at FROM guest_sessions WHERE token_hash = $1',
+          [hashToken(token)],
         );
         if (rows.length > 0 && rows[0].migrated_at === null) {
           res.json({ data: { authenticated: false, isGuest: false, guestExpired: 'recoverable' } });
@@ -149,7 +158,7 @@ authRouter.delete('/session', async (req: Request, res: Response): Promise<void>
     try {
       await client.query('BEGIN');
       queuedIds = await queueSessionGardens(client, [req.session.id]);
-      await client.query('DELETE FROM guest_sessions WHERE token = $1', [req.session.token]);
+      await client.query('DELETE FROM guest_sessions WHERE token_hash = $1', [req.session.token]);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -167,7 +176,7 @@ const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS ?? '12', 10);
 const SUPPORTED_PROVIDERS = new Set(['google']);
 
 // POST /api/auth/register
-authRouter.post('/register', authLimiter, async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/register', registerLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body as { email?: unknown; password?: unknown };
 
   if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
@@ -203,12 +212,13 @@ authRouter.post('/register', authLimiter, async (req: Request, res: Response): P
     if (rawCookie) {
       const rawToken = verifySignedToken(rawCookie);
       if (rawToken) {
+        const tokenHash = hashToken(rawToken);
         const { rows: expiredRows } = await db.query<{ id: string }>(
-          'SELECT id FROM guest_sessions WHERE token = $1 AND migrated_at IS NULL',
-          [rawToken],
+          'SELECT id FROM guest_sessions WHERE token_hash = $1 AND migrated_at IS NULL',
+          [tokenHash],
         );
         if (expiredRows.length > 0) {
-          existingToken = rawToken;
+          existingToken = tokenHash;
           guestSessionId = expiredRows[0].id;
         }
       }
@@ -256,7 +266,7 @@ authRouter.post('/register', authLimiter, async (req: Request, res: Response): P
 });
 
 // POST /api/auth/login
-authRouter.post('/login', authLimiter, async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/login', ...loginLimiters.handlers, async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body as { email?: unknown; password?: unknown };
 
   if (typeof email !== 'string' || typeof password !== 'string' || !email || !password) {
@@ -340,7 +350,7 @@ authRouter.post('/login', authLimiter, async (req: Request, res: Response): Prom
 });
 
 // POST /api/auth/forgot-password
-authRouter.post('/forgot-password', authLimiter, async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/forgot-password', forgotPasswordLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email } = req.body as { email?: unknown };
 
   if (typeof email !== 'string' || !email) {
@@ -463,6 +473,9 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
   } finally {
     client.release();
   }
+  // Proving the inbox lifts that address's login lockout (this IP's pair and
+  // the address-wide bucket), so the owner can sign in with the new password.
+  if (email) loginLimiters.reset(email, req);
 
   res.json({ data: { success: true, message: 'Password updated. You can now log in.' } });
   if (email) await sendPasswordChangedNotice(email);
@@ -559,7 +572,7 @@ authRouter.post('/email/revert', passwordResetLimiter, async (req: Request, res:
 
 // POST /api/auth/verify-email
 // Public: the token itself is the proof, so the link works logged out or on another device.
-authRouter.post('/verify-email', authLimiter, async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/verify-email', verifyEmailLimiter, async (req: Request, res: Response): Promise<void> => {
   const { token } = req.body as { token?: unknown };
   if (typeof token !== 'string' || !token) {
     res.status(400).json({ error: 'Token is required.' });
@@ -624,6 +637,9 @@ authRouter.get(
     } catch (err) {
       if (err instanceof OAuthUnverifiedEmailError) {
         return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_unverified`);
+      }
+      if (err instanceof OAuthLinkRequiresPasswordError) {
+        return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_link_password`);
       }
       logger.error('OAuth callback error:', err);
       res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);

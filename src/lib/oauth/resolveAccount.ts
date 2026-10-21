@@ -13,6 +13,25 @@ export class OAuthUnverifiedEmailError extends Error {
   }
 }
 
+export class OAuthLinkRequiresPasswordError extends Error {
+  constructor() {
+    super('Google is not authoritative for this address; sign in with a password');
+    this.name = 'OAuthLinkRequiresPasswordError';
+  }
+}
+
+const GOOGLE_MAIL_DOMAINS = new Set(['gmail.com', 'googlemail.com']);
+
+// Google only controls the inboxes it hosts: Gmail, or a Workspace domain (the
+// profile's hd claim). For any other address its email_verified may be stale,
+// so it can create a new account but not take over an existing one.
+function providerVouchesForEmail(profile: Profile, email: string): boolean {
+  const domain = email.slice(email.lastIndexOf('@') + 1).toLowerCase();
+  if (GOOGLE_MAIL_DOMAINS.has(domain)) return true;
+  const hd = (profile._json as { hd?: unknown } | undefined)?.hd;
+  return typeof hd === 'string' && hd.toLowerCase() === domain;
+}
+
 function providerEmailVerified(profile: Profile): boolean {
   const fromEmails = (profile.emails?.[0] as { verified?: boolean | string } | undefined)?.verified;
   if (fromEmails !== undefined) return fromEmails === true || fromEmails === 'true';
@@ -23,6 +42,8 @@ function providerEmailVerified(profile: Profile): boolean {
 // Maps a provider login to an account.
 // - Known identity → that account.
 // - Provider says the email is unverified → refuse (never match by email).
+// - Email matches an existing account but Google doesn't host that address
+//   (not Gmail, no matching Workspace hd) → refuse; the user signs in with a password.
 // - Email matches a verified account → link.
 // - Email matches an UNVERIFIED account → the provider has proven the inbox, so
 //   it claims the account: password and pending changes removed, every session
@@ -76,6 +97,9 @@ export async function resolveOAuthAccount(
     );
 
     if (existing.rows.length > 0) {
+      if (!providerVouchesForEmail(profile, email)) {
+        throw new OAuthLinkRequiresPasswordError();
+      }
       accountId = Number(existing.rows[0].id);
       if (!existing.rows[0].email_verified) {
         await client.query(
