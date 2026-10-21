@@ -9,6 +9,7 @@ const OAUTH_ERRORS: Record<string, string> = {
   oauth_csrf: "Google sign-in couldn't be verified. Please try again.",
   oauth_error: 'Something went wrong with Google sign-in. Please try again.',
   oauth_unverified: "Your Google email isn't verified. Verify it with Google, or sign in with a password.",
+  oauth_link_password: 'An account with this email already exists. Sign in with your password.',
 };
 
 export default function LoginPage() {

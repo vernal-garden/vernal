@@ -6,7 +6,7 @@ import { verifySignedToken, COOKIE_NAME } from '../lib/sessions';
 // but with trust proxy set we want that dependency spelled out rather than implicit.
 // See VULN-5 comment in src/index.ts for why req.ip is safe to key on here.
 // Routed through express-rate-limit's own ipKeyGenerator so IPv6 addresses are
-// normalized to a /64 subnet instead of keying per-address (else a single IPv6
+// normalized to a /56 subnet (its default) instead of keying per-address (else a single IPv6
 // client can rotate through its assigned block to dodge the limit entirely).
 export const byIp = (req: Request) => ipKeyGenerator(req.ip ?? 'unknown');
 
@@ -17,15 +17,105 @@ export const byIp = (req: Request) => ipKeyGenerator(req.ip ?? 'unknown');
 // Production behavior (the actual max/window) is unchanged.
 const skipInTest = () => process.env.NODE_ENV === 'test' && process.env.ENFORCE_RATE_LIMITS !== 'true';
 
-// /api/auth/login, /api/auth/register, /api/auth/forgot-password
-export const authLimiter = rateLimit({
+const TOO_MANY = { error: 'Too many requests — please try again later' };
+
+// Per-IP limiter for one public auth route. Each route gets its own instance,
+// so register, forgot-password and verify-email traffic can't use up login's
+// allowance (or each other's).
+function authRouteLimiter(max: number): RequestHandler {
+  return rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: byIp,
+    skip: skipInTest,
+    message: TOO_MANY,
+  });
+}
+
+export const registerLimiter = authRouteLimiter(10);
+export const forgotPasswordLimiter = authRouteLimiter(10);
+export const verifyEmailLimiter = authRouteLimiter(10);
+
+interface LoginLimiterOptions {
+  ipMax: number;
+  pairMax: number;
+  emailMax: number;
+  windowMs: number;
+  skip?: () => boolean;
+}
+
+// Trimmed, lowercased and capped at 254 characters (the longest valid address),
+// so an oversized body can't mint unbounded keys.
+function normaliseLoginEmail(email: string): string {
+  return email.trim().toLowerCase().slice(0, 254);
+}
+
+// The login email, normalised, or null when the body has none.
+function loginEmail(req: Request): string | null {
+  const email = (req.body as { email?: unknown } | undefined)?.email;
+  return typeof email === 'string' && email.trim() ? normaliseLoginEmail(email) : null;
+}
+
+export interface LoginLimiters {
+  handlers: RequestHandler[];
+  // Clears an address's lockout: its pair bucket for this request's IP and the
+  // address-wide bucket. Called after a successful password reset.
+  reset(email: string, req: Request): void;
+}
+
+// POST /api/auth/login, in order: per IP, per email+IP pair (strict), per
+// email across IPs (looser). Only failed attempts count (skipSuccessfulRequests),
+// so a household or CGNAT network sharing an IP isn't locked out by normal use;
+// refused (429) attempts don't count either, so hammering a locked address
+// doesn't use up the IP's allowance for others. A request one limiter refuses
+// never reaches the next, so one IP adds at most pairMax failures to an
+// address: locking a user out takes several networks, while guessing spread
+// across many IPs is still capped per account. Same shape as the
+// forgot-password quota. In-memory: fine for one pm2 instance, needs a shared
+// store to scale out.
+export function makeLoginLimiters(opts: LoginLimiterOptions): LoginLimiters {
+  const skip = opts.skip ?? (() => false);
+  const limiter = (max: number, key: (req: Request) => string, standardHeaders: boolean) =>
+    rateLimit({
+      windowMs: opts.windowMs,
+      max,
+      standardHeaders,
+      legacyHeaders: false,
+      keyGenerator: key,
+      skipSuccessfulRequests: true,
+      requestWasSuccessful: (_req, res) => res.statusCode < 400 || res.statusCode === 429,
+      skip,
+      message: TOO_MANY,
+    });
+  const pairKey = (email: string, req: Request) => `pair:${email}|${byIp(req)}`;
+  const emailKey = (email: string) => `email:${email}`;
+  const perIp = limiter(opts.ipMax, (req) => `ip:${byIp(req)}`, true);
+  const perPair = limiter(opts.pairMax, (req) => {
+    const email = loginEmail(req);
+    return email ? pairKey(email, req) : `noemail:${byIp(req)}`;
+  }, false);
+  const perEmail = limiter(opts.emailMax, (req) => {
+    const email = loginEmail(req);
+    return email ? emailKey(email) : `noemail:${byIp(req)}`;
+  }, false);
+  return {
+    handlers: [perIp, perPair, perEmail],
+    reset(email, req) {
+      const normalised = normaliseLoginEmail(email);
+      perPair.resetKey(pairKey(normalised, req));
+      perEmail.resetKey(emailKey(normalised));
+    },
+  };
+}
+
+export const loginLimiters = makeLoginLimiters({
+  ipMax: 30,
+  pairMax: 5,
+  emailMax: 20,
   windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: byIp,
   skip: skipInTest,
-  message: { error: 'Too many requests — please try again later' },
 });
 
 // /api/auth/reset-password — tighter limit, this endpoint burns a reset token per guess
@@ -39,16 +129,22 @@ export const passwordResetLimiter = rateLimit({
   message: { error: 'Too many requests — please try again later' },
 });
 
-// Garden/bed/planting writes (POST/PATCH/DELETE) — keyed per authenticated
-// account when one exists, falling back to IP for guest sessions.
+// Accounts are keyed by account id and guests by session id, so guests sharing
+// a network don't share a budget; no session falls back to IP.
+export function writeLimiterKey(req: Request): string {
+  if (req.session?.account?.id != null) return `user:${req.session.account.id}`;
+  if (req.session) return `session:${req.session.id}`;
+  return byIp(req);
+}
+
+// Garden/bed/planting writes (POST/PATCH/DELETE).
 export const writeLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) =>
-    req.session?.account?.id != null ? `user:${req.session.account.id}` : byIp(req),
-  message: { error: 'Too many requests — please try again later' },
+  keyGenerator: writeLimiterKey,
+  message: TOO_MANY,
 });
 
 // POST /api/me/verify-email/resend — keyed per account (route requires auth).
@@ -157,6 +253,19 @@ export const emailChangeLimiter = rateLimit({
   keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
   skip: skipInTest,
   message: { error: 'Too many email change requests — please try again later' },
+});
+
+// PATCH /api/me/password — each attempt runs bcrypt, and a stolen cookie could
+// otherwise guess the current password. Only failed attempts count.
+export const passwordChangeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
+  skipSuccessfulRequests: true,
+  skip: skipInTest,
+  message: { error: 'Too many password change attempts — please try again later' },
 });
 
 // POST /api/subscription/checkout — each request can create Stripe objects.

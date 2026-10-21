@@ -8,7 +8,7 @@ export interface ApiResponse<T = void> {
 // Session attached to every request by src/middleware/session.ts
 export interface SessionData {
   id: string;           // guest_sessions.id (UUID)
-  token: string;        // the raw session token (stored in cookie)
+  token: string;        // sha256 of the cookie's session token — the guest_sessions.token_hash key
   isGuest: boolean;     // true when account_id IS NULL
   expiresAt: Date;
   account: SessionAccount | null;

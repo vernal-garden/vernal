@@ -3,7 +3,7 @@ import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import type { Profile } from 'passport-google-oauth20';
 import type { OAuthUser } from './providers/google';
-import { resolveOAuthAccount, OAuthUnverifiedEmailError } from './resolveAccount';
+import { resolveOAuthAccount, OAuthUnverifiedEmailError, OAuthLinkRequiresPasswordError } from './resolveAccount';
 import { db } from '../db';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -14,7 +14,7 @@ async function resetDb() {
   await pool.query('TRUNCATE accounts, guest_sessions, password_reset_tokens RESTART IDENTITY CASCADE');
 }
 
-function googleUser(id: string, email: string, verified: boolean | undefined = true): OAuthUser {
+function googleUser(id: string, email: string, verified: boolean | undefined = true, hd?: string): OAuthUser {
   return {
     provider: 'google',
     accessToken: 'access',
@@ -25,7 +25,7 @@ function googleUser(id: string, email: string, verified: boolean | undefined = t
       displayName: 'Gardener',
       emails: [{ value: email, verified }],
       photos: [],
-      _json: {},
+      _json: hd ? { hd } : {},
     } as unknown as Profile,
   };
 }
@@ -49,7 +49,7 @@ afterAll(async () => {
 describe('resolveOAuthAccount', () => {
   it('links Google to a verified password account and keeps the password', async () => {
     const id = await passwordAccount('linked@example.com', true);
-    const result = await resolveOAuthAccount(googleUser('g-1', 'Linked@Example.com'));
+    const result = await resolveOAuthAccount(googleUser('g-1', 'Linked@Example.com', true, 'example.com'));
     expect(result).toEqual({ accountId: id, isNew: false });
     const { rows } = await pool.query('SELECT password_hash FROM accounts WHERE id = $1', [id]);
     expect(rows[0].password_hash).not.toBeNull();
@@ -68,7 +68,7 @@ describe('resolveOAuthAccount', () => {
       [id],
     );
 
-    const result = await resolveOAuthAccount(googleUser('g-2', 'squatted@example.com'));
+    const result = await resolveOAuthAccount(googleUser('g-2', 'squatted@example.com', true, 'example.com'));
     expect(result).toEqual({ accountId: id, isNew: false });
 
     const { rows } = await pool.query<{ password_hash: string | null; email_verified: boolean }>(
@@ -104,5 +104,50 @@ describe('resolveOAuthAccount', () => {
     const first = await resolveOAuthAccount(googleUser('g-5', 'repeat@example.com'));
     const second = await resolveOAuthAccount(googleUser('g-5', 'repeat@example.com'));
     expect(second).toEqual({ accountId: first.accountId, isNew: false });
+  });
+});
+
+describe('resolveOAuthAccount — which addresses Google can vouch for', () => {
+  it('links a gmail.com address to an existing account', async () => {
+    const id = await passwordAccount('grower@gmail.com', true);
+    expect(await resolveOAuthAccount(googleUser('g-10', 'grower@gmail.com'))).toEqual({ accountId: id, isNew: false });
+  });
+
+  it('links a googlemail.com address to an existing account', async () => {
+    const id = await passwordAccount('grower@googlemail.com', true);
+    expect(await resolveOAuthAccount(googleUser('g-11', 'grower@googlemail.com'))).toEqual({ accountId: id, isNew: false });
+  });
+
+  it('links a Workspace address whose hd matches the domain, case-insensitively', async () => {
+    const id = await passwordAccount('ann@farm.example', true);
+    expect(await resolveOAuthAccount(googleUser('g-12', 'ann@farm.example', true, 'Farm.Example'))).toEqual({ accountId: id, isNew: false });
+  });
+
+  it('refuses a verified account when hd is a different domain, writing nothing', async () => {
+    await passwordAccount('bob@farm.example', true);
+    await expect(resolveOAuthAccount(googleUser('g-13', 'bob@farm.example', true, 'other.example'))).rejects.toBeInstanceOf(OAuthLinkRequiresPasswordError);
+    expect((await pool.query('SELECT 1 FROM oauth_identities')).rows).toHaveLength(0);
+  });
+
+  it('refuses to claim an unverified account for a non-Google address, leaving it untouched', async () => {
+    const id = await passwordAccount('cara@yahoo.example', false);
+    await expect(resolveOAuthAccount(googleUser('g-14', 'cara@yahoo.example'))).rejects.toBeInstanceOf(OAuthLinkRequiresPasswordError);
+    const { rows } = await pool.query<{ password_hash: string | null; email_verified: boolean }>(
+      'SELECT password_hash, email_verified FROM accounts WHERE id = $1',
+      [id],
+    );
+    expect(rows[0].password_hash).not.toBeNull();
+    expect(rows[0].email_verified).toBe(false);
+    expect((await pool.query('SELECT 1 FROM oauth_identities')).rows).toHaveLength(0);
+  });
+
+  it('still creates a new account for a non-Google address with no match', async () => {
+    const result = await resolveOAuthAccount(googleUser('g-15', 'dee@yahoo.example'));
+    expect(result.isNew).toBe(true);
+  });
+
+  it('a known identity signs in even with a non-Google address', async () => {
+    const first = await resolveOAuthAccount(googleUser('g-16', 'eve@yahoo.example'));
+    expect(await resolveOAuthAccount(googleUser('g-16', 'eve@yahoo.example'))).toEqual({ accountId: first.accountId, isNew: false });
   });
 });

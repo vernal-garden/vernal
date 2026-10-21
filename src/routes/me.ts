@@ -2,12 +2,12 @@ import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { db } from '../lib/db';
 import { requireAuth } from '../middleware/auth';
-import { clearSessionCookie, revokeAccountSessions } from '../lib/sessions';
+import { clearSessionCookie, makeSessionCookie, revokeAccountSessions, rotateLiveSessionToken } from '../lib/sessions';
 import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
 import { sendVerificationEmail } from '../lib/emailVerification';
 import { sendEmailChangedNotice, sendPasswordChangedNotice } from '../lib/accountSecurity';
-import { verificationResendLimiter, emailChangeLimiter } from '../middleware/rateLimiters';
+import { verificationResendLimiter, emailChangeLimiter, passwordChangeLimiter } from '../middleware/rateLimiters';
 import { logger } from '../lib/logger';
 import { isValidEmail } from '../lib/validation';
 import { stopRenewal, resumeRenewal } from '../lib/billing';
@@ -230,7 +230,7 @@ router.patch('/preferences', async (req, res) => {
 });
 
 // PATCH /api/me/password
-router.patch('/password', async (req, res) => {
+router.patch('/password', passwordChangeLimiter, async (req, res) => {
   const { currentPassword, newPassword } = req.body as {
     currentPassword?: unknown;
     newPassword?: unknown;
@@ -272,15 +272,34 @@ router.patch('/password', async (req, res) => {
     }
 
     const newHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    let rotated: { signedToken: string; expiresAt: Date } | null;
     const client = await db.connect();
     try {
       await client.query('BEGIN');
+      // Re-check under a lock: a reset or another change may have committed
+      // while bcrypt ran, and this request must not overwrite it.
+      const { rows: current } = await client.query<{ password_hash: string | null }>(
+        'SELECT password_hash FROM accounts WHERE id = $1 FOR UPDATE',
+        [accountId],
+      );
+      if (current[0]?.password_hash !== rows[0].password_hash) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Current password is incorrect' });
+      }
       await client.query(
         'UPDATE accounts SET password_hash = $1, updated_at = NOW() WHERE id = $2',
         [newHash, accountId],
       );
-      // Invalidate all other sessions for this account; the current session survives.
+      // End every other session, then give this one a new token so a copied
+      // cookie stops working too. Only a still-live session is rotated: one
+      // revoked mid-request (e.g. by a reset) must not come back.
       await revokeAccountSessions(client, accountId, sessionToken);
+      rotated = await rotateLiveSessionToken(client, sessionToken, accountId);
+      if (!rotated) {
+        await client.query('ROLLBACK');
+        clearSessionCookie(res);
+        return res.status(401).json({ error: 'Session expired' });
+      }
       await client.query('COMMIT');
     } catch (txErr) {
       await client.query('ROLLBACK');
@@ -289,6 +308,7 @@ router.patch('/password', async (req, res) => {
       client.release();
     }
 
+    makeSessionCookie(rotated.signedToken, rotated.expiresAt, res);
     res.json({ data: { message: 'Password updated' } });
     if (rows[0].email) await sendPasswordChangedNotice(rows[0].email);
   } catch (err) {
@@ -591,7 +611,7 @@ router.delete('/', async (req, res) => {
       );
       // The session's unmerged guest gardens would cascade away with its row.
       queuedIds = await queueSessionGardens(client, [sessionId]);
-      await client.query('DELETE FROM guest_sessions WHERE token = $1', [sessionToken]);
+      await client.query('DELETE FROM guest_sessions WHERE token_hash = $1', [sessionToken]);
       await client.query('COMMIT');
     } catch (txErr) {
       await client.query('ROLLBACK');

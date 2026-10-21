@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { db } from './db';
 import type { Pool, PoolClient } from 'pg';
 import type { SessionData, SessionAccount } from '../types';
+import { hashToken } from './tokens';
 
 const SESSION_DAYS = parseInt(process.env.SESSION_DAYS ?? '7', 10);
 const GUEST_SESSION_DAYS = parseInt(process.env.GUEST_SESSION_DAYS ?? '30', 10);
@@ -68,9 +69,9 @@ export async function createGuestSession(): Promise<{ signedToken: string; expir
   const expiresAt = new Date(Date.now() + GUEST_SESSION_DAYS * 24 * 60 * 60 * 1000);
 
   await db.query(
-    `INSERT INTO guest_sessions (token, expires_at)
+    `INSERT INTO guest_sessions (token_hash, expires_at)
      VALUES ($1, $2)`,
-    [token, expiresAt],
+    [hashToken(token), expiresAt],
   );
 
   return { signedToken, expiresAt };
@@ -84,25 +85,51 @@ type Runner = Pool | PoolClient;
 // and the merge prompt reads pending data by that id.
 export async function rotateSessionToken(
   runner: Runner,
-  oldToken: string,
+  oldTokenHash: string,
   accountId: number,
 ): Promise<{ signedToken: string; expiresAt: Date }> {
+  const rotated = await updateSessionToken(runner, oldTokenHash, accountId, false);
+  if (rotated) return rotated;
+  // The cookie's row is gone, or belongs to another account — start a fresh session.
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const token = generateToken();
+  await runner.query(
+    `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
+     VALUES ($1, $2, $3, now())`,
+    [hashToken(token), expiresAt, accountId],
+  );
+  return { signedToken: signToken(token), expiresAt };
+}
+
+// As rotateSessionToken, but only for a row that is still live. Returns null
+// (changing nothing) when the row is gone, expired or another account's, so a
+// session revoked mid-request can't be revived with a fresh expiry.
+export async function rotateLiveSessionToken(
+  runner: Runner,
+  oldTokenHash: string,
+  accountId: number,
+): Promise<{ signedToken: string; expiresAt: Date } | null> {
+  return updateSessionToken(runner, oldTokenHash, accountId, true);
+}
+
+async function updateSessionToken(
+  runner: Runner,
+  oldTokenHash: string,
+  accountId: number,
+  requireLive: boolean,
+): Promise<{ signedToken: string; expiresAt: Date } | null> {
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const token = generateToken();
+  // token = NULL also clears the plaintext on rows created before migration 021.
   const result = await runner.query(
     `UPDATE guest_sessions
-        SET token = $1, account_id = $2, migrated_at = COALESCE(migrated_at, now()), expires_at = $3
-      WHERE token = $4 AND (account_id IS NULL OR account_id = $2)`,
-    [token, accountId, expiresAt, oldToken],
+        SET token = NULL, token_hash = $1, account_id = $2,
+            migrated_at = COALESCE(migrated_at, now()), expires_at = $3
+      WHERE token_hash = $4 AND (account_id IS NULL OR account_id = $2)
+        ${requireLive ? 'AND expires_at > now()' : ''}`,
+    [hashToken(token), accountId, expiresAt, oldTokenHash],
   );
-  if (result.rowCount === 0) {
-    // The cookie's row is gone, or belongs to another account — start a fresh session.
-    await runner.query(
-      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
-       VALUES ($1, $2, $3, now())`,
-      [token, expiresAt, accountId],
-    );
-  }
+  if (result.rowCount === 0) return null;
   return { signedToken: signToken(token), expiresAt };
 }
 
@@ -113,12 +140,12 @@ export async function rotateSessionToken(
 export async function revokeAccountSessions(
   runner: Runner,
   accountId: number,
-  exceptToken?: string,
+  exceptTokenHash?: string,
 ): Promise<void> {
-  if (exceptToken) {
+  if (exceptTokenHash) {
     await runner.query(
-      'UPDATE guest_sessions SET expires_at = LEAST(expires_at, now()) WHERE account_id = $1 AND token <> $2',
-      [accountId, exceptToken],
+      'UPDATE guest_sessions SET expires_at = LEAST(expires_at, now()) WHERE account_id = $1 AND token_hash <> $2',
+      [accountId, exceptTokenHash],
     );
   } else {
     await runner.query(
@@ -131,22 +158,22 @@ export async function revokeAccountSessions(
 // Attach the current session (rotating its token) or create a new one for an account.
 export async function claimSession(
   accountId: number,
-  existingToken: string | null,
+  existingTokenHash: string | null,
   client?: PoolClient,
 ): Promise<{ signedToken: string; expiresAt: Date }> {
   const runner = client ?? db;
 
-  if (existingToken) {
-    return rotateSessionToken(runner, existingToken, accountId);
+  if (existingTokenHash) {
+    return rotateSessionToken(runner, existingTokenHash, accountId);
   }
 
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const token = generateToken();
   const signedToken = signToken(token);
   await runner.query(
-    `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+    `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
      VALUES ($1, $2, $3, now())`,
-    [token, expiresAt, accountId],
+    [hashToken(token), expiresAt, accountId],
   );
   return { signedToken, expiresAt };
 }
@@ -211,13 +238,13 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
     deletion_scheduled_at: string | null;
   }>(
     `SELECT
-       gs.id, gs.token, gs.expires_at, gs.account_id,
+       gs.id, gs.token_hash AS token, gs.expires_at, gs.account_id,
        a.email, a.role, a.subscription_tier, a.deletion_scheduled_at
      FROM guest_sessions gs
      LEFT JOIN accounts a ON a.id = gs.account_id
-     WHERE gs.token = $1
+     WHERE gs.token_hash = $1
        AND gs.expires_at > now()`,
-    [token],
+    [hashToken(token)],
   );
 
   if (rows.length === 0) return null;

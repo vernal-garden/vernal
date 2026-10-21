@@ -74,6 +74,19 @@ async function loginAgent(email: string, password = 'Password123!') {
   return agent;
 }
 
+// A session row written the pre-021 way (raw token only; the trigger fills
+// token_hash) and a cookie signed from that raw token.
+async function insertLegacySession(accountId: number): Promise<string> {
+  const raw = crypto.randomBytes(32).toString('hex');
+  await pool.query(
+    `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+     VALUES ($1, now() + interval '1 day', $2, now())`,
+    [raw, accountId],
+  );
+  const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
+  return `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`;
+}
+
 beforeAll(resetDb);
 afterAll(() => pool.end());
 
@@ -388,6 +401,114 @@ describe('PATCH /api/me/password — notice', () => {
   });
 });
 
+describe('PATCH /api/me/password — rotation and limits', () => {
+  function sidCookie(res: request.Response): string {
+    const cookies = res.headers['set-cookie'] as unknown as string[] | undefined;
+    const sid = cookies?.find((c) => c.startsWith('_vernal_sid='));
+    if (!sid) throw new Error('No session cookie set');
+    return sid.split(';')[0];
+  }
+
+  it('issues a new session cookie; the old one stops working', async () => {
+    await createUser('me-pw-rotate@example.com', 'OldPass1!');
+    const login = await request(app).post('/api/auth/login').send({ email: 'me-pw-rotate@example.com', password: 'OldPass1!' });
+    const oldCookie = sidCookie(login);
+
+    const change = await request(app)
+      .patch('/api/me/password')
+      .set('Cookie', oldCookie)
+      .send({ currentPassword: 'OldPass1!', newPassword: 'NewPass2@' });
+    expect(change.status).toBe(200);
+    const newCookie = sidCookie(change);
+    expect(newCookie).not.toBe(oldCookie);
+
+    expect((await request(app).get('/api/me').set('Cookie', oldCookie)).status).toBe(401);
+    expect((await request(app).get('/api/me').set('Cookie', newCookie)).status).toBe(200);
+  });
+
+  it('refuses the change when the password hash changed while bcrypt ran', async () => {
+    const id = await createUser('me-pw-race@example.com', 'OldPass1!');
+    const agent = await loginAgent('me-pw-race@example.com', 'OldPass1!');
+    const otherHash = await bcrypt.hash('ResetPass9!', 4);
+    const spy = vi.spyOn(bcrypt, 'compare').mockImplementationOnce((async () => {
+      // Simulates a password reset committing mid-compare.
+      await pool.query('UPDATE accounts SET password_hash = $1 WHERE id = $2', [otherHash, id]);
+      return true;
+    }) as unknown as typeof bcrypt.compare);
+    const res = await agent.patch('/api/me/password').send({ currentPassword: 'OldPass1!', newPassword: 'NewPass2@' });
+    spy.mockRestore();
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Current password is incorrect');
+    const { rows } = await pool.query<{ password_hash: string }>('SELECT password_hash FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].password_hash).toBe(otherHash);
+  });
+
+  it('does not revive a session revoked while bcrypt ran', async () => {
+    const id = await createUser('me-pw-revoked@example.com', 'OldPass1!');
+    const login = await request(app).post('/api/auth/login').send({ email: 'me-pw-revoked@example.com', password: 'OldPass1!' });
+    const cookie = sidCookie(login);
+    const spy = vi.spyOn(bcrypt, 'compare').mockImplementationOnce((async () => {
+      // Simulates this session being revoked mid-compare.
+      await pool.query('UPDATE guest_sessions SET expires_at = now() WHERE account_id = $1', [id]);
+      return true;
+    }) as unknown as typeof bcrypt.compare);
+    const res = await request(app)
+      .patch('/api/me/password')
+      .set('Cookie', cookie)
+      .send({ currentPassword: 'OldPass1!', newPassword: 'NewPass2@' });
+    spy.mockRestore();
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('Session expired');
+    const { rows } = await pool.query<{ live: boolean }>(
+      'SELECT expires_at > now() AS live FROM guest_sessions WHERE account_id = $1',
+      [id],
+    );
+    expect(rows).toEqual([{ live: false }]);
+    expect(await bcrypt.compare('OldPass1!', (await pool.query('SELECT password_hash FROM accounts WHERE id = $1', [id])).rows[0].password_hash)).toBe(true);
+  });
+
+  it('revokes a legacy raw-token session on another device', async () => {
+    const id = await createUser('me-pw-legacy@example.com', 'OldPass1!');
+    const legacy = await insertLegacySession(id);
+    expect((await request(app).get('/api/me').set('Cookie', legacy)).status).toBe(200);
+    const agent = await loginAgent('me-pw-legacy@example.com', 'OldPass1!');
+    const change = await agent.patch('/api/me/password').send({ currentPassword: 'OldPass1!', newPassword: 'NewPass2@' });
+    expect(change.status).toBe(200);
+    expect((await request(app).get('/api/me').set('Cookie', legacy)).status).toBe(401);
+  });
+
+  describe('per-account limiter', () => {
+    beforeEach(() => {
+      process.env.ENFORCE_RATE_LIMITS = 'true';
+    });
+    afterEach(() => {
+      delete process.env.ENFORCE_RATE_LIMITS;
+    });
+
+    it('allows 5 wrong current passwords per hour, then 429', async () => {
+      await createUser('me-pw-limit@example.com', 'OldPass1!');
+      const agent = await loginAgent('me-pw-limit@example.com', 'OldPass1!');
+      for (let i = 0; i < 5; i++) {
+        const res = await agent.patch('/api/me/password').send({ currentPassword: 'Wrong!', newPassword: 'NewPass2@' });
+        expect(res.status).toBe(400);
+      }
+      const res = await agent.patch('/api/me/password').send({ currentPassword: 'OldPass1!', newPassword: 'NewPass2@' });
+      expect(res.status).toBe(429);
+    });
+
+    it('successful changes do not count', async () => {
+      await createUser('me-pw-ok@example.com', 'Pass0000!');
+      const agent = await loginAgent('me-pw-ok@example.com', 'Pass0000!');
+      for (let i = 0; i < 6; i++) {
+        const res = await agent
+          .patch('/api/me/password')
+          .send({ currentPassword: `Pass000${i}!`, newPassword: `Pass000${i + 1}!` });
+        expect(res.status).toBe(200);
+      }
+    });
+  });
+});
+
 // ── Tests 10-11: DELETE / ─────────────────────────────────────────────────────
 
 describe('DELETE /api/me', () => {
@@ -432,6 +553,15 @@ describe('DELETE /api/me', () => {
       [accountId],
     );
     expect(rows[0].deletion_scheduled_at.toISOString()).toBe(firstDeletionTimestamp);
+  });
+
+  it('deletes a legacy raw-token session row', async () => {
+    const id = await createUser('me-delete-legacy@example.com');
+    const legacy = await insertLegacySession(id);
+    const res = await request(app).delete('/api/me').set('Cookie', legacy);
+    expect(res.status).toBe(204);
+    const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE account_id = $1', [id]);
+    expect(rows).toHaveLength(0);
   });
 });
 
