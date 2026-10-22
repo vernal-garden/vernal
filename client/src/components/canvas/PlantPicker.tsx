@@ -122,14 +122,14 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
 
   const panelStyle: React.CSSProperties = isNarrow
     ? {
-        position: 'fixed', bottom: 0, left: 0, right: 0, maxHeight: '55vh',
+        position: 'fixed', bottom: 'var(--deletion-banner-h, 0px)', left: 0, right: 0, maxHeight: '55vh',
         borderRadius: '12px 12px 0 0', background: '#faf7f2',
         borderTop: '1px solid #d8ceba', boxShadow: '0 -4px 32px rgba(20,40,20,0.12)',
         display: 'flex', flexDirection: 'column',
         fontFamily: 'system-ui, -apple-system, sans-serif', zIndex: 25,
       }
     : {
-        position: 'fixed', right: 0, top: 'var(--shell-top, 0px)', bottom: 0, width: 280,
+        position: 'fixed', right: 0, top: 'var(--shell-top, 0px)', bottom: 'var(--deletion-banner-h, 0px)', width: 280,
         display: 'flex', flexDirection: 'column',
         background: '#faf7f2', borderLeft: '1px solid #d8ceba',
         boxShadow: '-4px 0 32px rgba(20,40,20,0.12)',

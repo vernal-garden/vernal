@@ -82,7 +82,7 @@ const responsiveCss = `
 export default function MyGardensPage() {
   const navigate = useNavigate();
   const { gardens: rawGardens, loading, error, reload } = useGardenList();
-  // Local copy for optimistic rename/delete updates
+  // Local copy for optimistic rename and post-success delete updates
   const [localGardens, setLocalGardens] = useState<GardenSummary[] | null>(null);
 
   useEffect(() => {
@@ -99,21 +99,24 @@ export default function MyGardensPage() {
     setLocalGardens(prev => prev ? prev.map(g => g.id === id ? { ...g, name: newName } : g) : prev);
     try {
       await api.patch(`/api/gardens/${id}`, { name: newName });
-    } catch {
+    } catch (e) {
       reload();
-      throw new Error('Failed to rename');
+      throw e;
     }
   }, [reload]);
 
+  // Not optimistic: the card (and its confirm dialog) stays mounted until the
+  // delete succeeds, so a failure can be shown in the dialog. Errors propagate
+  // to GardenCard.
   const handleDelete = useCallback(async (id: string) => {
-    setLocalGardens(prev => prev ? prev.filter(g => g.id !== id) : prev);
     try {
       await api.del(`/api/gardens/${id}`);
-    } catch {
-      reload();
-      throw new Error('Failed to delete');
+    } catch (e) {
+      // Already gone (deleted in another tab): drop the card as if it succeeded.
+      if (!(e instanceof api.ApiError && e.status === 404)) throw e;
     }
-  }, [reload]);
+    setLocalGardens(prev => prev ? prev.filter(g => g.id !== id) : prev);
+  }, []);
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--c-bg)', display: 'flex', flexDirection: 'column' }}>

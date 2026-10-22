@@ -133,7 +133,7 @@ export default function MicroFeedbackHost() {
       style={{
         position: 'fixed',
         right: 16,
-        bottom: 'calc(var(--shell-bottom, 0px) + 88px)',
+        bottom: 'calc(var(--shell-bottom, 0px) + 88px + var(--deletion-banner-h, 0px))',
         width: 'min(360px, 100vw - 32px)',
         boxSizing: 'border-box',
         zIndex: 1060,

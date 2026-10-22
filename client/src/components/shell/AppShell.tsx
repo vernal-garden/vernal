@@ -51,6 +51,8 @@ export default function AppShell() {
         {!isCanvas && <AppNav />}
         <GuestBanner fixed={isCanvas} top="0px" onHeightChange={setBannerHeight} />
         <Outlet />
+        {/* Room for the fixed pending-deletion banner so the last content can scroll clear of it. */}
+        {!isCanvas && <div aria-hidden="true" style={{ height: 'var(--deletion-banner-h, 0px)' }} />}
         <MicroFeedbackHost />
       </>
     );
@@ -63,7 +65,7 @@ export default function AppShell() {
       <main
         style={isCanvas ? undefined : {
           paddingTop: 'var(--shell-top)',
-          paddingBottom: 'var(--shell-bottom)',
+          paddingBottom: 'calc(var(--shell-bottom) + var(--deletion-banner-h, 0px))',
         }}
       >
         <Outlet />

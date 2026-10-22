@@ -256,7 +256,7 @@ export default function PlantingGuidePage() {
             position: 'fixed',
             left: '50%',
             transform: 'translateX(-50%)',
-            bottom: 'calc(var(--shell-bottom, 0px) + 16px)',
+            bottom: 'calc(var(--shell-bottom, 0px) + 16px + var(--deletion-banner-h, 0px))',
             zIndex: 1060,
             width: 'max-content',
             maxWidth: 'calc(100vw - 32px)',

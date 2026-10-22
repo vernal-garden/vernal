@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { GardenSummary } from '../hooks/useGardenList';
 import ResponsiveDialog from './shell/ResponsiveDialog';
+import { apiErrorMessage } from '../lib/api';
 
 const METHOD_LABELS: Record<string, string> = {
   square_foot: 'Square foot',
@@ -33,6 +34,7 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
   const [renameError, setRenameError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -81,8 +83,8 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
     try {
       await onRename(garden.id, trimmed);
       setRenaming(false);
-    } catch {
-      setRenameError('Failed to rename. Please try again.');
+    } catch (err) {
+      setRenameError(apiErrorMessage(err, 'Failed to rename. Please try again.'));
     } finally {
       setRenameLoading(false);
     }
@@ -90,11 +92,14 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
 
   async function handleDeleteConfirm() {
     setDeleteLoading(true);
+    setDeleteError(null);
     try {
       await onDelete(garden.id);
+      setConfirmingDelete(false);
+    } catch (err) {
+      setDeleteError(apiErrorMessage(err, 'Failed to delete. Please try again.'));
     } finally {
       setDeleteLoading(false);
-      setConfirmingDelete(false);
     }
   }
 
@@ -228,7 +233,7 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
                     Rename
                   </button>
                   <button
-                    onClick={e => { e.stopPropagation(); setMenuOpen(false); setConfirmingDelete(true); }}
+                    onClick={e => { e.stopPropagation(); setMenuOpen(false); setDeleteError(null); setConfirmingDelete(true); }}
                     style={{
                       width: '100%', textAlign: 'left', padding: 'var(--sp-2) var(--sp-3)',
                       fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-danger)',
@@ -347,6 +352,11 @@ export default function GardenCard({ garden, onRename, onDelete }: Props) {
         <p style={{ fontFamily: 'var(--font-ui)', fontSize: 14, color: 'var(--c-text-2)', lineHeight: 1.6, margin: 0 }}>
           This permanently removes the garden, all its beds, and all planting history. This cannot be undone.
         </p>
+        {deleteError && (
+          <p style={{ fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--c-danger)', margin: 'var(--sp-1) 0 0' }}>
+            {deleteError}
+          </p>
+        )}
       </ResponsiveDialog>
     </>
   );

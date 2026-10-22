@@ -381,7 +381,7 @@ export default function HarvestLogPage() {
           position: 'fixed',
           left: '50%',
           transform: 'translateX(-50%)',
-          bottom: 'calc(var(--shell-bottom, 0px) + 88px)',
+          bottom: 'calc(var(--shell-bottom, 0px) + 88px + var(--deletion-banner-h, 0px))',
           zIndex: 1060,
           padding: 'var(--sp-3) var(--sp-5)',
           background: 'var(--c-text)',
@@ -444,7 +444,7 @@ export default function HarvestLogPage() {
           style={{
             position: 'fixed',
             right: 16,
-            bottom: 'calc(var(--shell-bottom) + 16px)',
+            bottom: 'calc(var(--shell-bottom) + 16px + var(--deletion-banner-h, 0px))',
             zIndex: 45,
             width: 56,
             height: 56,

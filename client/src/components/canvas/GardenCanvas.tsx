@@ -6,7 +6,7 @@ import { Circle, Layer, Line, Group, Path, Rect, Shape, Stage, Text } from 'reac
 import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
 import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
-import { apiUrl } from '../../lib/api';
+import { apiUrl, apiErrorMessage } from '../../lib/api';
 import FitLine from './FitLine';
 import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
 import { STAGE_NAMES, isHarvestReady } from '../../lib/growthStages';
@@ -2273,10 +2273,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       try {
         await onMarkHarvested(planting);
         if (stillOpen()) setHarvestBusy(false);
-      } catch {
+      } catch (e) {
         if (!stillOpen()) return;
         setHarvestBusy(false);
-        setHarvestError("Couldn't mark as harvested. Try again.");
+        setHarvestError(apiErrorMessage(e, "Couldn't mark as harvested. Try again."));
       }
     };
 
@@ -2504,7 +2504,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         aria-hidden="true"
         style={{
           position: 'fixed', left: 0, width: 0,
-          top: 'var(--shell-top, 0px)', bottom: 'var(--shell-bottom, 0px)',
+          top: 'var(--shell-top, 0px)', bottom: 'calc(var(--shell-bottom, 0px) + var(--deletion-banner-h, 0px))',
           visibility: 'hidden', pointerEvents: 'none',
         }}
       />

@@ -182,7 +182,8 @@ export default function HomePage() {
         await api.post(`/api/gardens/${gardenId}/beds/carry-forward`, { fromSeason });
       } catch (e) {
         const status = e instanceof api.ApiError ? e.status : null;
-        if (status === 409) {
+        const code = e instanceof api.ApiError ? (e.body as { code?: string } | null | undefined)?.code : undefined;
+        if (status === 409 && code !== 'deletion_scheduled') {
           alreadyHasBeds = true;
         } else if (status === 404 || status === 400) {
           // The earlier layout is gone (or the season is stale): refresh the list.
@@ -193,7 +194,7 @@ export default function HomePage() {
           return;
         } else {
           if (resolvedIdRef.current === gardenId) {
-            setCarryForward({ pending: false, error: CARRY_FORWARD_ERROR });
+            setCarryForward({ pending: false, error: api.apiErrorMessage(e, CARRY_FORWARD_ERROR) });
           }
           return;
         }
@@ -581,7 +582,7 @@ export default function HomePage() {
       if (e instanceof api.ApiError && e.status === 404) return;
       const stillHere = (plantingsByBedIdRef.current[planting.bedId] ?? []).some(p => p.id === planting.id);
       if (!stillHere) return;
-      showToast("Couldn't update. Try again.", 'error');
+      showToast(api.apiErrorMessage(e, "Couldn't update. Try again."), 'error');
     }
   }, [updatePlantingQuantity, showToast]);
 
@@ -650,7 +651,7 @@ export default function HomePage() {
           padding: 'var(--sp-4)',
           // Keep clear of the shell bars and the bottom canvas toolbar.
           paddingTop: 'calc(var(--sp-4) + var(--shell-top, 0px))',
-          paddingBottom: 'calc(96px + var(--shell-bottom, 0px))',
+          paddingBottom: 'calc(96px + var(--shell-bottom, 0px) + var(--deletion-banner-h, 0px))',
         }}>
           <section
             aria-labelledby="new-season-prompt-title"
@@ -732,7 +733,7 @@ export default function HomePage() {
           pointerEvents: 'none',
           padding: 'var(--sp-4)',
           paddingTop: 'calc(var(--sp-4) + var(--shell-top, 0px))',
-          paddingBottom: 'calc(var(--sp-4) + var(--shell-bottom, 0px))',
+          paddingBottom: 'calc(var(--sp-4) + var(--shell-bottom, 0px) + var(--deletion-banner-h, 0px))',
         }}>
           <div style={{
             maxWidth: 320,

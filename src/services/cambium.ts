@@ -1,4 +1,5 @@
 import { db } from '../lib/db';
+import type { PoolClient } from 'pg';
 import { escapeLike } from '../lib/validation';
 import type {
   SeedSummary,
@@ -215,4 +216,28 @@ export async function getCompanionsForSeed(
       source: (r.source as string | null) ?? null,
     };
   });
+}
+
+// Deletes an account's seed ratings and recomputes the aggregates of the
+// seeds they were on. cambium.seed_ratings has no FK to accounts (it crosses
+// schemas), so the account purge calls this. Runs on the caller's transaction.
+export async function deleteAccountRatings(client: PoolClient, accountId: number): Promise<void> {
+  const { rows } = await client.query<{ seed_id: number }>(
+    'DELETE FROM cambium.seed_ratings WHERE account_id = $1 RETURNING seed_id',
+    [accountId],
+  );
+  if (rows.length === 0) return;
+
+  await client.query(
+    `UPDATE cambium.seeds s
+        SET rating_count = r.n, aggregate_rating = r.avg, updated_at = NOW()
+       FROM (
+         SELECT ids.seed_id, COUNT(sr.id)::int AS n, ROUND(AVG(sr.rating)::numeric, 2) AS avg
+           FROM unnest($1::int[]) AS ids(seed_id)
+           LEFT JOIN cambium.seed_ratings sr ON sr.seed_id = ids.seed_id
+          GROUP BY ids.seed_id
+       ) r
+      WHERE s.id = r.seed_id`,
+    [[...new Set(rows.map((r) => r.seed_id))]],
+  );
 }

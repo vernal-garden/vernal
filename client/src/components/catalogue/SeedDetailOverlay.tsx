@@ -351,18 +351,23 @@ interface CommunityDetailProps {
 
 function CommunityDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigateToGarden }: CommunityDetailProps) {
   const [importStatus, setImportStatus] = useState<'idle' | 'loading' | 'added' | 'duplicate' | 'error'>('idle');
+  const [importError, setImportError] = useState<string | null>(null);
   const [correctionOpen, setCorrectionOpen] = useState(false);
 
   async function handleAddToCatalogue() {
     if (isGuest) { onPromptAccount(); return; }
     setImportStatus('loading');
+    setImportError(null);
     try {
       await post('/api/seeds/add-from-cambium', { cambiumSeedId: detail.id });
       setImportStatus('added');
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      const code = err instanceof ApiError ? (err.body as { code?: string } | null | undefined)?.code : undefined;
+      if (err instanceof ApiError && err.status === 409 && code !== 'deletion_scheduled') {
         setImportStatus('duplicate');
       } else {
+        // The full server message is too long for the button label.
+        setImportError(code === 'deletion_scheduled' ? 'Account pending deletion' : null);
         setImportStatus('error');
       }
     }
@@ -371,7 +376,7 @@ function CommunityDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigat
   const importLabel =
     importStatus === 'added' || importStatus === 'duplicate' ? 'Already in your catalogue' :
     importStatus === 'loading' ? 'Adding…' :
-    importStatus === 'error' ? 'Failed — try again' :
+    importStatus === 'error' ? (importError ?? 'Failed — try again') :
     'Add to my catalogue';
 
   return (
@@ -539,9 +544,9 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
       onDeleted();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        const msg = (err.body as { error?: string } | null)?.error;
-        setDeleteError(msg ?? "This seed is planted in your gardens — remove those plantings first");
-        setDeleteBlocked(true);
+        const body = err.body as { error?: string; code?: string } | null;
+        setDeleteError(body?.error ?? "This seed is planted in your gardens — remove those plantings first");
+        if (body?.code !== 'deletion_scheduled') setDeleteBlocked(true);
       } else {
         setDeleteError("Couldn't delete this seed. Try again.");
       }

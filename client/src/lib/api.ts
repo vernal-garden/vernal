@@ -20,6 +20,16 @@ export class ApiError extends Error {
   }
 }
 
+// The server's `{ error }` text for an ApiError that carries one; otherwise
+// (network failure, non-JSON body, non-API error) the caller's friendly text.
+export function apiErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+    const message = (err.body as { error?: unknown }).error;
+    if (typeof message === 'string') return message;
+  }
+  return fallback;
+}
+
 async function request<T>(method: string, path: string, payload?: unknown): Promise<T | undefined> {
   const res = await fetch(`${API_BASE}${path}`, {
     method,

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { Pool } from 'pg';
+import { EventEmitter } from 'node:events';
 
 vi.mock('../lib/r2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/r2')>()),
@@ -16,6 +17,7 @@ vi.mock('../lib/billing', () => ({
   teardownCustomer: vi.fn(),
 }));
 
+import { db as webDb, jobDb } from '../lib/db';
 import { deleteFromR2, exportsBucket } from '../lib/r2';
 import { teardownCustomer } from '../lib/billing';
 import { currentSeason } from '../lib/season';
@@ -30,6 +32,7 @@ import {
   checkSubscriptionDowngrades,
   purgeExpiredExports,
   runNightlyJob,
+  NIGHTLY_LOCK_KEY,
 } from './nightly';
 
 const deleteFromR2Mock = vi.mocked(deleteFromR2);
@@ -832,6 +835,65 @@ describe('purgeExpiredGuests — empty guests and batching', () => {
     const { rows } = await pool.query<{ token_hash: string }>('SELECT token_hash FROM email_change_tokens');
     expect(rows.map((r) => r.token_hash)).toEqual(['new-hash']);
   });
+
+  async function insertAccountSession(accountId: number, expiredAgo: string): Promise<string> {
+    tokenCounter += 1;
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO guest_sessions (token, created_at, expires_at, migrated_at, account_id)
+       VALUES ($1, NOW() - INTERVAL '60 days', NOW() - $2::interval, NOW() - INTERVAL '60 days', $3)
+       RETURNING id`,
+      [`account-session-${tokenCounter}`, expiredAgo, accountId],
+    );
+    return rows[0].id;
+  }
+
+  it('deletes account sessions expired over 30 days ago and keeps newer ones', async () => {
+    const accountId = await createAccount();
+    const old = await insertAccountSession(accountId, '31 days');
+    const recent = await insertAccountSession(accountId, '29 days');
+
+    await purgeExpiredGuests();
+
+    const ids = await existingIds();
+    expect(ids).not.toContain(old);
+    expect(ids).toContain(recent);
+  });
+
+  it('keeps an old expired account session that still owns a guest garden', async () => {
+    const accountId = await createAccount();
+    const id = await insertAccountSession(accountId, '31 days');
+    await pool.query(
+      `INSERT INTO gardens (guest_session_id, name, style, zone) VALUES ($1, 'Unmerged', 'grid', '7a')`,
+      [id],
+    );
+
+    await purgeExpiredGuests();
+
+    expect(await existingIds()).toContain(id);
+  });
+
+  it('keeps an old expired account session that still owns a guest seed', async () => {
+    const accountId = await createAccount();
+    const id = await insertAccountSession(accountId, '31 days');
+    await pool.query(
+      `INSERT INTO seeds (guest_session_id, common_name, origin) VALUES ($1, 'Tomato', 'user_created')`,
+      [id],
+    );
+
+    await purgeExpiredGuests();
+
+    expect(await existingIds()).toContain(id);
+  });
+
+  it('sweeps expired account sessions in batches', async () => {
+    const accountId = await createAccount();
+    for (let i = 0; i < 5; i += 1) await insertAccountSession(accountId, '40 days');
+
+    const { affected } = await purgeExpiredGuests({ batchSize: 2 });
+
+    expect(affected).toBe(5);
+    expect(await existingIds()).toEqual([]);
+  });
 });
 
 describe('purgeReadNotifications', () => {
@@ -1039,6 +1101,67 @@ describe('purgeScheduledAccounts', () => {
     expect(await queued()).toEqual([]);
     expect(await accountIds()).toContain(accountId);
   });
+
+  async function rate(seedId: number, accountId: number, rating: number): Promise<void> {
+    await pool.query(
+      'INSERT INTO cambium.seed_ratings (seed_id, account_id, rating) VALUES ($1, $2, $3)',
+      [seedId, accountId, rating],
+    );
+  }
+
+  async function seedAggregate(seedId: number) {
+    const { rows } = await pool.query<{ rating_count: number; aggregate_rating: string | null }>(
+      'SELECT rating_count, aggregate_rating FROM cambium.seeds WHERE id = $1',
+      [seedId],
+    );
+    return { count: rows[0].rating_count, avg: rows[0].aggregate_rating === null ? null : Number(rows[0].aggregate_rating) };
+  }
+
+  it("deletes the account's feedback and usage events", async () => {
+    const purged = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const kept = await createAccount();
+    await pool.query('TRUNCATE feedback_submissions, usage_events');
+    for (const id of [purged, kept]) {
+      await pool.query(
+        "INSERT INTO feedback_submissions (user_id, category, message) VALUES ($1, 'general', 'hello')",
+        [id],
+      );
+      await pool.query(
+        "INSERT INTO usage_events (user_id, session_id, event_key) VALUES ($1, 'sess', 'garden_opened')",
+        [id],
+      );
+    }
+
+    await purgeScheduledAccounts();
+
+    const { rows: feedback } = await pool.query<{ user_id: number | null }>('SELECT user_id FROM feedback_submissions');
+    expect(feedback).toEqual([{ user_id: kept }]);
+    const { rows: events } = await pool.query<{ user_id: number | null }>('SELECT user_id FROM usage_events');
+    expect(events).toEqual([{ user_id: kept }]);
+  });
+
+  it("deletes the account's ratings and recomputes the seeds' aggregates", async () => {
+    const purged = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const other = await createAccount();
+    const shared = await createCambiumSeed();
+    const solo = await createCambiumSeed();
+    await rate(shared, purged, 1);
+    await rate(shared, other, 4);
+    await rate(solo, purged, 5);
+    await pool.query(
+      `UPDATE cambium.seeds s SET rating_count = r.n, aggregate_rating = r.avg
+         FROM (SELECT seed_id, COUNT(*)::int AS n, ROUND(AVG(rating)::numeric, 2) AS avg
+                 FROM cambium.seed_ratings GROUP BY seed_id) r
+        WHERE s.id = r.seed_id`,
+    );
+
+    await purgeScheduledAccounts();
+
+    const { rows } = await pool.query('SELECT 1 FROM cambium.seed_ratings WHERE account_id = $1', [purged]);
+    expect(rows).toHaveLength(0);
+    expect(await seedAggregate(shared)).toEqual({ count: 1, avg: 4 });
+    expect(await seedAggregate(solo)).toEqual({ count: 0, avg: null });
+  });
 });
 
 describe('checkSubscriptionDowngrades', () => {
@@ -1205,6 +1328,80 @@ describe('runNightlyJob', () => {
       'test-exports',
     );
     expect(await queued()).toEqual([]);
+  });
+
+  it('skips without a job_runs row while another run holds the lock', async () => {
+    const holder = await pool.connect();
+    try {
+      await holder.query('SELECT pg_advisory_lock($1)', [NIGHTLY_LOCK_KEY]);
+      await runNightlyJob();
+      const { rows } = await pool.query("SELECT 1 FROM job_runs WHERE job_key = 'nightly'");
+      expect(rows).toHaveLength(0);
+    } finally {
+      await holder.query('SELECT pg_advisory_unlock($1)', [NIGHTLY_LOCK_KEY]);
+      holder.release();
+    }
+
+    await runNightlyJob();
+    const { rows } = await pool.query("SELECT 1 FROM job_runs WHERE job_key = 'nightly'");
+    expect(rows).toHaveLength(1);
+  });
+
+  it('releases the lock when the run fails', async () => {
+    const realQuery = jobDb.query.bind(jobDb) as (...args: unknown[]) => Promise<unknown>;
+    const spy = vi.spyOn(jobDb, 'query').mockImplementation(((...args: unknown[]) => {
+      if (typeof args[0] === 'string' && args[0].includes('DELETE FROM stripe_events')) {
+        return Promise.reject(new Error('boom'));
+      }
+      return realQuery(...args);
+    }) as never);
+    try {
+      await expect(runNightlyJob()).rejects.toThrow(/purgeStripeEvents/);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const probe = await pool.connect();
+    try {
+      const { rows } = await probe.query<{ locked: boolean }>(
+        'SELECT pg_try_advisory_lock($1) AS locked',
+        [NIGHTLY_LOCK_KEY],
+      );
+      expect(rows[0].locked).toBe(true);
+    } finally {
+      await probe.query('SELECT pg_advisory_unlock($1)', [NIGHTLY_LOCK_KEY]);
+      probe.release();
+    }
+  });
+
+  it('handles an error on the lock connection and detaches its listener afterwards', async () => {
+    const fake = Object.assign(new EventEmitter(), {
+      query: vi.fn(),
+      release: vi.fn(),
+    });
+    let listenersDuringRun = -1;
+    fake.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('pg_try_advisory_lock')) return { rows: [{ locked: true }] };
+      if (sql.includes('pg_advisory_unlock')) {
+        listenersDuringRun = fake.listenerCount('error');
+        // With no listener this emit would throw, as it would in production.
+        fake.emit('error', new Error('connection terminated'));
+      }
+      return { rows: [] };
+    });
+    const connectSpy = vi.spyOn(webDb, 'connect').mockResolvedValueOnce(fake as never);
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      // Tasks run against the real job pool; they may or may not throw, only
+      // the listener bookkeeping matters here.
+      await runNightlyJob().catch(() => {});
+      expect(listenersDuringRun).toBe(1);
+      expect(fake.listenerCount('error')).toBe(0);
+      expect(fake.release).toHaveBeenCalledOnce();
+    } finally {
+      connectSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 });
 

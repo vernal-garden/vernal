@@ -589,8 +589,8 @@ router.get('/email/confirm', async (req, res) => {
 // DELETE /api/me
 // Schedules account deletion by setting deletion_scheduled_at.
 // COALESCE ensures re-requesting does NOT reset the 30-day clock.
-// The current session row is deleted immediately; the data purge runs
-// via the nightly job 30 days after deletion_scheduled_at.
+// The current session row is deleted and every other session is revoked; the
+// data purge runs via the nightly job 30 days after deletion_scheduled_at.
 router.delete('/', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
   const sessionToken = req.session!.token;
@@ -629,6 +629,9 @@ router.delete('/', writeLimiter, async (req, res) => {
          WHERE id = $1`,
         [accountId],
       );
+      // Every other device is signed out. Their rows are expired, not deleted,
+      // so their unmerged guest gardens survive until the purge.
+      await revokeAccountSessions(client, accountId, sessionToken);
       // The session's unmerged guest gardens would cascade away with its row.
       queuedIds = await queueSessionGardens(client, [sessionId]);
       await client.query('DELETE FROM guest_sessions WHERE token_hash = $1', [sessionToken]);
