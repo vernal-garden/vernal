@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireSession } from '../middleware/auth';
-import { writeLimiter } from '../middleware/rateLimiters';
+import { writeLimiter, eventsBatchLimiter } from '../middleware/rateLimiters';
 import { isEventKey } from '../lib/eventKeys';
 
 const eventsRouter = Router();
@@ -22,7 +22,7 @@ function resolveCreatedAt(timestamp: unknown, now: Date): Date {
 
 // ── POST /batch ───────────────────────────────────────────────────────────────
 
-eventsRouter.post('/batch', requireSession, writeLimiter, async (req: Request, res: Response): Promise<void> => {
+eventsRouter.post('/batch', requireSession, writeLimiter, eventsBatchLimiter, async (req: Request, res: Response): Promise<void> => {
   const { events } = (req.body ?? {}) as { events?: unknown };
 
   if (!Array.isArray(events)) {

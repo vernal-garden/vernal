@@ -1,4 +1,5 @@
 import { db } from '../lib/db';
+import { escapeLike } from '../lib/validation';
 import type {
   SeedSummary,
   SeedDetail,
@@ -37,8 +38,8 @@ export async function searchSeeds(
   let countWhere = `WHERE moderation_status = 'active'`;
 
   if (query) {
-    countParams.push(`%${query}%`);
-    countWhere += ` AND (common_name ILIKE $${countParams.length} OR scientific_name ILIKE $${countParams.length})`;
+    countParams.push(`%${escapeLike(query)}%`);
+    countWhere += ` AND (common_name ILIKE $${countParams.length} ESCAPE '\\' OR scientific_name ILIKE $${countParams.length} ESCAPE '\\')`;
   }
 
   if (family) {
@@ -59,10 +60,10 @@ export async function searchSeeds(
   let orderBy: string;
 
   if (query) {
-    dataParams.push(`%${query}%`);
-    dataWhere += ` AND (common_name ILIKE $${dataParams.length} OR scientific_name ILIKE $${dataParams.length})`;
-    dataParams.push(`${query}%`);
-    orderBy = `ORDER BY (common_name ILIKE $${dataParams.length}) DESC, common_name ASC`;
+    dataParams.push(`%${escapeLike(query)}%`);
+    dataWhere += ` AND (common_name ILIKE $${dataParams.length} ESCAPE '\\' OR scientific_name ILIKE $${dataParams.length} ESCAPE '\\')`;
+    dataParams.push(`${escapeLike(query)}%`);
+    orderBy = `ORDER BY (common_name ILIKE $${dataParams.length} ESCAPE '\\') DESC, common_name ASC`;
   } else if (sort === 'popular') {
     orderBy = `ORDER BY aggregate_rating DESC NULLS LAST, rating_count DESC, common_name ASC`;
   } else {

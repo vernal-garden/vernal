@@ -4,7 +4,8 @@ import type { PoolClient } from 'pg';
 import { db } from '../lib/db';
 import { requireAuth, requireSession, requireSupporter } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
-import { isNumericId } from '../lib/validation';
+import { escapeLike, isNumericId } from '../lib/validation';
+import { LIMITS, withinCap } from '../lib/limits';
 import { currentSeason, isIsoDate } from '../lib/plantingSchedule';
 import { seasonOf } from '../lib/season';
 import { invalidateMetrics } from '../lib/metricsCache';
@@ -153,7 +154,7 @@ function seedKeyWhere(key: SeedKey, param: string, alias = ''): string {
 }
 
 function likePattern(q: string): string {
-  return `%${q.replace(/[\\%_]/g, '\\$&')}%`;
+  return `%${escapeLike(q)}%`;
 }
 
 function isR2ConfigError(err: unknown): boolean {
@@ -431,6 +432,7 @@ function parseFilters(query: Request['query']): Filters | { error: string } {
 
   if (query.q !== undefined) {
     const q = (query.q as string).trim();
+    if (q.length > 100) return { error: 'q must be 100 characters or fewer' };
     f.q = q || null;
   }
 
@@ -455,7 +457,7 @@ function filterSql(f: Filters, params: unknown[]): string {
   if (f.to !== null) conditions.push(`${LOCAL_DATE} <= ${add(f.to)}::date`);
   if (f.q !== null) {
     const p = add(likePattern(f.q));
-    conditions.push(`((${COMMON_NAME}) ILIKE ${p} OR h.notes ILIKE ${p})`);
+    conditions.push(`((${COMMON_NAME}) ILIKE ${p} ESCAPE '\\' OR h.notes ILIKE ${p} ESCAPE '\\')`);
   }
 
   return conditions.map((c) => ` AND ${c}`).join('');
@@ -636,6 +638,9 @@ router.get('/plant-options', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'q must be given once' });
   }
   const q = ((req.query.q as string | undefined) ?? '').trim();
+  if (q.length > 100) {
+    return res.status(400).json({ error: 'q must be 100 characters or fewer' });
+  }
   const pattern = q ? likePattern(q) : null;
 
   try {
@@ -651,8 +656,8 @@ router.get('/plant-options', async (req: Request, res: Response) => {
        WHERE (g.owner_id = $1 OR g.guest_session_id = $2)
          AND p.season = $3
          AND ($4::text IS NULL
-              OR (CASE WHEN p.seed_id IS NOT NULL THEN s.common_name ELSE cs.common_name END) ILIKE $4
-              OR (CASE WHEN p.seed_id IS NOT NULL THEN s.scientific_name ELSE cs.scientific_name END) ILIKE $4)
+              OR (CASE WHEN p.seed_id IS NOT NULL THEN s.common_name ELSE cs.common_name END) ILIKE $4 ESCAPE '\\'
+              OR (CASE WHEN p.seed_id IS NOT NULL THEN s.scientific_name ELSE cs.scientific_name END) ILIKE $4 ESCAPE '\\')
        ORDER BY common_name, seed_id, cambium_seed_id
        LIMIT ${MAX_PLANT_OPTIONS}`,
       [...owner(session), currentSeason(new Date()), pattern],
@@ -662,7 +667,7 @@ router.get('/plant-options', async (req: Request, res: Response) => {
       `SELECT id::text AS seed_id, NULL AS cambium_seed_id, common_name, scientific_name
        FROM seeds
        WHERE (owner_id = $1 OR guest_session_id = $2)
-         AND ($3::text IS NULL OR common_name ILIKE $3 OR scientific_name ILIKE $3)
+         AND ($3::text IS NULL OR common_name ILIKE $3 ESCAPE '\\' OR scientific_name ILIKE $3 ESCAPE '\\')
        ORDER BY common_name, id
        LIMIT ${MAX_PLANT_OPTIONS}`,
       [...owner(session), pattern],
@@ -674,7 +679,7 @@ router.get('/plant-options', async (req: Request, res: Response) => {
         `SELECT NULL AS seed_id, id::text AS cambium_seed_id, common_name, scientific_name
          FROM cambium.seeds
          WHERE moderation_status = 'active'
-           AND (common_name ILIKE $1 OR scientific_name ILIKE $1)
+           AND (common_name ILIKE $1 ESCAPE '\\' OR scientific_name ILIKE $1 ESCAPE '\\')
          ORDER BY common_name, id
          LIMIT ${MAX_PLANT_OPTIONS}`,
         [pattern],
@@ -762,6 +767,24 @@ router.post('/', writeLimiter, async (req: Request, res: Response) => {
     if (input.bedId != null && !(await bedInGarden(client, input.bedId, gardenId))) {
       await rollback(client);
       return res.status(400).json({ error: 'bed not found in this garden' });
+    }
+
+    // Lock the garden row so parallel creates count and insert one at a time.
+    const cap = await withinCap(client, {
+      lockSql: 'SELECT 1 FROM gardens WHERE id = $1 FOR NO KEY UPDATE',
+      countSql: 'SELECT COUNT(*)::int AS n FROM harvest_entries WHERE garden_id = $1',
+      params: [gardenId],
+      max: LIMITS.harvestEntriesPerGarden,
+    });
+    if (cap === 'missing') {
+      await rollback(client);
+      return res.status(404).json({ error: 'Garden not found' });
+    }
+    if (cap === 'full') {
+      await rollback(client);
+      return res.status(409).json({
+        error: `A garden can have up to ${LIMITS.harvestEntriesPerGarden} harvest entries.`,
+      });
     }
 
     let sowingEventId: number | null = null;

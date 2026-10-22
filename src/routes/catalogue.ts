@@ -62,14 +62,17 @@ router.get('/seeds/:id/companions', async (req, res) => {
 // GET /api/catalogue/seeds
 router.get('/seeds', async (req, res) => {
   try {
-    const query = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : undefined;
+    const query = typeof req.query.q === 'string' ? req.query.q.trim() : undefined;
+    if (query && query.length > 100) {
+      return res.status(400).json({ error: 'q must be 100 characters or fewer' });
+    }
     const family = typeof req.query.family === 'string' ? req.query.family : undefined;
     const sort = req.query.sort === 'popular' ? ('popular' as const) : undefined;
 
     const rawLimit = parseInt(req.query.limit as string, 10);
     const rawOffset = parseInt(req.query.offset as string, 10);
     const limit = isNaN(rawLimit) ? 20 : Math.min(Math.max(rawLimit, 1), 50);
-    const offset = isNaN(rawOffset) ? 0 : Math.max(rawOffset, 0);
+    const offset = isNaN(rawOffset) ? 0 : Math.min(Math.max(rawOffset, 0), 10000);
 
     const { data, total } = await searchSeeds({
       query,

@@ -17,7 +17,7 @@ export async function fetchTempestCurrent(
   accessToken: string,
   stationId: string,
 ): Promise<NormalizedReading> {
-  const url = `https://swd.weatherflow.com/swd/rest/observations/station/${stationId}?token=${accessToken}`;
+  const url = `https://swd.weatherflow.com/swd/rest/observations/station/${encodeURIComponent(stationId)}?token=${encodeURIComponent(accessToken)}`;
   const res = await fetch(url);
 
   if (!res.ok) {

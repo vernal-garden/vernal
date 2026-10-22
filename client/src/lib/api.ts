@@ -2,12 +2,20 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
 
 export const apiUrl = (path: string) => `${API_BASE}${path}`;
 
+// The server's `{ error }` text when it sent one, so callers can show it.
+function errorMessage(status: number, body: unknown): string {
+  if (body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string') {
+    return (body as { error: string }).error;
+  }
+  return `API error ${status}`;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly body: unknown,
   ) {
-    super(`API error ${status}`);
+    super(errorMessage(status, body));
     this.name = 'ApiError';
   }
 }

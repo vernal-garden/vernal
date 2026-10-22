@@ -18,6 +18,8 @@ import { PLANTS_HERE_MAX, isSamePlant, plantCount, plantsLabel, prefillQuantity 
 Konva.hitOnDragEnabled = true;
 
 export const GRID_PX = 30;
+// Matches the server's grid bed limit (cols and rows each 1..100).
+const MAX_GRID_CELLS = 100;
 const ZOOM_STEP = 1.1;
 const MIN_SCALE = 0.2;
 const MAX_SCALE = 5;
@@ -331,16 +333,29 @@ function worldToCell(wx: number, wy: number) {
   return { cellX: Math.floor(wx / GRID_PX), cellY: Math.floor(wy / GRID_PX) };
 }
 
+// Grid bed span from the start cell `a` to the pointer cell `b`, clamped to
+// MAX_GRID_CELLS per side (the server's limit) while staying anchored at `a`.
 function gridFromCells(
   a: { cellX: number; cellY: number },
   b: { cellX: number; cellY: number }
 ) {
+  const dx = b.cellX - a.cellX;
+  const dy = b.cellY - a.cellY;
+  const cols = Math.min(MAX_GRID_CELLS, Math.abs(dx) + 1);
+  const rows = Math.min(MAX_GRID_CELLS, Math.abs(dy) + 1);
   return {
-    x: Math.min(a.cellX, b.cellX),
-    y: Math.min(a.cellY, b.cellY),
-    cols: Math.max(1, Math.abs(b.cellX - a.cellX) + 1),
-    rows: Math.max(1, Math.abs(b.cellY - a.cellY) + 1),
+    x: dx >= 0 ? a.cellX : a.cellX - cols + 1,
+    y: dy >= 0 ? a.cellY : a.cellY - rows + 1,
+    cols,
+    rows,
   };
+}
+
+// Clamps a resized grid span [lo, hi) to MAX_GRID_CELLS, moving whichever
+// edge isn't the fixed one (the edge opposite the dragged handle).
+function clampGridSpan(lo: number, hi: number, fixed: number): [number, number] {
+  if (hi - lo <= MAX_GRID_CELLS) return [lo, hi];
+  return fixed === lo ? [lo, lo + MAX_GRID_CELLS] : [hi - MAX_GRID_CELLS, hi];
 }
 
 // Inner cell lines of a grid bed, in the bed's local coords.
@@ -1628,10 +1643,14 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       const ny2 = Math.max(y1, y2);
 
       if (bed.type === 'grid') {
-        const gx1 = Math.round(nx1 / GRID_PX);
-        const gy1 = Math.round(ny1 / GRID_PX);
-        const gx2 = Math.max(gx1 + 1, Math.round(nx2 / GRID_PX));
-        const gy2 = Math.max(gy1 + 1, Math.round(ny2 / GRID_PX));
+        const rawGx1 = Math.round(nx1 / GRID_PX);
+        const rawGy1 = Math.round(ny1 / GRID_PX);
+        const rawGx2 = Math.max(rawGx1 + 1, Math.round(nx2 / GRID_PX));
+        const rawGy2 = Math.max(rawGy1 + 1, Math.round(ny2 / GRID_PX));
+        const fixedGx = Math.round((handle === 'nw' || handle === 'sw' ? origBbox.x2 : origBbox.x1) / GRID_PX);
+        const fixedGy = Math.round((handle === 'nw' || handle === 'ne' ? origBbox.y2 : origBbox.y1) / GRID_PX);
+        const [gx1, gx2] = clampGridSpan(rawGx1, rawGx2, fixedGx);
+        const [gy1, gy2] = clampGridSpan(rawGy1, rawGy2, fixedGy);
         const gResizePoly = [
           gx1 * GRID_PX, gy1 * GRID_PX,
           gx2 * GRID_PX, gy1 * GRID_PX,

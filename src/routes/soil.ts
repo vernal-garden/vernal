@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
-import { isNumericId } from '../lib/validation';
+import { isNumericId, isRealDate, numberField, textField } from '../lib/validation';
+import { writeLimiter } from '../middleware/rateLimiters';
+import { LIMITS, withinCap } from '../lib/limits';
 import { invalidateMetrics } from '../lib/metricsCache';
 
 export const soilNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/soil-readings
@@ -46,6 +48,10 @@ function formatReading(row: SoilRow) {
 // ── Validators ────────────────────────────────────────────────────────────────
 
 const DATE_RE   = /^\d{4}-\d{2}-\d{2}$/;
+const PH_OPTS   = { field: 'ph', min: 0, max: 14 };
+// N/P/K columns are INTEGER, so fractions are a 400 rather than a cast error.
+const PPM_RANGE = { min: 0, max: 100000, integer: true };
+const NOTES_MAX = 2000;
 
 // ── GET /api/gardens/:gardenId/soil-readings ──────────────────────────────────
 
@@ -87,7 +93,7 @@ soilNestedRouter.get('/', async (req: Request, res: Response): Promise<void> => 
 
 // ── POST /api/gardens/:gardenId/soil-readings ─────────────────────────────────
 
-soilNestedRouter.post('/', requireSupporter, async (req: Request, res: Response): Promise<void> => {
+soilNestedRouter.post('/', requireSupporter, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
@@ -107,41 +113,80 @@ soilNestedRouter.post('/', requireSupporter, async (req: Request, res: Response)
     res.status(400).json({ error: 'testDate is required (YYYY-MM-DD)' });
     return;
   }
+  if (!isRealDate(testDate)) {
+    res.status(400).json({ error: 'testDate must be a valid date' });
+    return;
+  }
   if (ph === undefined || ph === null || ph === '') {
     res.status(400).json({ error: 'ph is required' });
     return;
   }
-  const phNum = Number(ph);
-  if (isNaN(phNum) || phNum < 0 || phNum > 14) {
-    res.status(400).json({ error: 'ph must be between 0 and 14' });
+  const phRes = numberField(ph, PH_OPTS);
+  if (!phRes.ok) {
+    res.status(400).json({ error: phRes.error });
     return;
   }
+  const phNum = phRes.value as number;
 
-  const nitrogenVal   = nitrogen   != null && nitrogen   !== '' ? Number(nitrogen)   : null;
-  const phosphorusVal = phosphorus != null && phosphorus !== '' ? Number(phosphorus) : null;
-  const potassiumVal  = potassium  != null && potassium  !== '' ? Number(potassium)  : null;
-  const notesVal      = notes      != null && notes      !== '' ? String(notes)      : null;
+  const nitrogenRes   = numberField(nitrogen,   { field: 'nitrogen',   ...PPM_RANGE });
+  const phosphorusRes = numberField(phosphorus, { field: 'phosphorus', ...PPM_RANGE });
+  const potassiumRes  = numberField(potassium,  { field: 'potassium',  ...PPM_RANGE });
+  const notesRes      = textField(notes, { field: 'notes', max: NOTES_MAX });
+  for (const r of [nitrogenRes, phosphorusRes, potassiumRes, notesRes]) {
+    if (!r.ok) {
+      res.status(400).json({ error: r.error });
+      return;
+    }
+  }
+  const nitrogenVal   = nitrogenRes.ok   ? nitrogenRes.value   : null;
+  const phosphorusVal = phosphorusRes.ok ? phosphorusRes.value : null;
+  const potassiumVal  = potassiumRes.ok  ? potassiumRes.value  : null;
+  const notesVal      = notesRes.ok      ? notesRes.value      : null;
 
+  const client = await db.connect();
   try {
-    const gRes = await db.query<{ id: string }>(
+    await client.query('BEGIN');
+    const gRes = await client.query<{ id: string }>(
       'SELECT id FROM gardens WHERE id = $1 AND owner_id = $2',
       [gardenId, accountId],
     );
     if (gRes.rowCount === 0) {
+      await client.query('ROLLBACK');
       res.status(404).json({ error: 'Garden not found' });
       return;
     }
 
-    const bRes = await db.query<{ id: string }>(
+    const bRes = await client.query<{ id: string }>(
       'SELECT id FROM beds WHERE id = $1 AND garden_id = $2',
       [bedId, gardenId],
     );
     if (bRes.rowCount === 0) {
+      await client.query('ROLLBACK');
       res.status(400).json({ error: 'Bed not found in this garden' });
       return;
     }
 
-    const { rows } = await db.query<SoilRow>(
+    // Lock the garden row so parallel creates count and insert one at a time.
+    const cap = await withinCap(client, {
+      lockSql: 'SELECT 1 FROM gardens WHERE id = $1 FOR NO KEY UPDATE',
+      countSql: 'SELECT COUNT(*)::int AS n FROM soil_readings WHERE garden_id = $1',
+      params: [gardenId],
+      max: LIMITS.soilReadingsPerGarden,
+    });
+    if (cap === 'missing') {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Garden not found' });
+      return;
+    }
+    if (cap === 'full') {
+      await client.query('ROLLBACK');
+      res.status(409).json({
+        error: `A garden can have up to ${LIMITS.soilReadingsPerGarden} soil readings.`,
+      });
+      return;
+    }
+
+    const { rows } = await client.query<SoilRow>(
       `INSERT INTO soil_readings
          (user_id, garden_id, bed_id, test_date, ph,
           nitrogen_ppm, phosphorus_ppm, potassium_ppm, notes)
@@ -152,18 +197,22 @@ soilNestedRouter.post('/', requireSupporter, async (req: Request, res: Response)
       [accountId, gardenId, bedId, testDate, phNum,
        nitrogenVal, phosphorusVal, potassiumVal, notesVal],
     );
+    await client.query('COMMIT');
 
     invalidateMetrics(accountId);
     res.status(201).json(formatReading(rows[0]));
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
 // ── PATCH /api/soil-readings/:id ──────────────────────────────────────────────
 
-soilFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: Response): Promise<void> => {
+soilFlatRouter.patch('/:id', requireSupporter, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const readingId = req.params.id as string;
 
@@ -180,27 +229,51 @@ soilFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: Respons
     res.status(400).json({ error: 'testDate must be YYYY-MM-DD' });
     return;
   }
+  if (testDate !== undefined && !isRealDate(testDate)) {
+    res.status(400).json({ error: 'testDate must be a valid date' });
+    return;
+  }
   let phNum: number | undefined;
   if (ph !== undefined) {
-    phNum = Number(ph);
-    if (isNaN(phNum) || phNum < 0 || phNum > 14) {
-      res.status(400).json({ error: 'ph must be between 0 and 14' });
+    // ph is NOT NULL: null/blank is an error here, not "absent".
+    const phRes = numberField(ph, PH_OPTS);
+    if (!phRes.ok || phRes.value === null) {
+      res.status(400).json({ error: `ph must be a number between ${PH_OPTS.min} and ${PH_OPTS.max}` });
       return;
     }
+    phNum = phRes.value;
   }
   if (bedId !== undefined && !isNumericId(String(bedId))) {
     res.status(400).json({ error: 'bedId must be a positive integer' });
     return;
   }
 
-  // Collect scalar updates
+  // Collect scalar updates (only fields present in the body; null clears).
   const updates: Record<string, unknown> = {};
   if (testDate   !== undefined) updates['test_date']     = testDate;
   if (phNum      !== undefined) updates['ph']            = phNum;
-  if (nitrogen   !== undefined) updates['nitrogen_ppm']   = nitrogen   !== null ? Number(nitrogen)   : null;
-  if (phosphorus !== undefined) updates['phosphorus_ppm'] = phosphorus !== null ? Number(phosphorus) : null;
-  if (potassium  !== undefined) updates['potassium_ppm']  = potassium  !== null ? Number(potassium)  : null;
-  if (notes      !== undefined) updates['notes']          = notes      !== null ? String(notes)      : null;
+  const ppmCols: Array<[string, unknown, string]> = [
+    ['nitrogen', nitrogen, 'nitrogen_ppm'],
+    ['phosphorus', phosphorus, 'phosphorus_ppm'],
+    ['potassium', potassium, 'potassium_ppm'],
+  ];
+  for (const [field, value, col] of ppmCols) {
+    if (value === undefined) continue;
+    const r = numberField(value, { field, ...PPM_RANGE });
+    if (!r.ok) {
+      res.status(400).json({ error: r.error });
+      return;
+    }
+    updates[col] = r.value;
+  }
+  if (notes !== undefined) {
+    const r = textField(notes, { field: 'notes', max: NOTES_MAX });
+    if (!r.ok) {
+      res.status(400).json({ error: r.error });
+      return;
+    }
+    updates['notes'] = r.value;
+  }
 
   const hasBedId = bedId !== undefined;
 
@@ -259,7 +332,7 @@ soilFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: Respons
 
 // ── DELETE /api/soil-readings/:id ─────────────────────────────────────────────
 
-soilFlatRouter.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+soilFlatRouter.delete('/:id', writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const readingId = req.params.id as string;
 

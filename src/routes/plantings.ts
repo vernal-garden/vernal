@@ -1,5 +1,7 @@
 import { Router } from 'express';
+import type { PoolClient } from 'pg';
 import { db } from '../lib/db';
+import { LIMITS, withinCap } from '../lib/limits';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
@@ -18,6 +20,8 @@ gardenPlantingsRouter.use(requireSession);
 plantingsFlatRouter.use(requireSession);
 
 // ── Types ────────────────────────────────────────────────────────────────────
+
+type Queryable = Pick<PoolClient, 'query'>;
 
 interface PlantingRow {
   id: string;
@@ -82,6 +86,9 @@ const GROWTH_KEYS = [
 
 // Upper bound on plantingIds per displayed-stage request.
 const MAX_DISPLAYED_STAGE_IDS = 500;
+
+// Freeform point coordinates stay within the canvas bounds beds use.
+const MAX_COORD = 100000;
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 
@@ -189,6 +196,10 @@ function validatePoint(point: unknown): string | null {
   if (typeof p.y !== 'number' || !Number.isFinite(p.y)) {
     return 'point.y must be a finite number';
   }
+  // Same canvas bounds as bed geometry (validateGrid / validateFreeform).
+  if (Math.abs(p.x) > MAX_COORD || Math.abs(p.y) > MAX_COORD) {
+    return `point.x and point.y must be between -${MAX_COORD} and ${MAX_COORD}`;
+  }
   return null;
 }
 
@@ -261,8 +272,8 @@ gardenPlantingsRouter.patch('/displayed-stage', writeLimiter, async (req, res) =
       error: `plantingIds must be an array of 1 to ${MAX_DISPLAYED_STAGE_IDS} ids`,
     });
   }
-  // Digit strings only; capped at 18 digits so every id fits a bigint.
-  if (!plantingIds.every(id => isNumericId(id) && id.length <= 18)) {
+  // Digit strings only; isNumericId caps them at int4.
+  if (!plantingIds.every(id => isNumericId(id))) {
     return res.status(400).json({ error: 'plantingIds must contain numeric id strings' });
   }
 
@@ -443,8 +454,8 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       return formatPlanting(rows[0]);
     };
 
-    const insertPlanting = async (): Promise<string> => {
-      const { rows: insertRows } = await db.query<{ id: string }>(
+    const insertPlanting = async (q: Queryable = db): Promise<string> => {
+      const { rows: insertRows } = await q.query<{ id: string }>(
         `INSERT INTO plantings
            (bed_id, garden_id, season, seed_id, cambium_seed_id, quantity, planting_date,
             cell_x, cell_y, point_x, point_y)
@@ -457,7 +468,43 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
     };
 
     if (bed.type !== 'grid') {
-      const id = await insertPlanting();
+      // Freeform beds have no cell limit, so cap the plantings per bed. Lock the
+      // bed row so parallel creates count and insert one at a time. Take the
+      // garden's KEY SHARE (which the insert's FK check needs anyway) before the
+      // bed lock, so locks are always taken garden → bed.
+      const client = await db.connect();
+      let id: string;
+      try {
+        await client.query('BEGIN');
+        const gardenLock = await client.query('SELECT 1 FROM gardens WHERE id = $1 FOR KEY SHARE', [gardenId]);
+        if (gardenLock.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Garden not found' });
+        }
+        const cap = await withinCap(client, {
+          lockSql: 'SELECT 1 FROM beds WHERE id = $1 FOR NO KEY UPDATE',
+          countSql: 'SELECT COUNT(*)::int AS n FROM plantings WHERE bed_id = $1',
+          params: [bedId],
+          max: LIMITS.plantingsPerFreeformBed,
+        });
+        if (cap === 'missing') {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Bed not found' });
+        }
+        if (cap === 'full') {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: `A bed can have up to ${LIMITS.plantingsPerFreeformBed} plantings.`,
+          });
+        }
+        id = await insertPlanting(client);
+        await client.query('COMMIT');
+      } catch (txErr) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw txErr;
+      } finally {
+        client.release();
+      }
       return res.status(201).json({ ...(await selectFormatted(id)), merged: false });
     }
 

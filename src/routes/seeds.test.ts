@@ -499,6 +499,20 @@ describe('POST /api/seeds/:id/contribute', () => {
     expect(res.status).toBe(400);
   });
 
+  it('two parallel contributes for one private seed → one succeeds, one moderation item', async () => {
+    const r = await agent1.post('/api/seeds').send({ commonName: 'Race Contribute', plantFamily: 'Fam' });
+    const sid = r.body.id as string;
+    const results = await Promise.all([
+      agent1.post(`/api/seeds/${sid}/contribute`).send({}),
+      agent1.post(`/api/seeds/${sid}/contribute`).send({}),
+    ]);
+    const statuses = results.map((x) => x.status).sort();
+    expect(statuses[0]).toBe(200);
+    expect([400, 409]).toContain(statuses[1]);
+    const { rows } = await pool.query('SELECT 1 FROM moderation_items WHERE seed_id = $1', [sid]);
+    expect(rows).toHaveLength(1);
+  });
+
   it('contribute an imported seed → 400', async () => {
     const res = await agent2.post(`/api/seeds/${importedSeedId}/contribute`).send({});
     expect(res.status).toBe(400);
@@ -640,5 +654,159 @@ describe('GET /api/catalogue/seeds/:id — 009 fields', () => {
     expect(res.body.germinationDaysMax).toBe(14);
     expect(res.body.germinationTempMinF).toBe(60);
     expect(res.body.germinationTempMaxF).toBe(75);
+  });
+});
+
+// ── Text caps ────────────────────────────────────────────────────────────────
+
+describe('seeds — text caps', () => {
+  const create = (extra: Record<string, unknown>) =>
+    agent1.post('/api/seeds').send({ commonName: 'Cap Test', plantFamily: 'Fam', ...extra });
+
+  it('POST: each field passes at max and fails at max+1', async () => {
+    const cases: Array<[string, number]> = [
+      ['scientificName', 120], ['userNotes', 5000], ['illustrationKey', 100],
+      ['hardinessZoneMin', 10], ['hardinessZoneMax', 10],
+    ];
+    for (const [field, max] of cases) {
+      expect((await create({ [field]: 'a'.repeat(max) })).status).toBe(201);
+      const res = await create({ [field]: 'a'.repeat(max + 1) });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(`${field} must be ${max} characters or fewer`);
+    }
+  });
+
+  it('PATCH: capped, present-only, null clears', async () => {
+    const id = (await create({ scientificName: 'Keep', userNotes: 'note' })).body.id;
+    const url = `/api/seeds/${id}`;
+    const bad = await agent1.patch(url).send({ userNotes: 'a'.repeat(5001) });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('userNotes must be 5000 characters or fewer');
+    expect((await agent1.patch(url).send({ scientificName: 'a'.repeat(121) })).status).toBe(400);
+    expect((await agent1.patch(url).send({ illustrationKey: 'a'.repeat(101) })).status).toBe(400);
+    expect((await agent1.patch(url).send({ hardinessZoneMin: 'a'.repeat(11) })).status).toBe(400);
+    expect((await agent1.patch(url).send({ hardinessZoneMax: 'a'.repeat(11) })).status).toBe(400);
+    const ok = await agent1.patch(url).send({ userNotes: null, hardinessZoneMin: 'a'.repeat(10) });
+    expect(ok.status).toBe(200);
+    expect(ok.body.userNotes).toBeNull();
+    expect(ok.body.scientificName).toBe('Keep');
+    expect(ok.body.hardinessZoneMin).toBe('a'.repeat(10));
+  });
+});
+
+// ── Row cap (2000 per account) ───────────────────────────────────────────────
+
+describe('seeds — row cap', () => {
+  const CAP_ERROR = 'You can have up to 2000 seeds.';
+  const SEED = { commonName: 'Capped', plantFamily: 'Fam' };
+
+  async function seedSeeds(ownerId: number, n: number) {
+    await pool.query(
+      `INSERT INTO seeds (owner_id, common_name, plant_family, origin)
+       SELECT $1, 'Seeded ' || i, 'Fam', 'user_created' FROM generate_series(1, $2::int) AS i`,
+      [ownerId, n],
+    );
+  }
+
+  async function seedCount(ownerId: number): Promise<number> {
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM seeds WHERE owner_id = $1',
+      [ownerId],
+    );
+    return rows[0].n;
+  }
+
+  async function newCambiumSeed(name: string): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+       VALUES ($1, 'active', 'editorial') RETURNING id`,
+      [name],
+    );
+    return rows[0].id;
+  }
+
+  async function userAt(email: string, n: number) {
+    const id = await createUser(email);
+    await seedSeeds(id, n);
+    return { id, agent: await loginAgent(email) };
+  }
+
+  it('POST: allows the 2000th seed and refuses the 2001st', async () => {
+    const { agent } = await userAt('seeds-cap-post@example.com', 1999);
+    expect((await agent.post('/api/seeds').send(SEED)).status).toBe(201);
+    const res = await agent.post('/api/seeds').send(SEED);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(CAP_ERROR);
+  });
+
+  it('add-from-cambium: allows the 2000th seed and refuses the 2001st', async () => {
+    const { agent } = await userAt('seeds-cap-import@example.com', 1999);
+    const a = await newCambiumSeed('Cap Import A');
+    const b = await newCambiumSeed('Cap Import B');
+    expect((await agent.post('/api/seeds/add-from-cambium').send({ cambiumSeedId: a })).status).toBe(201);
+    const res = await agent.post('/api/seeds/add-from-cambium').send({ cambiumSeedId: b });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(CAP_ERROR);
+  });
+
+  it('POST: two parallel creates at 1999 → exactly one 201 and one 409', async () => {
+    const { id, agent } = await userAt('seeds-cap-race@example.com', 1999);
+    const results = await Promise.all([
+      agent.post('/api/seeds').send(SEED),
+      agent.post('/api/seeds').send(SEED),
+    ]);
+    expect(results.map(r => r.status).sort()).toEqual([201, 409]);
+    expect(await seedCount(id)).toBe(2000);
+  });
+
+  it('add-from-cambium: two parallel imports at 1999 → exactly one 201 and one 409', async () => {
+    const { id, agent } = await userAt('seeds-cap-import-race@example.com', 1999);
+    const a = await newCambiumSeed('Race Import A');
+    const b = await newCambiumSeed('Race Import B');
+    const results = await Promise.all([
+      agent.post('/api/seeds/add-from-cambium').send({ cambiumSeedId: a }),
+      agent.post('/api/seeds/add-from-cambium').send({ cambiumSeedId: b }),
+    ]);
+    expect(results.map(r => r.status).sort()).toEqual([201, 409]);
+    expect(await seedCount(id)).toBe(2000);
+  });
+
+  it('add-from-cambium: two parallel imports of the same seed → one copy', async () => {
+    const { id, agent } = await userAt('seeds-dup-race@example.com', 0);
+    const a = await newCambiumSeed('Dup Race');
+    const results = await Promise.all([
+      agent.post('/api/seeds/add-from-cambium').send({ cambiumSeedId: a }),
+      agent.post('/api/seeds/add-from-cambium').send({ cambiumSeedId: a }),
+    ]);
+    expect(results.map(r => r.status).sort()).toEqual([201, 409]);
+    expect(results.find(r => r.status === 409)!.body.alreadyInCatalogue).toBe(true);
+    expect(await seedCount(id)).toBe(1);
+  });
+});
+
+// ── Search escaping and bounds ───────────────────────────────────────────────
+
+describe('GET /api/seeds — search', () => {
+  it('treats % and _ in q literally', async () => {
+    await agent1.post('/api/seeds').send({ commonName: '100% organic', plantFamily: 'Fam' });
+    await agent1.post('/api/seeds').send({ commonName: '1000 organic', plantFamily: 'Fam' });
+    await agent1.post('/api/seeds').send({ commonName: 'under_score', plantFamily: 'Fam' });
+    await agent1.post('/api/seeds').send({ commonName: 'underXscore', plantFamily: 'Fam' });
+
+    const pct = await agent1.get('/api/seeds?q=%25');
+    expect(pct.status).toBe(200);
+    expect(pct.body.data.map((s: { commonName: string }) => s.commonName)).toEqual(['100% organic']);
+
+    const us = await agent1.get('/api/seeds?q=under_score');
+    expect(us.body.data.map((s: { commonName: string }) => s.commonName)).toEqual(['under_score']);
+  });
+
+  it('rejects q over 100 characters and clamps offset to 10000', async () => {
+    const bad = await agent1.get(`/api/seeds?q=${'a'.repeat(101)}`);
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('q must be 100 characters or fewer');
+    const res = await agent1.get('/api/seeds?offset=999999');
+    expect(res.status).toBe(200);
+    expect(res.body.offset).toBe(10000);
   });
 });

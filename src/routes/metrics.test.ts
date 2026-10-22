@@ -1225,7 +1225,8 @@ describe('comparable plants and cross-season', () => {
     expect(plantRes.body.error).toMatch(/^plant must be/);
     expect((await cs(`plant=cambium:${huge}`)).status).toBe(400);
     expect((await cs(`plant=seed:${tomato}&bedId=${huge}`)).status).toBe(400);
-    expect((await cs(`plant=seed:${tomato}&gardenId=${huge}`)).status).toBe(404);
-    expect((await supporter.get(`/api/metrics/dashboard?gardenId=${huge}`)).status).toBe(404);
+    // isNumericId rejects ids past int4, so these are malformed rather than missing.
+    expect((await cs(`plant=seed:${tomato}&gardenId=${huge}`)).status).toBe(400);
+    expect((await supporter.get(`/api/metrics/dashboard?gardenId=${huge}`)).status).toBe(400);
   });
 });

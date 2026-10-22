@@ -569,6 +569,12 @@ describe('List', () => {
     expect((await guest.get('/api/harvests?limit=101')).status).toBe(400);
   });
 
+  it('repeated q → 400, not 500', async () => {
+    expect((await guest.get('/api/harvests?q=a&q=b')).status).toBe(400);
+    expect((await guest.get('/api/harvests/export.csv?q=a&q=b')).status).toBe(400);
+    expect((await guest.get('/api/harvests/plant-options?q=a&q=b')).status).toBe(400);
+  });
+
   it('q matches a note (LIKE wildcards are literal)', async () => {
     const res = await guest.get('/api/harvests').query({ q: 'zucchini_overload 100%' });
     expect(res.body.data.map((e: { id: string }) => e.id)).toEqual([ids[3]]);
@@ -868,5 +874,44 @@ describe('Photos', () => {
       { bucket: 'public', path: `harvest-photos/${entryId}/`, is_prefix: true },
     ]);
     expect(drainSoon).toHaveBeenCalled();
+  });
+});
+
+// ── Row cap (5000 per garden) ─────────────────────────────────────────────────
+
+describe('Row cap', () => {
+  it('allows the 5000th entry and refuses the 5001st', async () => {
+    const guest = await guestAgent();
+    const gardenId = await createGarden(guest, 'Cap Plot');
+    await pool.query(
+      `INSERT INTO harvest_entries (garden_id, cambium_seed_id)
+       SELECT $1, $2 FROM generate_series(1, 4999)`,
+      [gardenId, peaId],
+    );
+
+    await createEntry(guest, { gardenId, cambiumSeedId: peaId });
+    const res = await guest.post('/api/harvests').send({ gardenId, cambiumSeedId: peaId });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('A garden can have up to 5000 harvest entries.');
+
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM harvest_entries WHERE garden_id = $1',
+      [gardenId],
+    );
+    expect(rows[0].n).toBe(5000);
+  });
+});
+
+describe('search bounds', () => {
+  it('rejects q over 100 characters on list and plant-options', async () => {
+    const guest = await guestAgent();
+    const long = 'a'.repeat(101);
+    const list = await guest.get(`/api/harvests?q=${long}`);
+    expect(list.status).toBe(400);
+    expect(list.body.error).toBe('q must be 100 characters or fewer');
+    const opts = await guest.get(`/api/harvests/plant-options?q=${long}`);
+    expect(opts.status).toBe(400);
+    expect(opts.body.error).toBe('q must be 100 characters or fewer');
+    expect((await guest.get(`/api/harvests?q=${'a'.repeat(100)}`)).status).toBe(200);
   });
 });

@@ -3,7 +3,8 @@ import express, { Router } from 'express';
 import { db } from '../lib/db';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
-import { isNumericId } from '../lib/validation';
+import { isNumericId, textField } from '../lib/validation';
+import { LIMITS, withinCap } from '../lib/limits';
 import { currentSeason } from '../lib/season';
 import { uploadToR2, isR2ConfigError, ownedThumbnailKey } from '../lib/r2';
 import { queueR2Deletions, queueDeletedGardens, drainSoon } from '../lib/r2Cleanup';
@@ -113,6 +114,17 @@ const VALID_GROWING_METHODS = new Set(['square_foot', 'container', 'raised_bed',
 
 // ── Validation helpers ────────────────────────────────────────────────────────
 
+// Geometry bounds: keep values well inside INTEGER columns and sane canvas sizes.
+const MAX_GRID_CELLS = 100;
+const MAX_COORD = 100000;
+
+function inCoordRange(n: number): boolean {
+  return n >= -MAX_COORD && n <= MAX_COORD;
+}
+
+const GARDEN_CAP_ERROR = `You can have up to ${LIMITS.gardensPerAccount} gardens.`;
+const BED_CAP_ERROR = `A garden can have up to ${LIMITS.bedsPerGarden} beds.`;
+
 function validateSeason(v: unknown): { value: number } | { error: string } {
   const n = typeof v === 'string' ? parseInt(v, 10) : v;
   if (!Number.isInteger(n) || (n as number) < 2000 || (n as number) > 2100) {
@@ -121,7 +133,9 @@ function validateSeason(v: unknown): { value: number } | { error: string } {
   return { value: n as number };
 }
 
-function validateGrid(obj: unknown): string | null {
+// `stored` is the bed's current cols/rows on PATCH: a dimension left unchanged
+// skips the upper bound, so a bed created before the cap can still be moved.
+function validateGrid(obj: unknown, stored?: { cols: number | null; rows: number | null }): string | null {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
     return 'grid must be an object with x, y, cols, rows';
   }
@@ -134,11 +148,16 @@ function validateGrid(obj: unknown): string | null {
   ) {
     return 'grid.x, grid.y, grid.cols, and grid.rows must all be integers';
   }
-  if ((g.cols as number) < 1 || (g.cols as number) > 1000) {
-    return 'grid.cols must be between 1 and 1000';
+  const colsMax = stored?.cols === g.cols ? Infinity : MAX_GRID_CELLS;
+  const rowsMax = stored?.rows === g.rows ? Infinity : MAX_GRID_CELLS;
+  if ((g.cols as number) < 1 || (g.cols as number) > colsMax) {
+    return `grid.cols must be between 1 and ${MAX_GRID_CELLS}`;
   }
-  if ((g.rows as number) < 1 || (g.rows as number) > 1000) {
-    return 'grid.rows must be between 1 and 1000';
+  if ((g.rows as number) < 1 || (g.rows as number) > rowsMax) {
+    return `grid.rows must be between 1 and ${MAX_GRID_CELLS}`;
+  }
+  if (!inCoordRange(g.x as number) || !inCoordRange(g.y as number)) {
+    return `grid.x and grid.y must be between -${MAX_COORD} and ${MAX_COORD}`;
   }
   return null;
 }
@@ -157,6 +176,9 @@ function validateFreeform(obj: unknown): string | null {
   }
   if (!f.points.every((p: unknown) => typeof p === 'number' && isFinite(p))) {
     return 'freeform.points must contain only finite numbers';
+  }
+  if (!f.points.every((p: number) => inCoordRange(p))) {
+    return `freeform.points must be between -${MAX_COORD} and ${MAX_COORD}`;
   }
   if (typeof f.closed !== 'boolean') return 'freeform.closed must be a boolean';
   return null;
@@ -209,9 +231,12 @@ router.post('/', writeLimiter, async (req, res) => {
       error: `style is required and must be one of: ${[...VALID_STYLES].join(', ')}`,
     });
   }
-  if (!zone || typeof zone !== 'string' || zone.trim().length === 0) {
-    return res.status(400).json({ error: 'zone is required' });
-  }
+  const zoneRes = textField(zone, { field: 'zone', max: 10, required: true });
+  if (!zoneRes.ok) return res.status(400).json({ error: zoneRes.error });
+  const descriptionRes = textField(description, { field: 'description', max: 2000 });
+  if (!descriptionRes.ok) return res.status(400).json({ error: descriptionRes.error });
+  const zoneLocationLabelRes = textField(zoneLocationLabel, { field: 'zoneLocationLabel', max: 80 });
+  if (!zoneLocationLabelRes.ok) return res.status(400).json({ error: zoneLocationLabelRes.error });
   if (!growingMethod || typeof growingMethod !== 'string' || !VALID_GROWING_METHODS.has(growingMethod)) {
     return res.status(400).json({
       error: `growingMethod is required and must be one of: ${[...VALID_GROWING_METHODS].join(', ')}`,
@@ -228,9 +253,9 @@ router.post('/', writeLimiter, async (req, res) => {
       name.trim(),
       style,
       growingMethod,
-      zone.trim(),
-      typeof description === 'string' ? description.trim() || null : null,
-      typeof zoneLocationLabel === 'string' ? zoneLocationLabel.trim() || null : null,
+      zoneRes.value,
+      descriptionRes.value,
+      zoneLocationLabelRes.value,
     ];
 
     if (accountId === null) {
@@ -270,8 +295,34 @@ router.post('/', writeLimiter, async (req, res) => {
       }
     }
 
-    const result = await db.query<GardenRow>(insertSql, insertValues);
-    res.status(201).json(formatGarden(result.rows[0]));
+    // Accounts: capped per account. Lock the account row so parallel creates
+    // count and insert one at a time.
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const cap = await withinCap(client, {
+        lockSql: 'SELECT 1 FROM accounts WHERE id = $1 FOR NO KEY UPDATE',
+        countSql: 'SELECT COUNT(*)::int AS n FROM gardens WHERE owner_id = $1',
+        params: [accountId],
+        max: LIMITS.gardensPerAccount,
+      });
+      if (cap === 'missing') {
+        await client.query('ROLLBACK');
+        return res.status(401).json({ error: 'Account not found' });
+      }
+      if (cap === 'full') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: GARDEN_CAP_ERROR });
+      }
+      const result = await client.query<GardenRow>(insertSql, insertValues);
+      await client.query('COMMIT');
+      return res.status(201).json(formatGarden(result.rows[0]));
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     console.error('POST /gardens error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -369,19 +420,24 @@ router.patch('/:id', writeLimiter, async (req, res) => {
       values.push(style);
     }
     if (zone !== undefined) {
-      if (typeof zone !== 'string' || zone.trim().length === 0) {
-        return res.status(400).json({ error: 'zone cannot be empty' });
+      const r = textField(zone, { field: 'zone', max: 10, required: true });
+      if (!r.ok) {
+        return res.status(400).json({ error: r.error.endsWith('is required') ? 'zone cannot be empty' : r.error });
       }
       updates.push(`zone = $${idx++}`);
-      values.push(zone.trim());
+      values.push(r.value);
     }
     if (description !== undefined) {
+      const r = textField(description, { field: 'description', max: 2000 });
+      if (!r.ok) return res.status(400).json({ error: r.error });
       updates.push(`description = $${idx++}`);
-      values.push(typeof description === 'string' ? description.trim() || null : null);
+      values.push(r.value);
     }
     if (zoneLocationLabel !== undefined) {
+      const r = textField(zoneLocationLabel, { field: 'zoneLocationLabel', max: 80 });
+      if (!r.ok) return res.status(400).json({ error: r.error });
       updates.push(`zone_location_label = $${idx++}`);
-      values.push(typeof zoneLocationLabel === 'string' ? zoneLocationLabel.trim() || null : null);
+      values.push(r.value);
     }
     if (growingMethod !== undefined) {
       if (typeof growingMethod !== 'string' || !VALID_GROWING_METHODS.has(growingMethod)) {
@@ -647,6 +703,8 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
       return res.status(400).json({ error: 'label must be 255 characters or fewer' });
     }
 
+    let insertSql: string;
+    let insertValues: unknown[];
     if (type === 'grid') {
       if (freeform !== undefined) {
         return res.status(400).json({ error: 'freeform must not be provided for a grid bed' });
@@ -658,13 +716,10 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
       if (gridErr) return res.status(400).json({ error: gridErr });
 
       const g = grid as Record<string, number>;
-      const result = await db.query<BedRow>(
-        `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows)
+      insertSql = `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING ${BED_SELECT}`,
-        [gardenId, season, 'grid', labelStr, g.x, g.y, g.cols, g.rows],
-      );
-      return res.status(201).json(formatBed(result.rows[0]));
+         RETURNING ${BED_SELECT}`;
+      insertValues = [gardenId, season, 'grid', labelStr, g.x, g.y, g.cols, g.rows];
     } else {
       if (grid !== undefined) {
         return res.status(400).json({ error: 'grid must not be provided for a freeform bed' });
@@ -676,13 +731,39 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
       if (freeformErr) return res.status(400).json({ error: freeformErr });
 
       const f = freeform as Record<string, unknown>;
-      const result = await db.query<BedRow>(
-        `INSERT INTO beds (garden_id, season, type, label, freeform_points, freeform_closed)
+      insertSql = `INSERT INTO beds (garden_id, season, type, label, freeform_points, freeform_closed)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING ${BED_SELECT}`,
-        [gardenId, season, 'freeform', labelStr, JSON.stringify(f.points), f.closed],
-      );
+         RETURNING ${BED_SELECT}`;
+      insertValues = [gardenId, season, 'freeform', labelStr, JSON.stringify(f.points), f.closed];
+    }
+
+    // Beds are capped per garden (all seasons). Lock the garden row so
+    // parallel creates count and insert one at a time.
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const cap = await withinCap(client, {
+        lockSql: 'SELECT 1 FROM gardens WHERE id = $1 FOR NO KEY UPDATE',
+        countSql: 'SELECT COUNT(*)::int AS n FROM beds WHERE garden_id = $1',
+        params: [gardenId],
+        max: LIMITS.bedsPerGarden,
+      });
+      if (cap === 'missing') {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Garden not found' });
+      }
+      if (cap === 'full') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ error: BED_CAP_ERROR });
+      }
+      const result = await client.query<BedRow>(insertSql, insertValues);
+      await client.query('COMMIT');
       return res.status(201).json(formatBed(result.rows[0]));
+    } catch (txErr) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw txErr;
+    } finally {
+      client.release();
     }
   } catch (err) {
     console.error('POST /gardens/:gardenId/beds error:', err);
@@ -718,12 +799,13 @@ router.post('/:gardenId/beds/carry-forward', writeLimiter, async (req, res) => {
     await client.query('BEGIN');
 
     // Lock the garden row so two concurrent carry-forwards serialise on the
-    // "current season is empty" check below. Only carry-forward takes this
-    // lock; plain POST /beds does not, so it serialises carry-forwards only.
+    // "current season is empty" check below, and so the bed cap check can't
+    // race a plain POST /beds (which takes the same lock). NO KEY UPDATE, like
+    // withinCap, so it doesn't conflict with child inserts' KEY SHARE locks.
     const garden = await client.query(
       `SELECT id FROM gardens
        WHERE id = $1 AND (owner_id = $2 OR guest_session_id = $3)
-       FOR UPDATE`,
+       FOR NO KEY UPDATE`,
       [gardenId, accountId, sessionId],
     );
     if (garden.rows.length === 0) {
@@ -738,6 +820,18 @@ router.post('/:gardenId/beds/carry-forward', writeLimiter, async (req, res) => {
     if (existing.rows.length > 0) {
       await client.query('ROLLBACK');
       return res.status(409).json({ error: 'This season already has beds.' });
+    }
+
+    // The cap counts every season, so check the total after copying.
+    const { rows: counts } = await client.query<{ total: number; copying: number }>(
+      `SELECT COUNT(*)::int AS total,
+              (COUNT(*) FILTER (WHERE season = $2))::int AS copying
+       FROM beds WHERE garden_id = $1`,
+      [gardenId, fromSeason],
+    );
+    if (counts[0].copying > 0 && counts[0].total + counts[0].copying > LIMITS.bedsPerGarden) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: BED_CAP_ERROR });
     }
 
     const result = await client.query<BedRow>(
@@ -787,14 +881,20 @@ router.patch('/:gardenId/beds/:bedId', writeLimiter, async (req, res) => {
       return res.status(404).json({ error: 'Garden not found' });
     }
 
-    const bedResult = await db.query<{ id: string; type: 'grid' | 'freeform' }>(
-      'SELECT id::text, type FROM beds WHERE id = $1 AND garden_id = $2',
+    const bedResult = await db.query<{
+      id: string;
+      type: 'grid' | 'freeform';
+      grid_cols: number | null;
+      grid_rows: number | null;
+    }>(
+      'SELECT id::text, type, grid_cols, grid_rows FROM beds WHERE id = $1 AND garden_id = $2',
       [bedId, gardenId],
     );
     if (bedResult.rows.length === 0) {
       return res.status(404).json({ error: 'Bed not found' });
     }
     const currentType = bedResult.rows[0].type;
+    const storedGrid = { cols: bedResult.rows[0].grid_cols, rows: bedResult.rows[0].grid_rows };
 
     const body = req.body as Record<string, unknown>;
 
@@ -867,7 +967,7 @@ router.patch('/:gardenId/beds/:bedId', writeLimiter, async (req, res) => {
         if (effectiveType !== 'grid') {
           return res.status(400).json({ error: 'grid geometry does not match bed type' });
         }
-        const gridErr = validateGrid(body.grid);
+        const gridErr = validateGrid(body.grid, storedGrid);
         if (gridErr) return res.status(400).json({ error: gridErr });
         const g = body.grid as Record<string, number>;
         updates.push(`grid_x = $${idx++}`);    values.push(g.x);

@@ -50,10 +50,24 @@ describe('fetchTempestCurrent', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await fetchTempestCurrent('my-token', 'station-99');
+    await fetchTempestCurrent('my-token', '99');
 
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://swd.weatherflow.com/swd/rest/observations/station/station-99?token=my-token',
+      'https://swd.weatherflow.com/swd/rest/observations/station/99?token=my-token',
+    );
+  });
+
+  it('URL-encodes the station id and token', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ obs: [{ timestamp: 1, air_temperature: 1, relative_humidity: 1, wind_avg: 1, wind_direction: 0, precip_accum_local_day: 0, uv: 0, sea_level_pressure: 1000 }] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchTempestCurrent('a/b?c', '123');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://swd.weatherflow.com/swd/rest/observations/station/123?token=a%2Fb%3Fc',
     );
   });
 

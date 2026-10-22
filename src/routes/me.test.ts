@@ -269,24 +269,33 @@ describe('PATCH /api/me/preferences', () => {
     agent = await loginAgent('me-prefs@example.com');
   });
 
-  it('sets {theme: dark}', async () => {
-    const res = await agent.patch('/api/me/preferences').send({ theme: 'dark' });
+  it('sets {units: metric}', async () => {
+    const res = await agent.patch('/api/me/preferences').send({ units: 'metric' });
     expect(res.status).toBe(200);
-    expect(res.body.data.preferences.theme).toBe('dark');
-  });
-
-  it('merges {lang: en} — both theme and lang are present', async () => {
-    const res = await agent.patch('/api/me/preferences').send({ lang: 'en' });
-    expect(res.status).toBe(200);
-    expect(res.body.data.preferences.theme).toBe('dark');
-    expect(res.body.data.preferences.lang).toBe('en');
+    expect(res.body.data.preferences.units).toBe('metric');
   });
 
   it('removes a key when its value is null', async () => {
-    const res = await agent.patch('/api/me/preferences').send({ theme: null });
+    const res = await agent.patch('/api/me/preferences').send({ units: null });
     expect(res.status).toBe(200);
-    expect(res.body.data.preferences).not.toHaveProperty('theme');
-    expect(res.body.data.preferences.lang).toBe('en');
+    expect(res.body.data.preferences).not.toHaveProperty('units');
+  });
+
+  it('rejects an invalid value for units', async () => {
+    const res = await agent.patch('/api/me/preferences').send({ units: 'kelvin' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid value for units');
+  });
+
+  it('rejects an unknown preference', async () => {
+    const res = await agent.patch('/api/me/preferences').send({ theme: 'dark' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Unknown preference: theme');
+  });
+
+  it('rejects an empty object with 400', async () => {
+    const res = await agent.patch('/api/me/preferences').send({});
+    expect(res.status).toBe(400);
   });
 
   it('rejects an array body with 400', async () => {
@@ -1360,5 +1369,30 @@ describe('PATCH /api/me/email abuse limits', () => {
       }
       expect((await agent.patch('/api/me/email').send({ newEmail: 'limit-e-4@example.com', currentPassword: 'Password123!' })).status).toBe(429);
     });
+  });
+});
+
+// ── Text caps ────────────────────────────────────────────────────────────────
+
+describe('PATCH /api/me — zone length', () => {
+  let agent: ReturnType<typeof request.agent>;
+
+  beforeAll(async () => {
+    await createUser('me-zone-cap@example.com');
+    agent = await loginAgent('me-zone-cap@example.com');
+  });
+
+  it('accepts a 10-character zone and rejects 11', async () => {
+    const ok = await agent.patch('/api/me').send({ zone: 'a'.repeat(10) });
+    expect(ok.status).toBe(200);
+    const res = await agent.patch('/api/me').send({ zone: 'a'.repeat(11) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('zone must be 10 characters or fewer');
+  });
+
+  it('blank zone is still rejected', async () => {
+    const res = await agent.patch('/api/me').send({ zone: '  ' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/zone/);
   });
 });

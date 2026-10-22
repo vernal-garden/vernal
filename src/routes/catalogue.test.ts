@@ -79,6 +79,24 @@ describe('GET /api/catalogue/seeds', () => {
     expect(typeof res.body.total).toBe('number');
   });
 
+  it('rejects q over 100 characters', async () => {
+    const res = await request(app).get(`/api/catalogue/seeds?q=${'a'.repeat(101)}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('q must be 100 characters or fewer');
+  });
+
+  it('clamps offset to 10000', async () => {
+    const res = await request(app).get('/api/catalogue/seeds?offset=999999');
+    expect(res.status).toBe(200);
+    expect(res.body.offset).toBe(10000);
+  });
+
+  it('treats % in q literally', async () => {
+    const res = await request(app).get('/api/catalogue/seeds?q=%25');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+  });
+
   it('unknown sort value is silently ignored (returns 200)', async () => {
     const res = await request(app).get('/api/catalogue/seeds?sort=invalid');
     expect(res.status).toBe(200);

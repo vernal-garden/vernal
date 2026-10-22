@@ -489,6 +489,7 @@ function EntryForm({ beds, defaultBedId, gardenId, initial, onSaved, onCancel }:
       <label style={labelSt}>Notes</label>
       <textarea
         rows={2}
+        maxLength={2000}
         value={form.notes}
         onChange={(e) => setForm(f => ({ ...f, notes: e.target.value }))}
         style={{ ...inputSt, resize: 'vertical' }}

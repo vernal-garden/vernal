@@ -425,3 +425,158 @@ describe('DELETE /api/amendments/:id', () => {
     expect(getRes.body.data.find((l: { id: string }) => l.id === createdLogId)).toBeUndefined();
   });
 });
+
+// ── Text caps and number parsing ─────────────────────────────────────────────
+
+describe('amendments — limits and number parsing', () => {
+  const base = () => ({
+    bedIds: [bed1Id], applicationDate: '2026-05-01',
+    productName: 'Compost', amendmentType: 'compost_manure',
+  });
+  const post = (extra: Record<string, unknown>) =>
+    supporterAgent.post(`/api/gardens/${gardenId}/amendments`).send({ ...base(), ...extra });
+
+  it('productName: 120 passes, 121 fails; blank is required', async () => {
+    expect((await post({ productName: 'a'.repeat(120) })).status).toBe(201);
+    const res = await post({ productName: 'a'.repeat(121) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('productName must be 120 characters or fewer');
+    const blank = await post({ productName: '  ' });
+    expect(blank.status).toBe(400);
+    expect(blank.body.error).toBe('productName is required');
+  });
+
+  it('amountUnit, applicationMethod and notes caps', async () => {
+    expect((await post({ amountUnit: 'a'.repeat(20), applicationMethod: 'a'.repeat(60), notes: 'a'.repeat(2000) })).status).toBe(201);
+    const u = await post({ amountUnit: 'a'.repeat(21) });
+    expect(u.status).toBe(400);
+    expect(u.body.error).toBe('amountUnit must be 20 characters or fewer');
+    const m = await post({ applicationMethod: 'a'.repeat(61) });
+    expect(m.status).toBe(400);
+    expect(m.body.error).toBe('applicationMethod must be 60 characters or fewer');
+    const n = await post({ notes: 'a'.repeat(2001) });
+    expect(n.status).toBe(400);
+    expect(n.body.error).toBe('notes must be 2000 characters or fewer');
+  });
+
+  it('amount: bounds and non-numeric rejected', async () => {
+    expect((await post({ amount: 100000 })).status).toBe(201);
+    const bad = await post({ amount: 'x' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('amount must be a number between 0 and 100000');
+    expect((await post({ amount: -1 })).status).toBe(400);
+    expect((await post({ amount: 100001 })).status).toBe(400);
+  });
+
+  it('applicationDate must be a real calendar date', async () => {
+    const res = await post({ applicationDate: '2026-02-30' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('applicationDate must be a valid date');
+  });
+
+  it('400 (not 500) for a bedId past int4', async () => {
+    const res = await post({ bedIds: ['99999999999'] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('bedIds must contain positive integers');
+    const created = await post({});
+    const patched = await supporterAgent
+      .patch(`/api/amendments/${created.body.id}`)
+      .send({ bedIds: ['99999999999'] });
+    expect(patched.status).toBe(400);
+  });
+
+  it('201 bedIds rejected before dedupe', async () => {
+    const res = await post({ bedIds: Array.from({ length: 201 }, () => bed1Id) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('bedIds can include at most 200 beds');
+  });
+
+  it('PATCH validates present fields only and null still clears', async () => {
+    const created = await post({ amount: 3, notes: 'x' });
+    const id = created.body.id;
+    const url = `/api/amendments/${id}`;
+    expect((await supporterAgent.patch(url).send({ productName: 'a'.repeat(121) })).status).toBe(400);
+    expect((await supporterAgent.patch(url).send({ amount: 'x' })).status).toBe(400);
+    expect((await supporterAgent.patch(url).send({ applicationDate: '2026-02-30' })).status).toBe(400);
+    expect((await supporterAgent.patch(url).send({ notes: 'a'.repeat(2001) })).status).toBe(400);
+    expect((await supporterAgent.patch(url).send({ bedIds: Array.from({ length: 201 }, () => bed1Id) })).status).toBe(400);
+    const ok = await supporterAgent.patch(url).send({ amount: null, notes: null, amountUnit: 'a'.repeat(20) });
+    expect(ok.status).toBe(200);
+    expect(ok.body.amount).toBeNull();
+    expect(ok.body.notes).toBeNull();
+    expect(ok.body.amountUnit).toBe('a'.repeat(20));
+  });
+});
+
+// ── Lock ordering (no deadlock between cap locks) ───────────────────────────
+
+describe('amendments — concurrent with freeform plantings', () => {
+  it('a freeform planting POST and an amendment POST on the same garden/bed both succeed', async () => {
+    const { rows: acct } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1',
+      ['amend-supporter@example.com'],
+    );
+    const lockGardenId = await createGarden(supporterAgent);
+    const { rows: bedRows } = await pool.query<{ id: string }>(
+      `INSERT INTO beds (garden_id, season, type, label, freeform_points, freeform_closed)
+       VALUES ($1, $2, 'freeform', 'Lock Bed', '[0,0,100,0,100,100,0,100]', true)
+       RETURNING id::text`,
+      [lockGardenId, new Date().getFullYear()],
+    );
+    const lockBedId = bedRows[0].id;
+    const { rows: seedRows } = await pool.query<{ id: number }>(
+      `INSERT INTO seeds (owner_id, common_name, origin, contribution_status)
+       VALUES ($1, 'Lock Basil', 'user_created', 'private')
+       RETURNING id`,
+      [acct[0].id],
+    );
+
+    for (let i = 0; i < 8; i++) {
+      const [planting, amendment] = await Promise.all([
+        supporterAgent
+          .post(`/api/gardens/${lockGardenId}/beds/${lockBedId}/plantings`)
+          .send({ seedId: seedRows[0].id, point: { x: 10 + i, y: 10 } }),
+        supporterAgent.post(`/api/gardens/${lockGardenId}/amendments`).send({
+          bedIds: [lockBedId], applicationDate: '2026-05-01',
+          productName: 'Compost', amendmentType: 'compost_manure',
+        }),
+      ]);
+      expect(planting.status).toBe(201);
+      expect(amendment.status).toBe(201);
+    }
+  });
+});
+
+// ── Row cap (1000 per garden) ────────────────────────────────────────────────
+
+describe('amendments — row cap', () => {
+  it('allows the 1000th amendment and refuses the 1001st', async () => {
+    const { rows: acct } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1',
+      ['amend-supporter@example.com'],
+    );
+    const capGardenId = await createGarden(supporterAgent);
+    const capBedId = await createBed(capGardenId);
+    await pool.query(
+      `INSERT INTO amendment_logs (user_id, garden_id, application_date, product_name, amendment_type)
+       SELECT $1, $2, '2026-01-01', 'Seeded', 'other' FROM generate_series(1, 999)`,
+      [acct[0].id, capGardenId],
+    );
+    const post = () =>
+      supporterAgent.post(`/api/gardens/${capGardenId}/amendments`).send({
+        bedIds: [capBedId], applicationDate: '2026-05-01',
+        productName: 'Compost', amendmentType: 'compost_manure',
+      });
+
+    expect((await post()).status).toBe(201);
+    const res = await post();
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('A garden can have up to 1000 amendments.');
+
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM amendment_logs WHERE garden_id = $1',
+      [capGardenId],
+    );
+    expect(rows[0].n).toBe(1000);
+  });
+});

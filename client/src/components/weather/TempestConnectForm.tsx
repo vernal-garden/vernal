@@ -1,5 +1,5 @@
 import React, { forwardRef, useImperativeHandle, useRef, useState } from 'react';
-import { post } from '../../lib/api';
+import { ApiError, post } from '../../lib/api';
 import { formatTemp, formatWindSpeed, formatHumidity, UnitSystem } from '../../lib/units';
 
 interface TestReading {
@@ -24,6 +24,16 @@ const REASON_TEXT: Record<string, string> = {
   not_found: 'No station found with that ID, or it has no recent observations.',
   unreachable: "Couldn't reach Tempest's servers. Try again in a moment.",
 };
+
+// The server's error text for a 4xx response; null for network failures and
+// 5xx, which keep the generic messages.
+function clientErrorText(e: unknown): string | null {
+  if (e instanceof ApiError && e.status >= 400 && e.status < 500) {
+    const body = e.body as { error?: unknown } | null;
+    if (body && typeof body.error === 'string') return body.error;
+  }
+  return null;
+}
 
 const labelSt: React.CSSProperties = {
   display: 'block',
@@ -107,20 +117,21 @@ const TempestConnectForm = forwardRef<TempestConnectFormHandle, Props>(function 
   useImperativeHandle(ref, () => ({ focusToken: () => tokenRef.current?.focus() }), []);
 
   async function handleTest() {
-    if (!accessToken || !stationId) return;
+    if (!accessToken.trim() || !stationId.trim()) return;
     setTestState({ kind: 'testing' });
     try {
       const res = await post<{ ok: boolean; reading?: TestReading; reason?: string }>(
         '/api/weather/test-connection',
-        { provider: 'pws_tempest', credentials: { accessToken }, stationId },
+        { provider: 'pws_tempest', credentials: { accessToken: accessToken.trim() }, stationId: stationId.trim() },
       );
       if (res?.ok && res.reading) {
         setTestState({ kind: 'ok', reading: res.reading });
       } else {
         setTestState({ kind: 'fail', reason: res?.reason ?? 'unreachable' });
       }
-    } catch {
-      setTestState({ kind: 'fail', reason: 'unreachable' });
+    } catch (e) {
+      // A 4xx carries the server's reason (e.g. a malformed station id); show it.
+      setTestState({ kind: 'fail', reason: clientErrorText(e) ?? 'unreachable' });
     }
   }
 
@@ -130,13 +141,13 @@ const TempestConnectForm = forwardRef<TempestConnectFormHandle, Props>(function 
     try {
       await post('/api/weather/connections', {
         provider: 'pws_tempest',
-        credentials: { accessToken },
-        stationId,
+        credentials: { accessToken: accessToken.trim() },
+        stationId: stationId.trim(),
         isPrimary: true,
       });
       onConnected();
-    } catch {
-      setConnectError('Could not save this connection. Try again.');
+    } catch (e) {
+      setConnectError(clientErrorText(e) ?? 'Could not save this connection. Try again.');
     } finally {
       setConnecting(false);
     }

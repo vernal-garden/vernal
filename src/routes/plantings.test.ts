@@ -928,3 +928,70 @@ describe('Phase 54: one planting per cell', () => {
     ).rejects.toMatchObject({ code: '23505' });
   });
 });
+
+// ── Row cap (1000 per freeform bed) and point bounds ─────────────────────────
+
+describe('Freeform bed planting cap and point bounds', () => {
+  async function newFreeformBed(): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO beds (garden_id, season, type, label, freeform_points, freeform_closed)
+       VALUES ($1, $2, 'freeform', 'Cap Bed', '[0,0,100,0,100,100,0,100]', true)
+       RETURNING id::text`,
+      [gardenId, CURRENT_YEAR],
+    );
+    return rows[0].id;
+  }
+
+  async function seedPlantings(bedId: string, n: number) {
+    await pool.query(
+      `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, point_x, point_y)
+       SELECT $1, $2, $3, $4, i, i FROM generate_series(1, $5::int) AS i`,
+      [bedId, gardenId, CURRENT_YEAR, activeCambiumSeedId, n],
+    );
+  }
+
+  async function plantingCount(bedId: string): Promise<number> {
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM plantings WHERE bed_id = $1',
+      [bedId],
+    );
+    return rows[0].n;
+  }
+
+  const plant = (bedId: string, point: Record<string, unknown> = { x: 5, y: 5 }) =>
+    agent
+      .post(`/api/gardens/${gardenId}/beds/${bedId}/plantings`)
+      .send({ cambiumSeedId: activeCambiumSeedId, point });
+
+  it('allows the 1000th planting and refuses the 1001st', async () => {
+    const bedId = await newFreeformBed();
+    await seedPlantings(bedId, 999);
+    expect((await plant(bedId)).status).toBe(201);
+    const res = await plant(bedId);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('A bed can have up to 1000 plantings.');
+    expect(await plantingCount(bedId)).toBe(1000);
+  });
+
+  it('two parallel creates at 999 → exactly one 201 and one 409', async () => {
+    const bedId = await newFreeformBed();
+    await seedPlantings(bedId, 999);
+    const results = await Promise.all([plant(bedId), plant(bedId)]);
+    expect(results.map(r => r.status).sort()).toEqual([201, 409]);
+    expect(await plantingCount(bedId)).toBe(1000);
+  });
+
+  it('point coordinates: ±100000 ok, beyond → 400 (POST and PATCH)', async () => {
+    const bedId = await newFreeformBed();
+    const ok = await plant(bedId, { x: -100000, y: 100000 });
+    expect(ok.status).toBe(201);
+    for (const point of [{ x: 100001, y: 0 }, { x: 0, y: -1e6 }]) {
+      const res = await plant(bedId, point);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('point.x and point.y must be between -100000 and 100000');
+    }
+    const patch = await agent.patch(`/api/plantings/${ok.body.id}`).send({ point: { x: 1e6, y: 0 } });
+    expect(patch.status).toBe(400);
+    expect(patch.body.error).toBe('point.x and point.y must be between -100000 and 100000');
+  });
+});
