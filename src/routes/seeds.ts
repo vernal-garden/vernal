@@ -1,7 +1,10 @@
 import { Router } from 'express';
+import type { PoolClient } from 'pg';
 import { db } from '../lib/db';
+import { LIMITS, withinCap, type CapResult } from '../lib/limits';
 import { requireAuth } from '../middleware/auth';
-import { isNumericId } from '../lib/validation';
+import { escapeLike, isNumericId, textField } from '../lib/validation';
+import { writeLimiter } from '../middleware/rateLimiters';
 import seedPhotosRouter from './seedPhotos';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { seedPhotoFolder } from '../lib/r2';
@@ -16,6 +19,21 @@ const VALID_SUNLIGHT = new Set(['full_sun', 'partial_shade', 'full_shade']);
 const VALID_WATERING = new Set(['low', 'moderate', 'high']);
 const VALID_FROST = new Set(['none', 'light', 'hard']);
 const VALID_ORIGINS = new Set(['user_created', 'cambium_imported', 'cambium_linked']);
+
+const SEED_CAP_ERROR = `You can have up to ${LIMITS.seedsPerAccount} seeds.`;
+
+const ACCOUNT_NOT_FOUND_ERROR = 'Account not found';
+
+// Locks the account row and checks one more seed fits. Run inside the
+// caller's transaction so parallel creates count and insert one at a time.
+function seedsWithinCap(client: PoolClient, accountId: number): Promise<CapResult> {
+  return withinCap(client, {
+    lockSql: 'SELECT 1 FROM accounts WHERE id = $1 FOR NO KEY UPDATE',
+    countSql: 'SELECT COUNT(*)::int AS n FROM seeds WHERE owner_id = $1',
+    params: [accountId],
+    max: LIMITS.seedsPerAccount,
+  });
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -128,6 +146,15 @@ function formatSeed(row: SeedRow) {
   };
 }
 
+// Optional free-text seed fields and their max lengths (all TEXT columns).
+const SEED_TEXT_MAX = {
+  scientificName: 120,
+  userNotes: 5000,
+  illustrationKey: 100,
+  hardinessZoneMin: 10,
+  hardinessZoneMax: 10,
+} as const;
+
 // ── Validation helper ─────────────────────────────────────────────────────────
 
 function validateTags(v: unknown): string[] | string {
@@ -163,7 +190,11 @@ router.get('/', async (req, res) => {
   const rawLimit = parseInt(req.query.limit as string, 10);
   const rawOffset = parseInt(req.query.offset as string, 10);
   const limit = isNaN(rawLimit) ? 50 : Math.min(Math.max(rawLimit, 1), 100);
-  const offset = isNaN(rawOffset) ? 0 : Math.max(rawOffset, 0);
+  const offset = isNaN(rawOffset) ? 0 : Math.min(Math.max(rawOffset, 0), 10000);
+
+  if (q && q.length > 100) {
+    return res.status(400).json({ error: 'q must be 100 characters or fewer' });
+  }
 
   try {
     const conditions: string[] = ['owner_id = $1'];
@@ -171,8 +202,8 @@ router.get('/', async (req, res) => {
     let idx = 2;
 
     if (q) {
-      conditions.push(`(common_name ILIKE $${idx} OR scientific_name ILIKE $${idx})`);
-      params.push(`%${q}%`);
+      conditions.push(`(common_name ILIKE $${idx} ESCAPE '\\' OR scientific_name ILIKE $${idx} ESCAPE '\\')`);
+      params.push(`%${escapeLike(q)}%`);
       idx++;
     }
     if (family) {
@@ -216,7 +247,7 @@ router.get('/', async (req, res) => {
 
 // ── POST /api/seeds ───────────────────────────────────────────────────────────
 
-router.post('/', async (req, res) => {
+router.post('/', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
   const body = req.body as Record<string, unknown>;
 
@@ -237,16 +268,13 @@ router.post('/', async (req, res) => {
   const plantFamily = body.plantFamily.trim();
 
   // Optional string fields
-  const scientificName =
-    typeof body.scientificName === 'string' ? body.scientificName.trim() || null : null;
-  const userNotes =
-    typeof body.userNotes === 'string' ? body.userNotes.trim() || null : null;
-  const illustrationKey =
-    typeof body.illustrationKey === 'string' ? body.illustrationKey.trim() || null : null;
-  const hardinessZoneMin =
-    typeof body.hardinessZoneMin === 'string' ? body.hardinessZoneMin.trim() || null : null;
-  const hardinessZoneMax =
-    typeof body.hardinessZoneMax === 'string' ? body.hardinessZoneMax.trim() || null : null;
+  const optionalText: Record<string, string | null> = {};
+  for (const [field, max] of Object.entries(SEED_TEXT_MAX)) {
+    const r = textField(body[field], { field, max });
+    if (!r.ok) return res.status(400).json({ error: r.error });
+    optionalText[field] = r.value;
+  }
+  const { scientificName, userNotes, illustrationKey, hardinessZoneMin, hardinessZoneMax } = optionalText;
 
   // Enum fields
   let sunlight: string | null = null;
@@ -390,8 +418,19 @@ router.post('/', async (req, res) => {
     tags = tagsResult;
   }
 
+  const client = await db.connect();
   try {
-    const result = await db.query<SeedRow>(
+    await client.query('BEGIN');
+    const cap = await seedsWithinCap(client, accountId);
+    if (cap === 'missing') {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ error: ACCOUNT_NOT_FOUND_ERROR });
+    }
+    if (cap === 'full') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: SEED_CAP_ERROR });
+    }
+    const result = await client.query<SeedRow>(
       `INSERT INTO seeds (
          owner_id, common_name, scientific_name, plant_family,
          origin, contribution_status,
@@ -422,16 +461,20 @@ router.post('/', async (req, res) => {
         tags,
       ],
     );
+    await client.query('COMMIT');
     res.status(201).json(formatSeed(result.rows[0]));
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('POST /seeds error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
 // ── POST /api/seeds/add-from-cambium  (must be before /:id routes) ────────────
 
-router.post('/add-from-cambium', async (req, res) => {
+router.post('/add-from-cambium', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
   const body = req.body as Record<string, unknown>;
 
@@ -444,8 +487,9 @@ router.post('/add-from-cambium', async (req, res) => {
     return res.status(400).json({ error: 'cambiumSeedId must be a numeric id' });
   }
 
+  const client = await db.connect();
   try {
-    const sourceResult = await db.query<CambiumSeedRow>(
+    const sourceResult = await client.query<CambiumSeedRow>(
       `SELECT id, common_name, scientific_name, plant_family,
               spacing_inches, maturity_days_min, maturity_days_max,
               sunlight, watering_needs, hardiness_zone_min, hardiness_zone_max,
@@ -463,15 +507,29 @@ router.post('/add-from-cambium', async (req, res) => {
     }
     const src = sourceResult.rows[0];
 
-    const dupResult = await db.query<{ id: string }>(
+    await client.query('BEGIN');
+    // Takes the account lock first, so the duplicate check below can't race a
+    // parallel import of the same seed. A duplicate wins over the cap error.
+    const cap = await seedsWithinCap(client, accountId);
+    if (cap === 'missing') {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ error: ACCOUNT_NOT_FOUND_ERROR });
+    }
+
+    const dupResult = await client.query<{ id: string }>(
       'SELECT id::text FROM seeds WHERE owner_id = $1 AND cambium_source_id = $2',
       [accountId, cambiumSeedIdStr],
     );
     if (dupResult.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ alreadyInCatalogue: true, seedId: dupResult.rows[0].id });
     }
+    if (cap === 'full') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: SEED_CAP_ERROR });
+    }
 
-    const result = await db.query<SeedRow>(
+    const result = await client.query<SeedRow>(
       `INSERT INTO seeds (
          owner_id, common_name, scientific_name, plant_family,
          origin, contribution_status, cambium_source_id,
@@ -501,11 +559,15 @@ router.post('/add-from-cambium', async (req, res) => {
         src.germination_temp_min_f, src.germination_temp_max_f,
       ],
     );
+    await client.query('COMMIT');
 
     res.status(201).json(formatSeed(result.rows[0]));
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('POST /seeds/add-from-cambium error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -570,7 +632,7 @@ router.get('/:id', async (req, res) => {
 
 // ── PATCH /api/seeds/:id ──────────────────────────────────────────────────────
 
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = req.params.id as string;
 
@@ -612,9 +674,19 @@ router.patch('/:id', async (req, res) => {
       values.push(body.commonName.trim());
     }
 
-    if (body.scientificName !== undefined) {
-      updates.push(`scientific_name = $${idx++}`);
-      values.push(typeof body.scientificName === 'string' ? body.scientificName.trim() || null : null);
+    const textColumns: Record<keyof typeof SEED_TEXT_MAX, string> = {
+      scientificName: 'scientific_name',
+      userNotes: 'user_notes',
+      illustrationKey: 'illustration_key',
+      hardinessZoneMin: 'hardiness_zone_min',
+      hardinessZoneMax: 'hardiness_zone_max',
+    };
+    for (const [field, max] of Object.entries(SEED_TEXT_MAX)) {
+      if (body[field] === undefined) continue;
+      const r = textField(body[field], { field, max });
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      updates.push(`${textColumns[field as keyof typeof SEED_TEXT_MAX]} = $${idx++}`);
+      values.push(r.value);
     }
 
     if (body.plantFamily !== undefined) {
@@ -754,16 +826,6 @@ router.patch('/:id', async (req, res) => {
       values.push(body.frostTolerance);
     }
 
-    if (body.hardinessZoneMin !== undefined) {
-      updates.push(`hardiness_zone_min = $${idx++}`);
-      values.push(typeof body.hardinessZoneMin === 'string' ? body.hardinessZoneMin.trim() || null : null);
-    }
-
-    if (body.hardinessZoneMax !== undefined) {
-      updates.push(`hardiness_zone_max = $${idx++}`);
-      values.push(typeof body.hardinessZoneMax === 'string' ? body.hardinessZoneMax.trim() || null : null);
-    }
-
     if (body.weeksToTransplant !== undefined) {
       if (body.weeksToTransplant !== null && (!Number.isInteger(body.weeksToTransplant) || (body.weeksToTransplant as number) <= 0)) {
         return res.status(400).json({ error: 'weeksToTransplant must be a positive integer' });
@@ -780,11 +842,6 @@ router.patch('/:id', async (req, res) => {
       values.push(body.successionIntervalWeeks);
     }
 
-    if (body.userNotes !== undefined) {
-      updates.push(`user_notes = $${idx++}`);
-      values.push(typeof body.userNotes === 'string' ? body.userNotes.trim() || null : null);
-    }
-
     if (body.userRating !== undefined) {
       if (body.userRating !== null && (!Number.isInteger(body.userRating) || (body.userRating as number) < 1 || (body.userRating as number) > 5)) {
         return res.status(400).json({ error: 'userRating must be between 1 and 5' });
@@ -799,11 +856,6 @@ router.patch('/:id', async (req, res) => {
       }
       updates.push(`is_favourite = $${idx++}`);
       values.push(body.isFavourite);
-    }
-
-    if (body.illustrationKey !== undefined) {
-      updates.push(`illustration_key = $${idx++}`);
-      values.push(typeof body.illustrationKey === 'string' ? body.illustrationKey.trim() || null : null);
     }
 
     if (body.tags !== undefined) {
@@ -833,7 +885,7 @@ router.patch('/:id', async (req, res) => {
 
 // ── DELETE /api/seeds/:id ─────────────────────────────────────────────────────
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = req.params.id as string;
 
@@ -890,46 +942,50 @@ router.delete('/:id', async (req, res) => {
 
 // ── POST /api/seeds/:id/contribute ───────────────────────────────────────────
 
-router.post('/:id/contribute', async (req, res) => {
+router.post('/:id/contribute', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = req.params.id as string;
 
   if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
-    const seedResult = await db.query<SeedRow>(
-      `SELECT ${SEED_SELECT} FROM seeds WHERE id = $1 AND owner_id = $2`,
-      [seedId, accountId],
-    );
-    if (seedResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Seed not found' });
-    }
-
-    const seed = seedResult.rows[0];
-
-    if (seed.origin !== 'user_created') {
-      return res.status(400).json({ error: 'Imported seeds cannot be contributed back' });
-    }
-    if (seed.contribution_status !== 'private' && seed.contribution_status !== 'rejected') {
-      return res.status(400).json({ error: 'Seed contribution is already pending or approved' });
-    }
-
-    const wantsPhotos = (req.body as Record<string, unknown> | undefined)?.includePhotos === true;
-    const photos = wantsPhotos
-      ? (await db.query<{ id: string; url: string }>(
-          `SELECT id::text, storage_url AS url FROM seed_photos
-           WHERE seed_id = $1
-           ORDER BY created_at ASC, id ASC`,
-          [seedId],
-        )).rows
-      : [];
-    const snapshot = photos.length > 0
-      ? { ...formatSeed(seed), includePhotos: true, photos }
-      : { ...formatSeed(seed), includePhotos: false };
-
     const client = await db.connect();
     try {
       await client.query('BEGIN');
+      // Lock the seed so two parallel contributes can't both pass the status check.
+      const seedResult = await client.query<SeedRow>(
+        `SELECT ${SEED_SELECT} FROM seeds WHERE id = $1 AND owner_id = $2 FOR UPDATE`,
+        [seedId, accountId],
+      );
+      if (seedResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Seed not found' });
+      }
+
+      const seed = seedResult.rows[0];
+
+      if (seed.origin !== 'user_created') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Imported seeds cannot be contributed back' });
+      }
+      if (seed.contribution_status !== 'private' && seed.contribution_status !== 'rejected') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Seed contribution is already pending or approved' });
+      }
+
+      const wantsPhotos = (req.body as Record<string, unknown> | undefined)?.includePhotos === true;
+      const photos = wantsPhotos
+        ? (await client.query<{ id: string; url: string }>(
+            `SELECT id::text, storage_url AS url FROM seed_photos
+             WHERE seed_id = $1
+             ORDER BY created_at ASC, id ASC`,
+            [seedId],
+          )).rows
+        : [];
+      const snapshot = photos.length > 0
+        ? { ...formatSeed(seed), includePhotos: true, photos }
+        : { ...formatSeed(seed), includePhotos: false };
+
       await client.query(
         `INSERT INTO moderation_items (type, seed_id, submitted_by, content)
          VALUES ('new_seed', $1, $2, $3)`,
@@ -941,7 +997,11 @@ router.post('/:id/contribute', async (req, res) => {
       );
       await client.query('COMMIT');
     } catch (txErr) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => undefined);
+      const pgErr = txErr as { code?: string; constraint?: string };
+      if (pgErr.code === '23505' && pgErr.constraint === 'moderation_items_open_new_seed_uniq') {
+        return res.status(409).json({ error: 'This seed is already awaiting review.' });
+      }
       throw txErr;
     } finally {
       client.release();

@@ -472,6 +472,7 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
       <input
         type="text"
         placeholder="e.g. Garden Tone 3-4-4"
+        maxLength={120}
         value={form.productName}
         onChange={e => setForm(f => ({ ...f, productName: e.target.value }))}
         style={inputSt}
@@ -520,6 +521,7 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
       <input
         type="text"
         placeholder="e.g. Side-dress, broadcast, foliar spray"
+        maxLength={60}
         value={form.applicationMethod}
         onChange={e => setForm(f => ({ ...f, applicationMethod: e.target.value }))}
         style={inputSt}
@@ -528,6 +530,7 @@ function AmendmentForm({ beds, defaultBedIds, gardenId, initial, onSaved, onCanc
       <label style={labelSt}>Notes</label>
       <textarea
         rows={2}
+        maxLength={2000}
         value={form.notes}
         onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
         style={{ ...inputSt, resize: 'vertical' }}

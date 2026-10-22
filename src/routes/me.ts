@@ -7,9 +7,9 @@ import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
 import { sendVerificationEmail } from '../lib/emailVerification';
 import { sendEmailChangedNotice, sendPasswordChangedNotice } from '../lib/accountSecurity';
-import { verificationResendLimiter, emailChangeLimiter, passwordChangeLimiter } from '../middleware/rateLimiters';
+import { verificationResendLimiter, emailChangeLimiter, passwordChangeLimiter, writeLimiter } from '../middleware/rateLimiters';
 import { logger } from '../lib/logger';
-import { isValidEmail } from '../lib/validation';
+import { isValidEmail, textField } from '../lib/validation';
 import { stopRenewal, resumeRenewal } from '../lib/billing';
 import { processExportJob } from '../lib/exportWorker';
 import { invalidateMetrics } from '../lib/metricsCache';
@@ -97,7 +97,7 @@ router.get('/', async (req, res) => {
 // Updatable: displayName, zone, zoneLocationLabel, lastSpringFrostDate, firstFallFrostDate.
 // Sending onboardingCompletedAt, email, role, or subscriptionTier yields 400.
 // zone and zoneLocationLabel are NOT NULL — blank/empty values are rejected.
-router.patch('/', async (req, res) => {
+router.patch('/', writeLimiter, async (req, res) => {
   const body = req.body as Record<string, unknown>;
 
   for (const field of REJECTED_PATCH_FIELDS) {
@@ -125,11 +125,14 @@ router.patch('/', async (req, res) => {
   }
 
   if (zone !== undefined) {
-    if (typeof zone !== 'string' || zone.trim().length === 0) {
-      return res.status(400).json({ error: 'zone cannot be blank' });
+    const zoneRes = textField(zone, { field: 'zone', max: 10, required: true });
+    if (!zoneRes.ok) {
+      return res.status(400).json({
+        error: zoneRes.error.endsWith('is required') ? 'zone cannot be blank' : zoneRes.error,
+      });
     }
     updates.push(`zone = $${idx++}`);
-    values.push(zone.trim());
+    values.push(zoneRes.value);
   }
 
   if (zoneLocationLabel !== undefined) {
@@ -198,13 +201,30 @@ router.patch('/', async (req, res) => {
   }
 });
 
+// Preferences the client may set, with a validator each. Unknown keys are
+// rejected so the column can't be used as free-form storage.
+const PREFERENCE_VALIDATORS: Record<string, (v: unknown) => boolean> = {
+  units: (v) => v === 'imperial' || v === 'metric',
+};
+
 // PATCH /api/me/preferences
 // Merges the body object into the stored preferences JSONB using jsonb_strip_nulls + ||.
 // A null value for a key removes that key from the stored object.
-router.patch('/preferences', async (req, res) => {
+router.patch('/preferences', writeLimiter, async (req, res) => {
   const body = req.body;
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return res.status(400).json({ error: 'Body must be a JSON object' });
+  }
+  const entries = Object.entries(body as Record<string, unknown>);
+  if (entries.length === 0) {
+    return res.status(400).json({ error: 'No preferences to update' });
+  }
+  for (const [key, value] of entries) {
+    const validate = Object.hasOwn(PREFERENCE_VALIDATORS, key) ? PREFERENCE_VALIDATORS[key] : undefined;
+    if (!validate) return res.status(400).json({ error: `Unknown preference: ${key}` });
+    if (value !== null && !validate(value)) {
+      return res.status(400).json({ error: `Invalid value for ${key}` });
+    }
   }
 
   try {
@@ -428,7 +448,7 @@ router.patch('/email', emailChangeLimiter, async (req, res) => {
 
 // DELETE /api/me/email
 // Cancels an in-flight email change.
-router.delete('/email', async (req, res) => {
+router.delete('/email', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
@@ -571,7 +591,7 @@ router.get('/email/confirm', async (req, res) => {
 // COALESCE ensures re-requesting does NOT reset the 30-day clock.
 // The current session row is deleted immediately; the data purge runs
 // via the nightly job 30 days after deletion_scheduled_at.
-router.delete('/', async (req, res) => {
+router.delete('/', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
   const sessionToken = req.session!.token;
   const sessionId = req.session!.id;
@@ -631,7 +651,7 @@ router.delete('/', async (req, res) => {
 
 // POST /api/me/cancel-deletion
 // Clears deletion_scheduled_at. Idempotent — safe to call when nothing is scheduled.
-router.post('/cancel-deletion', async (req, res) => {
+router.post('/cancel-deletion', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
@@ -667,7 +687,7 @@ router.post('/cancel-deletion', async (req, res) => {
 
 // POST /api/me/supporter-prompt/shown
 // Marks the one-time Supporter prompt as shown. One-way — idempotent, no unset endpoint.
-router.post('/supporter-prompt/shown', async (req, res) => {
+router.post('/supporter-prompt/shown', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
@@ -706,7 +726,7 @@ async function failStaleExportJobs(
 // POST /api/me/export
 // Starts a data export. Returns the existing download while an unexpired
 // export exists; otherwise queues a job and processes it in the background.
-router.post('/export', async (req, res) => {
+router.post('/export', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {

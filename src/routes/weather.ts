@@ -9,6 +9,8 @@ import { fetchTempestCurrent } from '../lib/weather/providers/tempest';
 import { geocode, fetchOpenMeteoCurrent, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
 import type { NormalizedReading } from '../lib/weather/types';
 import { isNumericId } from '../lib/validation';
+import { LIMITS, withinCap } from '../lib/limits';
+import { writeLimiter, weatherTestLimiter } from '../middleware/rateLimiters';
 import { recordUsageEvent } from '../lib/usageEvents';
 import { invalidateMetrics } from '../lib/metricsCache';
 
@@ -18,6 +20,22 @@ weatherRouter.use(requireAuth);
 const IMPLEMENTED_CONNECTION_PROVIDERS = new Set(['pws_tempest']);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const STATION_ID_RE = /^\d{1,12}$/;
+const ACCESS_TOKEN_RE = /^\S{1,200}$/;
+
+// Trims string input (pasted credentials often carry stray spaces); anything
+// else passes through unchanged for the type checks.
+function trimmed(v: unknown): unknown {
+  return typeof v === 'string' ? v.trim() : v;
+}
+
+// Both values go into the Tempest request URL, so they are checked strictly.
+function tempestInputError(accessToken: string, stationId: string): string | null {
+  if (!STATION_ID_RE.test(stationId)) return 'stationId must be 1–12 digits';
+  if (!ACCESS_TOKEN_RE.test(accessToken)) return 'credentials.accessToken is invalid';
+  return null;
+}
 
 function encryptCreds(obj: unknown): { enc: string } {
   return { enc: encryptToBuffer(JSON.stringify(obj)).toString('base64') };
@@ -64,7 +82,7 @@ function tempestFailureReason(err: unknown): 'auth_failed' | 'not_found' | 'unre
 
 // ── POST /connections ─────────────────────────────────────────────────────────
 
-weatherRouter.post('/connections', requireSupporter, async (req: Request, res: Response): Promise<void> => {
+weatherRouter.post('/connections', requireSupporter, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const { provider, credentials, stationId, isPrimary } = req.body as Record<string, unknown>;
 
@@ -78,13 +96,20 @@ weatherRouter.post('/connections', requireSupporter, async (req: Request, res: R
   }
 
   const creds = (credentials ?? {}) as Record<string, unknown>;
+  const accessToken = trimmed(creds.accessToken);
+  const station = trimmed(stationId);
   if (provider === 'pws_tempest') {
-    if (typeof creds.accessToken !== 'string' || !creds.accessToken) {
+    if (typeof accessToken !== 'string' || !accessToken) {
       res.status(400).json({ error: 'credentials.accessToken is required' });
       return;
     }
-    if (typeof stationId !== 'string' || !stationId) {
+    if (typeof station !== 'string' || !station) {
       res.status(400).json({ error: 'stationId is required' });
+      return;
+    }
+    const invalid = tempestInputError(accessToken, station);
+    if (invalid) {
+      res.status(400).json({ error: invalid });
       return;
     }
   }
@@ -94,6 +119,25 @@ weatherRouter.post('/connections', requireSupporter, async (req: Request, res: R
   const client = await db.connect();
   try {
     await client.query('BEGIN');
+    // Lock the account row so parallel creates count and insert one at a time.
+    const cap = await withinCap(client, {
+      lockSql: 'SELECT 1 FROM accounts WHERE id = $1 FOR NO KEY UPDATE',
+      countSql: 'SELECT COUNT(*)::int AS n FROM weather_connections WHERE account_id = $1',
+      params: [accountId],
+      max: LIMITS.weatherConnectionsPerAccount,
+    });
+    if (cap === 'missing') {
+      await client.query('ROLLBACK');
+      res.status(401).json({ error: 'Account not found' });
+      return;
+    }
+    if (cap === 'full') {
+      await client.query('ROLLBACK');
+      res.status(409).json({
+        error: `You can have up to ${LIMITS.weatherConnectionsPerAccount} weather connections.`,
+      });
+      return;
+    }
     if (makePrimary) {
       await client.query('UPDATE weather_connections SET is_primary = false WHERE account_id = $1', [accountId]);
     }
@@ -101,7 +145,13 @@ weatherRouter.post('/connections', requireSupporter, async (req: Request, res: R
       `INSERT INTO weather_connections (account_id, provider, credentials, station_id, is_primary)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, provider, station_id, is_primary, last_successful_sync, created_at`,
-      [accountId, provider, JSON.stringify(encryptCreds(creds)), stationId ?? null, makePrimary],
+      [
+        accountId,
+        provider,
+        JSON.stringify(encryptCreds({ accessToken })),
+        station ?? null,
+        makePrimary,
+      ],
     );
     await client.query('COMMIT');
     // The metrics dashboard shows the primary station.
@@ -117,7 +167,7 @@ weatherRouter.post('/connections', requireSupporter, async (req: Request, res: R
       createdAt: row.created_at,
     });
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => undefined);
     console.error(err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
@@ -155,7 +205,7 @@ weatherRouter.get('/connections', async (req: Request, res: Response): Promise<v
 
 // ── DELETE /connections/:id ────────────────────────────────────────────────────
 
-weatherRouter.delete('/connections/:id', async (req: Request, res: Response): Promise<void> => {
+weatherRouter.delete('/connections/:id', writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const id = req.params.id as string;
 
@@ -288,7 +338,7 @@ weatherRouter.get('/history', requireSupporter, async (req: Request, res: Respon
 
 // ── POST /test-connection ────────────────────────────────────────────────────────
 
-weatherRouter.post('/test-connection', requireSupporter, async (req: Request, res: Response): Promise<void> => {
+weatherRouter.post('/test-connection', requireSupporter, writeLimiter, weatherTestLimiter, async (req: Request, res: Response): Promise<void> => {
   const { provider, credentials, stationId } = req.body as Record<string, unknown>;
 
   if (provider !== 'pws_tempest') {
@@ -297,13 +347,20 @@ weatherRouter.post('/test-connection', requireSupporter, async (req: Request, re
   }
 
   const creds = (credentials ?? {}) as Record<string, unknown>;
-  if (typeof creds.accessToken !== 'string' || !creds.accessToken || typeof stationId !== 'string' || !stationId) {
+  const accessToken = trimmed(creds.accessToken);
+  const station = trimmed(stationId);
+  if (typeof accessToken !== 'string' || !accessToken || typeof station !== 'string' || !station) {
     res.status(400).json({ error: 'credentials.accessToken and stationId are required' });
+    return;
+  }
+  const invalid = tempestInputError(accessToken, station);
+  if (invalid) {
+    res.status(400).json({ error: invalid });
     return;
   }
 
   try {
-    const reading = await fetchTempestCurrent(creds.accessToken, stationId);
+    const reading = await fetchTempestCurrent(accessToken, station);
     res.json({ ok: true, reading });
   } catch (err) {
     res.json({ ok: false, reason: tempestFailureReason(err) });

@@ -147,6 +147,35 @@ export const writeLimiter = rateLimit({
   message: TOO_MANY,
 });
 
+// POST /api/events/batch — on top of writeLimiter. 50 events per batch, so 30
+// batches a minute caps a session at ~1500 rows/min.
+export function makeEventsBatchLimiter(opts: { max: number; windowMs: number; skip?: () => boolean }): RequestHandler {
+  return rateLimit({
+    windowMs: opts.windowMs,
+    max: opts.max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => (req.session ? `session:${req.session.id}` : `ip:${byIp(req)}`),
+    skip: opts.skip,
+    message: TOO_MANY,
+  });
+}
+export const eventsBatchLimiter = makeEventsBatchLimiter({ max: 30, windowMs: 60 * 1000, skip: skipInTest });
+
+// POST /api/weather/test-connection — each call fetches from Tempest.
+export function makeWeatherTestLimiter(opts: { max: number; windowMs: number; skip?: () => boolean }): RequestHandler {
+  return rateLimit({
+    windowMs: opts.windowMs,
+    max: opts.max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
+    skip: opts.skip,
+    message: { error: 'Too many connection tests — please try again later' },
+  });
+}
+export const weatherTestLimiter = makeWeatherTestLimiter({ max: 10, windowMs: 60 * 60 * 1000, skip: skipInTest });
+
 // POST /api/me/verify-email/resend — keyed per account (route requires auth).
 export const verificationResendLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

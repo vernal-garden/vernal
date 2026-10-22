@@ -394,3 +394,116 @@ describe('DELETE /api/soil-readings/:id', () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ── Text caps and number parsing ─────────────────────────────────────────────
+
+describe('soil readings — limits and number parsing', () => {
+  const post = (extra: Record<string, unknown>) =>
+    supporterAgent.post(`/api/gardens/${gardenId}/soil-readings`).send({
+      bedId, testDate: '2026-03-01', ph: 6.5, ...extra,
+    });
+
+  it('accepts notes at 2000 characters and rejects 2001', async () => {
+    expect((await post({ notes: 'a'.repeat(2000) })).status).toBe(201);
+    const res = await post({ notes: 'a'.repeat(2001) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('notes must be 2000 characters or fewer');
+  });
+
+  it('400 (not 500) for a non-numeric nitrogen', async () => {
+    const res = await post({ nitrogen: 'abc' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('nitrogen must be a whole number between 0 and 100000');
+  });
+
+  it('400 for fractional N/P/K on POST and PATCH (INTEGER columns)', async () => {
+    const res = await post({ nitrogen: 12.5 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('nitrogen must be a whole number between 0 and 100000');
+    expect((await post({ phosphorus: '3.2' })).status).toBe(400);
+    expect((await post({ potassium: 0.5 })).status).toBe(400);
+    const created = await post({ nitrogen: 12 });
+    expect(created.status).toBe(201);
+    const patched = await supporterAgent
+      .patch(`/api/soil-readings/${created.body.id}`)
+      .send({ nitrogen: 12.5 });
+    expect(patched.status).toBe(400);
+    expect(patched.body.error).toBe('nitrogen must be a whole number between 0 and 100000');
+  });
+
+  it('400 for an oversized bedId', async () => {
+    const res = await post({ bedId: '99999999999' });
+    expect(res.status).toBe(400);
+  });
+
+  it('validates phosphorus and potassium bounds', async () => {
+    expect((await post({ phosphorus: 100000, potassium: 0 })).status).toBe(201);
+    const p = await post({ phosphorus: 100001 });
+    expect(p.status).toBe(400);
+    expect(p.body.error).toBe('phosphorus must be a whole number between 0 and 100000');
+    const k = await post({ potassium: -1 });
+    expect(k.status).toBe(400);
+    expect(k.body.error).toBe('potassium must be a whole number between 0 and 100000');
+  });
+
+  it('400 for ph 15 and for a non-numeric ph', async () => {
+    const hi = await post({ ph: 15 });
+    expect(hi.status).toBe(400);
+    expect(hi.body.error).toBe('ph must be a number between 0 and 14');
+    expect((await post({ ph: 'abc' })).status).toBe(400);
+  });
+
+  it('400 for an impossible calendar date', async () => {
+    const res = await post({ testDate: '2026-02-30' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('testDate must be a valid date');
+  });
+
+  it('PATCH validates present fields only and null still clears', async () => {
+    const created = await post({ nitrogen: 10, notes: 'keep' });
+    const id = created.body.id;
+    const bad = await supporterAgent.patch(`/api/soil-readings/${id}`).send({ nitrogen: 'abc' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe('nitrogen must be a whole number between 0 and 100000');
+    expect((await supporterAgent.patch(`/api/soil-readings/${id}`).send({ notes: 'a'.repeat(2001) })).status).toBe(400);
+    expect((await supporterAgent.patch(`/api/soil-readings/${id}`).send({ ph: 15 })).status).toBe(400);
+    expect((await supporterAgent.patch(`/api/soil-readings/${id}`).send({ testDate: '2026-02-30' })).status).toBe(400);
+    const ok = await supporterAgent.patch(`/api/soil-readings/${id}`).send({ nitrogen: null, notes: 'a'.repeat(2000) });
+    expect(ok.status).toBe(200);
+    expect(ok.body.nitrogen).toBeNull();
+    expect(ok.body.notes).toBe('a'.repeat(2000));
+  });
+});
+
+// ── Row cap (500 per garden) ─────────────────────────────────────────────────
+
+describe('soil readings — row cap', () => {
+  it('allows the 500th reading and refuses the 501st', async () => {
+    const { rows: acct } = await pool.query<{ id: number }>(
+      'SELECT id FROM accounts WHERE email = $1',
+      ['soil-supporter@example.com'],
+    );
+    const capGardenId = await createGarden(supporterAgent);
+    const capBedId = await createBed(capGardenId);
+    await pool.query(
+      `INSERT INTO soil_readings (user_id, garden_id, bed_id, test_date, ph)
+       SELECT $1, $2, $3, '2026-01-01', 7 FROM generate_series(1, 499)`,
+      [acct[0].id, capGardenId, capBedId],
+    );
+    const post = () =>
+      supporterAgent.post(`/api/gardens/${capGardenId}/soil-readings`).send({
+        bedId: capBedId, testDate: '2026-03-01', ph: 6.5,
+      });
+
+    expect((await post()).status).toBe(201);
+    const res = await post();
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('A garden can have up to 500 soil readings.');
+
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM soil_readings WHERE garden_id = $1',
+      [capGardenId],
+    );
+    expect(rows[0].n).toBe(500);
+  });
+});

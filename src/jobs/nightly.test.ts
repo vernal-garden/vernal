@@ -25,6 +25,7 @@ import {
   purgeExpiredGuests,
   purgeReadNotifications,
   purgeStripeEvents,
+  purgeOldUsageEvents,
   purgeScheduledAccounts,
   checkSubscriptionDowngrades,
   purgeExpiredExports,
@@ -1224,6 +1225,23 @@ describe('purgeExpiredGuests — email revert tokens', () => {
 
     const { rows } = await pool.query<{ token_hash: string }>('SELECT token_hash FROM email_revert_tokens');
     expect(rows.map((r) => r.token_hash)).toEqual(['new-hash']);
+  });
+});
+
+describe('purgeOldUsageEvents', () => {
+  it('deletes usage events older than 180 days and keeps newer ones', async () => {
+    await pool.query('TRUNCATE usage_events');
+    await pool.query(
+      `INSERT INTO usage_events (session_id, event_key, created_at)
+       VALUES ('s-old', 'evt_old', NOW() - INTERVAL '181 days'),
+              ('s-new', 'evt_new', NOW() - INTERVAL '179 days')`,
+    );
+
+    const { affected } = await purgeOldUsageEvents();
+
+    expect(affected).toBe(1);
+    const { rows } = await pool.query<{ event_key: string }>('SELECT event_key FROM usage_events');
+    expect(rows.map((r) => r.event_key)).toEqual(['evt_new']);
   });
 });
 

@@ -3,7 +3,28 @@ import crypto from 'crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
-import { makeApiLimiters, makeLoginLimiters, writeLimiterKey, consumeResetEmailQuota, clearResetEmailQuota } from './rateLimiters';
+import { makeApiLimiters, makeLoginLimiters, makeEventsBatchLimiter, makeWeatherTestLimiter, writeLimiterKey, consumeResetEmailQuota, clearResetEmailQuota } from './rateLimiters';
+
+describe('makeEventsBatchLimiter', () => {
+  it('allows max batches per session, then 429', async () => {
+    const app = express();
+    app.use((req, _res, next) => { (req as unknown as { session: unknown }).session = { id: 's-events' }; next(); });
+    app.post('/b', makeEventsBatchLimiter({ max: 2, windowMs: 60_000 }), (_req, res) => res.status(204).send());
+    expect((await request(app).post('/b')).status).toBe(204);
+    expect((await request(app).post('/b')).status).toBe(204);
+    expect((await request(app).post('/b')).status).toBe(429);
+  });
+});
+
+describe('makeWeatherTestLimiter', () => {
+  it('allows max per account, then 429', async () => {
+    const app = express();
+    app.use((req, _res, next) => { (req as unknown as { session: unknown }).session = { id: 's', account: { id: 42 } }; next(); });
+    app.post('/t', makeWeatherTestLimiter({ max: 1, windowMs: 60_000 }), (_req, res) => res.json({ ok: true }));
+    expect((await request(app).post('/t')).status).toBe(200);
+    expect((await request(app).post('/t')).status).toBe(429);
+  });
+});
 
 function loginApp(limiters = makeLoginLimiters({ ipMax: 4, pairMax: 2, emailMax: 3, windowMs: 60_000 })) {
   const app = express();

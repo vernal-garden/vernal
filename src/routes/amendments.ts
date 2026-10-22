@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
-import { isNumericId } from '../lib/validation';
+import { isNumericId, isRealDate, numberField, textField } from '../lib/validation';
+import { writeLimiter } from '../middleware/rateLimiters';
+import { LIMITS, withinCap } from '../lib/limits';
 import { invalidateMetrics } from '../lib/metricsCache';
 
 export const amendmentsNestedRouter = Router({ mergeParams: true }); // /api/gardens/:gardenId/amendments
@@ -19,6 +21,12 @@ const AMENDMENT_TYPES = [
 type AmendmentType = typeof AMENDMENT_TYPES[number];
 
 const DATE_RE   = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_BED_IDS = 200;
+const PRODUCT_NAME = { field: 'productName', max: 120 };
+const AMOUNT_UNIT  = { field: 'amountUnit', max: 20 };
+const APP_METHOD   = { field: 'applicationMethod', max: 60 };
+const NOTES        = { field: 'notes', max: 2000 };
+const AMOUNT       = { field: 'amount', min: 0, max: 100000 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -114,7 +122,7 @@ amendmentsNestedRouter.get('/', async (req: Request, res: Response): Promise<voi
 
 // ── POST /api/gardens/:gardenId/amendments ────────────────────────────────────
 
-amendmentsNestedRouter.post('/', requireSupporter, async (req: Request, res: Response): Promise<void> => {
+amendmentsNestedRouter.post('/', requireSupporter, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
   const gardenId  = req.params.gardenId as string;
 
@@ -133,6 +141,10 @@ amendmentsNestedRouter.post('/', requireSupporter, async (req: Request, res: Res
     res.status(400).json({ error: 'bedIds must be a non-empty array' });
     return;
   }
+  if (bedIds.length > MAX_BED_IDS) {
+    res.status(400).json({ error: `bedIds can include at most ${MAX_BED_IDS} beds` });
+    return;
+  }
   if ((bedIds as unknown[]).some((id) => !isNumericId(String(id)))) {
     res.status(400).json({ error: 'bedIds must contain positive integers' });
     return;
@@ -141,22 +153,35 @@ amendmentsNestedRouter.post('/', requireSupporter, async (req: Request, res: Res
     res.status(400).json({ error: 'applicationDate is required (YYYY-MM-DD)' });
     return;
   }
-  const productNameTrimmed = productName !== undefined ? String(productName).trim() : '';
-  if (!productNameTrimmed) {
-    res.status(400).json({ error: 'productName is required' });
+  if (!isRealDate(applicationDate)) {
+    res.status(400).json({ error: 'applicationDate must be a valid date' });
     return;
   }
+  const productNameRes = textField(productName, { ...PRODUCT_NAME, required: true });
+  if (!productNameRes.ok) {
+    res.status(400).json({ error: productNameRes.error });
+    return;
+  }
+  const productNameTrimmed = productNameRes.value as string;
   if (!AMENDMENT_TYPES.includes(amendmentType as AmendmentType)) {
     res.status(400).json({ error: `amendmentType must be one of: ${AMENDMENT_TYPES.join(', ')}` });
     return;
   }
 
-  const amountVal = amount !== undefined && amount !== null
-    ? (isFinite(Number(amount)) ? Number(amount) : null)
-    : null;
-  const amountUnitVal        = amountUnit          !== undefined && amountUnit          !== null ? String(amountUnit)          : null;
-  const applicationMethodVal = applicationMethod   !== undefined && applicationMethod   !== null ? String(applicationMethod)   : null;
-  const notesVal             = notes              !== undefined && notes              !== null ? String(notes)              : null;
+  const amountRes            = numberField(amount, AMOUNT);
+  const amountUnitRes        = textField(amountUnit, AMOUNT_UNIT);
+  const applicationMethodRes = textField(applicationMethod, APP_METHOD);
+  const notesRes             = textField(notes, NOTES);
+  for (const r of [amountRes, amountUnitRes, applicationMethodRes, notesRes]) {
+    if (!r.ok) {
+      res.status(400).json({ error: r.error });
+      return;
+    }
+  }
+  const amountVal            = amountRes.ok ? amountRes.value : null;
+  const amountUnitVal        = amountUnitRes.ok ? amountUnitRes.value : null;
+  const applicationMethodVal = applicationMethodRes.ok ? applicationMethodRes.value : null;
+  const notesVal             = notesRes.ok ? notesRes.value : null;
 
   const uniqueBedIds = [...new Set((bedIds as unknown[]).map(String))];
 
@@ -183,6 +208,26 @@ amendmentsNestedRouter.post('/', requireSupporter, async (req: Request, res: Res
     const client = await db.connect();
     try {
       await client.query('BEGIN');
+
+      // Lock the garden row so parallel creates count and insert one at a time.
+      const cap = await withinCap(client, {
+        lockSql: 'SELECT 1 FROM gardens WHERE id = $1 FOR NO KEY UPDATE',
+        countSql: 'SELECT COUNT(*)::int AS n FROM amendment_logs WHERE garden_id = $1',
+        params: [gardenId],
+        max: LIMITS.amendmentsPerGarden,
+      });
+      if (cap === 'missing') {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Garden not found' });
+        return;
+      }
+      if (cap === 'full') {
+        await client.query('ROLLBACK');
+        res.status(409).json({
+          error: `A garden can have up to ${LIMITS.amendmentsPerGarden} amendments.`,
+        });
+        return;
+      }
 
       const logRes = await client.query<{ id: string }>(
         `INSERT INTO amendment_logs
@@ -221,7 +266,7 @@ amendmentsNestedRouter.post('/', requireSupporter, async (req: Request, res: Res
 
 // ── PATCH /api/amendments/:id ─────────────────────────────────────────────────
 
-amendmentsFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: Response): Promise<void> => {
+amendmentsFlatRouter.patch('/:id', requireSupporter, writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId   = req.session!.account!.id;
   const amendmentId = req.params.id as string;
 
@@ -240,9 +285,19 @@ amendmentsFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: R
     res.status(400).json({ error: 'applicationDate must be YYYY-MM-DD' });
     return;
   }
-  if (productName !== undefined && !String(productName).trim()) {
-    res.status(400).json({ error: 'productName cannot be empty' });
+  if (applicationDate !== undefined && !isRealDate(applicationDate)) {
+    res.status(400).json({ error: 'applicationDate must be a valid date' });
     return;
+  }
+  let productNameVal: string | undefined;
+  if (productName !== undefined) {
+    const r = textField(productName, { ...PRODUCT_NAME, required: true });
+    if (!r.ok) {
+      // Keep the existing PATCH wording for blank/missing.
+      res.status(400).json({ error: r.error.endsWith('is required') ? 'productName cannot be empty' : r.error });
+      return;
+    }
+    productNameVal = r.value as string;
   }
   if (amendmentType !== undefined && !AMENDMENT_TYPES.includes(amendmentType as AmendmentType)) {
     res.status(400).json({ error: `amendmentType must be one of: ${AMENDMENT_TYPES.join(', ')}` });
@@ -253,21 +308,44 @@ amendmentsFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: R
       res.status(400).json({ error: 'bedIds must be a non-empty array' });
       return;
     }
+    if (bedIds.length > MAX_BED_IDS) {
+      res.status(400).json({ error: `bedIds can include at most ${MAX_BED_IDS} beds` });
+      return;
+    }
     if ((bedIds as unknown[]).some((id) => !isNumericId(String(id)))) {
       res.status(400).json({ error: 'bedIds must contain positive integers' });
       return;
     }
   }
 
-  // Build scalar updates (no updated_at — column does not exist)
+  // Build scalar updates (only fields present in the body; null clears).
+  // No updated_at — column does not exist.
   const updates: Record<string, unknown> = {};
   if (applicationDate  !== undefined) updates['application_date']  = applicationDate;
-  if (productName      !== undefined) updates['product_name']      = String(productName).trim();
+  if (productNameVal   !== undefined) updates['product_name']      = productNameVal;
   if (amendmentType    !== undefined) updates['amendment_type']    = amendmentType;
-  if (amount           !== undefined) updates['amount']            = amount !== null && isFinite(Number(amount)) ? Number(amount) : null;
-  if (amountUnit       !== undefined) updates['amount_unit']       = amountUnit       !== null ? String(amountUnit)       : null;
-  if (applicationMethod !== undefined) updates['application_method'] = applicationMethod !== null ? String(applicationMethod) : null;
-  if (notes            !== undefined) updates['notes']             = notes            !== null ? String(notes)            : null;
+  if (amount !== undefined) {
+    const r = numberField(amount, AMOUNT);
+    if (!r.ok) {
+      res.status(400).json({ error: r.error });
+      return;
+    }
+    updates['amount'] = r.value;
+  }
+  const textCols: Array<[unknown, { field: string; max: number }, string]> = [
+    [amountUnit, AMOUNT_UNIT, 'amount_unit'],
+    [applicationMethod, APP_METHOD, 'application_method'],
+    [notes, NOTES, 'notes'],
+  ];
+  for (const [value, opts, col] of textCols) {
+    if (value === undefined) continue;
+    const r = textField(value, opts);
+    if (!r.ok) {
+      res.status(400).json({ error: r.error });
+      return;
+    }
+    updates[col] = r.value;
+  }
 
   const hasBedIds = bedIds !== undefined;
 
@@ -350,7 +428,7 @@ amendmentsFlatRouter.patch('/:id', requireSupporter, async (req: Request, res: R
 
 // ── DELETE /api/amendments/:id ────────────────────────────────────────────────
 
-amendmentsFlatRouter.delete('/:id', async (req: Request, res: Response): Promise<void> => {
+amendmentsFlatRouter.delete('/:id', writeLimiter, async (req: Request, res: Response): Promise<void> => {
   const accountId   = req.session!.account!.id;
   const amendmentId = req.params.id as string;
 

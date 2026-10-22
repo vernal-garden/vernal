@@ -93,6 +93,16 @@ describe('GET /api/admin/accounts', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.some((a: { email: string }) => a.email === ADMIN_EMAIL)).toBe(true);
   });
+
+  it('repeated ?email= → 400, not 500', async () => {
+    const res = await adminAgent.get('/api/admin/accounts?email=a&email=b');
+    expect(res.status).toBe(400);
+  });
+
+  it('repeated ?q= on seed search → 400', async () => {
+    const res = await adminAgent.get('/api/admin/seeds?q=a&q=b');
+    expect(res.status).toBe(400);
+  });
 });
 
 // ── GET /api/admin/accounts/:id ───────────────────────────────────────────────
@@ -783,5 +793,17 @@ describe('Phase 37 admin API', () => {
       expect(nightly.state).toBe('failed');
       expect(nightly.errorMsg).toBe('boom');
     });
+  });
+});
+
+describe('admin search bounds', () => {
+  it('rejects q or email over 100 characters', async () => {
+    const long = 'a'.repeat(101);
+    const seeds = await adminAgent.get(`/api/admin/seeds?q=${long}`);
+    expect(seeds.status).toBe(400);
+    expect(seeds.body.error).toBe('q must be 100 characters or fewer');
+    const accounts = await adminAgent.get(`/api/admin/accounts?email=${long}`);
+    expect(accounts.status).toBe(400);
+    expect(accounts.body.error).toBe('email must be 100 characters or fewer');
   });
 });

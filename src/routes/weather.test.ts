@@ -4,6 +4,7 @@ import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
 import { LOCATION_NOT_SET } from '../lib/constants';
+import { decryptFromBuffer } from '../lib/crypto';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -270,13 +271,13 @@ describe('POST /api/weather/connections', () => {
     const res = await supporterAgent.post('/api/weather/connections').send({
       provider: 'pws_tempest',
       credentials: { accessToken: 'secret-token-123' },
-      stationId: 'station-1',
+      stationId: '101',
     });
 
     expect(res.status).toBe(201);
     expect(res.body).not.toHaveProperty('credentials');
     expect(res.body.provider).toBe('pws_tempest');
-    expect(res.body.stationId).toBe('station-1');
+    expect(res.body.stationId).toBe('101');
     expect(res.body.isPrimary).toBe(true);
 
     const { rows } = await pool.query('SELECT credentials FROM weather_connections WHERE id = $1', [res.body.id]);
@@ -304,7 +305,7 @@ describe('POST /api/weather/connections', () => {
     const res = await supporterAgent.post('/api/weather/connections').send({
       provider: 'pws_tempest',
       credentials: {},
-      stationId: 'station-2',
+      stationId: '102',
     });
     expect(res.status).toBe(400);
   });
@@ -317,16 +318,67 @@ describe('POST /api/weather/connections', () => {
     expect(res.status).toBe(400);
   });
 
+  it('400 when stationId is not 1–12 digits', async () => {
+    for (const bad of ['12ab', '1234567890123', '../x']) {
+      const res = await supporterAgent.post('/api/weather/connections').send({
+        provider: 'pws_tempest',
+        credentials: { accessToken: 'tok' },
+        stationId: bad,
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('stationId must be 1–12 digits');
+    }
+  });
+
+  it('400 when accessToken has whitespace or is too long', async () => {
+    for (const bad of ['has space', 'a'.repeat(201)]) {
+      const res = await supporterAgent.post('/api/weather/connections').send({
+        provider: 'pws_tempest',
+        credentials: { accessToken: bad },
+        stationId: '110',
+      });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('credentials.accessToken is invalid');
+    }
+  });
+
+  it('trims stationId and accessToken and stores the trimmed values', async () => {
+    const res = await supporterAgent.post('/api/weather/connections').send({
+      provider: 'pws_tempest',
+      credentials: { accessToken: '  padded-token \n' },
+      stationId: ' 123 ',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.stationId).toBe('123');
+    const { rows } = await pool.query('SELECT station_id, credentials FROM weather_connections WHERE id = $1', [res.body.id]);
+    expect(rows[0].station_id).toBe('123');
+    const stored = JSON.parse(decryptFromBuffer(Buffer.from(rows[0].credentials.enc, 'base64')));
+    expect(stored).toEqual({ accessToken: 'padded-token' });
+    await pool.query('DELETE FROM weather_connections WHERE id = $1', [res.body.id]);
+  });
+
+  it('stores only accessToken, dropping extra credential keys', async () => {
+    const res = await supporterAgent.post('/api/weather/connections').send({
+      provider: 'pws_tempest',
+      credentials: { accessToken: 'only-this', extra: 'junk', nested: { a: 1 } },
+      stationId: '111',
+    });
+    expect(res.status).toBe(201);
+    const { rows } = await pool.query('SELECT credentials FROM weather_connections WHERE id = $1', [res.body.id]);
+    const stored = JSON.parse(decryptFromBuffer(Buffer.from(rows[0].credentials.enc, 'base64')));
+    expect(stored).toEqual({ accessToken: 'only-this' });
+  });
+
   it('demotes an existing primary when a new default-primary connection is created', async () => {
     const first = await supporterAgent.post('/api/weather/connections').send({
       provider: 'pws_tempest',
       credentials: { accessToken: 'tok-a' },
-      stationId: 'station-a',
+      stationId: '103',
     });
     const second = await supporterAgent.post('/api/weather/connections').send({
       provider: 'pws_tempest',
       credentials: { accessToken: 'tok-b' },
-      stationId: 'station-b',
+      stationId: '104',
     });
     expect(second.body.isPrimary).toBe(true);
 
@@ -355,7 +407,7 @@ describe('DELETE /api/weather/connections/:id', () => {
     const created = await otherAgent.post('/api/weather/connections').send({
       provider: 'pws_tempest',
       credentials: { accessToken: 'tok-other' },
-      stationId: 'station-other',
+      stationId: '105',
     });
     const id = created.body.id;
 
@@ -379,7 +431,7 @@ describe('GET /api/weather/current', () => {
     const created = await supporterAgent.post('/api/weather/connections').send({
       provider: 'pws_tempest',
       credentials: { accessToken: 'live-token' },
-      stationId: 'live-station',
+      stationId: '106',
     });
     expect(created.status).toBe(201);
 
@@ -481,7 +533,7 @@ describe('POST /api/weather/test-connection', () => {
     const res = await supporterAgent.post('/api/weather/test-connection').send({
       provider: 'pws_tempest',
       credentials: { accessToken: 'tok' },
-      stationId: 'station-x',
+      stationId: '107',
     });
 
     expect(res.status).toBe(200);
@@ -502,7 +554,7 @@ describe('POST /api/weather/test-connection', () => {
     const res = await supporterAgent.post('/api/weather/test-connection').send({
       provider: 'pws_tempest',
       credentials: { accessToken: 'bad-tok' },
-      stationId: 'station-y',
+      stationId: '108',
     });
 
     expect(res.status).toBe(200);
@@ -513,11 +565,59 @@ describe('POST /api/weather/test-connection', () => {
     expect(after.rows[0].n).toBe(before.rows[0].n);
   });
 
+  it('400 on an invalid stationId or accessToken, without calling upstream', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const badStation = await supporterAgent.post('/api/weather/test-connection').send({
+      provider: 'pws_tempest',
+      credentials: { accessToken: 'tok' },
+      stationId: '12ab',
+    });
+    expect(badStation.status).toBe(400);
+    expect(badStation.body.error).toBe('stationId must be 1–12 digits');
+
+    const badToken = await supporterAgent.post('/api/weather/test-connection').send({
+      provider: 'pws_tempest',
+      credentials: { accessToken: 'has space' },
+      stationId: '123',
+    });
+    expect(badToken.status).toBe(400);
+    expect(badToken.body.error).toBe('credentials.accessToken is invalid');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('400 for a non-tempest provider', async () => {
     const res = await supporterAgent.post('/api/weather/test-connection').send({
       provider: 'public_weather',
       credentials: {},
     });
     expect(res.status).toBe(400);
+  });
+});
+
+// ── Row cap (5 connections per account) ──────────────────────────────────────
+
+describe('POST /api/weather/connections — row cap', () => {
+  it('allows the 5th connection and refuses the 6th', async () => {
+    const id = await createUser('weather-cap@example.com', 'supporter');
+    const agent = await loginAgent('weather-cap@example.com');
+    await pool.query(
+      `INSERT INTO weather_connections (account_id, provider, station_id)
+       SELECT $1, 'pws_tempest', 'seeded-' || i FROM generate_series(1, 4) AS i`,
+      [id],
+    );
+    const body = { provider: 'pws_tempest', credentials: { accessToken: 'tok' }, stationId: '109' };
+
+    expect((await agent.post('/api/weather/connections').send(body)).status).toBe(201);
+    const res = await agent.post('/api/weather/connections').send(body);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('You can have up to 5 weather connections.');
+
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM weather_connections WHERE account_id = $1',
+      [id],
+    );
+    expect(rows[0].n).toBe(5);
   });
 });

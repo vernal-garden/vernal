@@ -1,7 +1,7 @@
 import { Router, type Response } from 'express';
 import { db } from '../lib/db';
 import { requireAdmin } from '../middleware/auth';
-import { isNumericId } from '../lib/validation';
+import { escapeLike, isNumericId } from '../lib/validation';
 import { logger } from '../lib/logger';
 import { EVENT_KEYS, MICRO_FEEDBACK_TRIGGERS } from '../lib/eventKeys';
 import { getRequestMetrics } from '../lib/requestMetrics';
@@ -52,12 +52,20 @@ router.get('/stats', async (_req, res) => {
 
 router.get('/accounts', async (req, res) => {
   try {
-    const email = req.query.email as string | undefined;
+    if (req.query.email !== undefined && typeof req.query.email !== 'string') {
+      res.status(400).json({ error: 'email must be given once' });
+      return;
+    }
+    const email = queryString(req.query.email);
 
     if (email) {
+      if (email.length > 100) {
+        res.status(400).json({ error: 'email must be 100 characters or fewer' });
+        return;
+      }
       const result = await db.query(
-        `SELECT ${ACCOUNT_LIST_COLUMNS} FROM accounts WHERE email ILIKE $1 ORDER BY created_at DESC LIMIT 20`,
-        [`%${email}%`],
+        `SELECT ${ACCOUNT_LIST_COLUMNS} FROM accounts WHERE email ILIKE $1 ESCAPE '\\' ORDER BY created_at DESC LIMIT 20`,
+        [`%${escapeLike(email)}%`],
       );
       res.json({ data: result.rows });
       return;
@@ -150,10 +158,6 @@ function parsePage(value: unknown): number {
 // Whitelist lookup that ignores inherited keys ('constructor', 'toString').
 function lookup<T>(map: Record<string, T>, key: string | undefined): T | undefined {
   return key !== undefined && Object.hasOwn(map, key) ? map[key] : undefined;
-}
-
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
 function sendInvalidId(res: Response) {
@@ -281,6 +285,10 @@ const SEED_SORTS: Record<string, string> = {
 
 router.get('/seeds', async (req, res) => {
   try {
+    if (req.query.q !== undefined && typeof req.query.q !== 'string') {
+      res.status(400).json({ error: 'q must be given once' });
+      return;
+    }
     const q = queryString(req.query.q)?.trim();
     const source = queryString(req.query.source);
     const hasCorrections = queryString(req.query.hasCorrections) === 'true';
@@ -290,9 +298,15 @@ router.get('/seeds', async (req, res) => {
 
     const where: string[] = [];
     const params: unknown[] = [];
+    if (q && q.length > 100) {
+      res.status(400).json({ error: 'q must be 100 characters or fewer' });
+      return;
+    }
     if (q) {
       params.push(`%${escapeLike(q)}%`);
-      where.push(`(s.common_name ILIKE $${params.length} OR s.scientific_name ILIKE $${params.length})`);
+      where.push(
+        `(s.common_name ILIKE $${params.length} ESCAPE '\\' OR s.scientific_name ILIKE $${params.length} ESCAPE '\\')`,
+      );
     }
     if (source === 'community') where.push(`s.source = 'community'`);
     else if (source === 'cambium') where.push(`s.source IN ('openfarm', 'editorial')`);

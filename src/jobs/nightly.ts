@@ -269,6 +269,20 @@ export async function purgeStripeEvents(): Promise<{ affected: number }> {
   return { affected: result.rowCount ?? 0 };
 }
 
+// Usage events are behavioural data; keep 180 days. Deleted in batches so one
+// night's backlog doesn't hold a long lock.
+export async function purgeOldUsageEvents(): Promise<{ affected: number }> {
+  let affected = 0;
+  for (;;) {
+    const result = await db.query(
+      `DELETE FROM usage_events WHERE id IN (
+         SELECT id FROM usage_events WHERE created_at < NOW() - INTERVAL '180 days' LIMIT 10000)`,
+    );
+    affected += result.rowCount ?? 0;
+    if ((result.rowCount ?? 0) < 10000) return { affected };
+  }
+}
+
 // Deletes accounts 30 days past their scheduled deletion. Stripe is torn down
 // first; if that fails the account is kept for tomorrow. Its R2 folders (every
 // seed, garden and harvest it owns, and its exports) are queued in the same
@@ -411,6 +425,7 @@ export async function runNightlyJob(): Promise<void> {
     ['purgeExpiredGuests', purgeExpiredGuests],
     ['purgeReadNotifications', purgeReadNotifications],
     ['purgeStripeEvents', purgeStripeEvents],
+    ['purgeOldUsageEvents', purgeOldUsageEvents],
     ['purgeScheduledAccounts', purgeScheduledAccounts],
     ['checkSubscriptionDowngrades', checkSubscriptionDowngrades],
     ['purgeExpiredExports', purgeExpiredExports],

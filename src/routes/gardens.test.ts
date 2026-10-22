@@ -800,3 +800,252 @@ describe('Garden list activePlantingCount', () => {
     expect(found.activePlantingCount).toBe(4);
   });
 });
+
+// ── Text caps ────────────────────────────────────────────────────────────────
+
+describe('Gardens — text caps', () => {
+  let agent: ReturnType<typeof request.agent>;
+
+  beforeAll(async () => {
+    await createUser('garden-caps@example.com');
+    agent = await loginAgent('garden-caps@example.com');
+  });
+
+  it('POST: zone, description and zoneLocationLabel pass at max and fail at max+1', async () => {
+    const cases: Array<[string, number]> = [['zone', 10], ['description', 2000], ['zoneLocationLabel', 80]];
+    for (const [field, max] of cases) {
+      const ok = await agent.post('/api/gardens').send({ ...BASE_GARDEN, [field]: 'a'.repeat(max) });
+      expect(ok.status).toBe(201);
+      const res = await agent.post('/api/gardens').send({ ...BASE_GARDEN, [field]: 'a'.repeat(max + 1) });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(`${field} must be ${max} characters or fewer`);
+    }
+  });
+
+  it('POST: zone is still required', async () => {
+    const res = await agent.post('/api/gardens').send({ ...BASE_GARDEN, zone: '  ' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('zone is required');
+  });
+
+  it('PATCH: capped, present-only, null clears description', async () => {
+    const id = (await agent.post('/api/gardens').send({ ...BASE_GARDEN, description: 'hello' })).body.id;
+    const url = `/api/gardens/${id}`;
+    expect((await agent.patch(url).send({ zone: 'a'.repeat(11) })).status).toBe(400);
+    expect((await agent.patch(url).send({ description: 'a'.repeat(2001) })).status).toBe(400);
+    expect((await agent.patch(url).send({ zoneLocationLabel: 'a'.repeat(81) })).status).toBe(400);
+    expect((await agent.patch(url).send({ zone: ' ' })).status).toBe(400);
+    const ok = await agent.patch(url).send({ description: null, zone: 'a'.repeat(10) });
+    expect(ok.status).toBe(200);
+    expect(ok.body.description).toBeNull();
+    expect(ok.body.zone).toBe('a'.repeat(10));
+  });
+});
+
+// ── Row caps and geometry bounds ─────────────────────────────────────────────
+
+async function seedGardens(ownerId: number, n: number) {
+  await pool.query(
+    `INSERT INTO gardens (owner_id, name, style, zone, growing_method)
+     SELECT $1, 'Seeded ' || i, 'grid', '7b', 'in_ground' FROM generate_series(1, $2::int) AS i`,
+    [ownerId, n],
+  );
+}
+
+async function seedBeds(gardenId: string, season: number, n: number) {
+  await pool.query(
+    `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows)
+     SELECT $1, $2, 'grid', 'Seeded ' || i, 0, 0, 1, 1 FROM generate_series(1, $3::int) AS i`,
+    [gardenId, season, n],
+  );
+}
+
+async function bedCount(gardenId: string): Promise<number> {
+  const { rows } = await pool.query<{ n: number }>(
+    'SELECT COUNT(*)::int AS n FROM beds WHERE garden_id = $1',
+    [gardenId],
+  );
+  return rows[0].n;
+}
+
+const GRID_BED = { type: 'grid', label: 'Capped', grid: { x: 0, y: 0, cols: 2, rows: 2 } };
+const SQUARE = [0, 0, 10, 0, 10, 10, 0, 10];
+
+describe('Gardens — row cap (50 per account)', () => {
+  it('allows the 50th garden and refuses the 51st', async () => {
+    const id = await createUser('garden-cap@example.com');
+    const agent = await loginAgent('garden-cap@example.com');
+    await seedGardens(id, 49);
+
+    const ok = await agent.post('/api/gardens').send(BASE_GARDEN);
+    expect(ok.status).toBe(201);
+
+    const res = await agent.post('/api/gardens').send(BASE_GARDEN);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('You can have up to 50 gardens.');
+  });
+
+  it('two parallel creates at 49 → exactly one 201 and one 409', async () => {
+    const id = await createUser('garden-cap-race@example.com');
+    const agent = await loginAgent('garden-cap-race@example.com');
+    await seedGardens(id, 49);
+
+    const results = await Promise.all([
+      agent.post('/api/gardens').send(BASE_GARDEN),
+      agent.post('/api/gardens').send(BASE_GARDEN),
+    ]);
+    expect(results.map(r => r.status).sort()).toEqual([201, 409]);
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT COUNT(*)::int AS n FROM gardens WHERE owner_id = $1',
+      [id],
+    );
+    expect(rows[0].n).toBe(50);
+  });
+
+  it('guest rule still applies (one garden, 403)', async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    expect((await guest.post('/api/gardens').send(BASE_GARDEN)).status).toBe(201);
+    const res = await guest.post('/api/gardens').send(BASE_GARDEN);
+    expect(res.status).toBe(403);
+    expect(res.body.guest_limit).toBe(true);
+  });
+});
+
+describe('Beds — row cap (200 per garden)', () => {
+  const S = currentSeason();
+  let agent: ReturnType<typeof request.agent>;
+
+  beforeAll(async () => {
+    await createUser('bed-cap@example.com');
+    agent = await loginAgent('bed-cap@example.com');
+  });
+
+  it('allows the 200th bed (counting all seasons) and refuses the 201st', async () => {
+    const gardenId = (await agent.post('/api/gardens').send(BASE_GARDEN)).body.id;
+    await seedBeds(gardenId, S - 1, 100);
+    await seedBeds(gardenId, S, 99);
+
+    const ok = await agent.post(`/api/gardens/${gardenId}/beds`).send(GRID_BED);
+    expect(ok.status).toBe(201);
+
+    const res = await agent.post(`/api/gardens/${gardenId}/beds`).send({
+      type: 'freeform', label: 'Over', freeform: { points: SQUARE, closed: true },
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('A garden can have up to 200 beds.');
+    expect(await bedCount(gardenId)).toBe(200);
+  });
+
+  it('two parallel creates at 199 → exactly one 201 and one 409', async () => {
+    const gardenId = (await agent.post('/api/gardens').send(BASE_GARDEN)).body.id;
+    await seedBeds(gardenId, S, 199);
+
+    const results = await Promise.all([
+      agent.post(`/api/gardens/${gardenId}/beds`).send(GRID_BED),
+      agent.post(`/api/gardens/${gardenId}/beds`).send(GRID_BED),
+    ]);
+    expect(results.map(r => r.status).sort()).toEqual([201, 409]);
+    expect(await bedCount(gardenId)).toBe(200);
+  });
+
+  it('carry-forward that would pass 200 → 409 and copies nothing', async () => {
+    const gardenId = (await agent.post('/api/gardens').send(BASE_GARDEN)).body.id;
+    await seedBeds(gardenId, S - 2, 197);
+    await seedBeds(gardenId, S - 1, 2);
+
+    const res = await agent.post(`/api/gardens/${gardenId}/beds/carry-forward`).send({ fromSeason: S - 1 });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('A garden can have up to 200 beds.');
+    expect(await bedCount(gardenId)).toBe(199);
+  });
+
+  it('carry-forward that lands exactly on 200 → 201', async () => {
+    const gardenId = (await agent.post('/api/gardens').send(BASE_GARDEN)).body.id;
+    await seedBeds(gardenId, S - 2, 196);
+    await seedBeds(gardenId, S - 1, 2);
+
+    const res = await agent.post(`/api/gardens/${gardenId}/beds/carry-forward`).send({ fromSeason: S - 1 });
+    expect(res.status).toBe(201);
+    expect(res.body.data).toHaveLength(2);
+    expect(await bedCount(gardenId)).toBe(200);
+  });
+});
+
+describe('Beds — geometry bounds', () => {
+  let agent: ReturnType<typeof request.agent>;
+  let gardenId: string;
+
+  beforeAll(async () => {
+    await createUser('bed-bounds@example.com');
+    agent = await loginAgent('bed-bounds@example.com');
+    gardenId = (await agent.post('/api/gardens').send(BASE_GARDEN)).body.id;
+  });
+
+  const post = (body: Record<string, unknown>) => agent.post(`/api/gardens/${gardenId}/beds`).send(body);
+
+  it('grid cols/rows: 100 ok, 101 → 400', async () => {
+    expect((await post({ type: 'grid', grid: { x: 0, y: 0, cols: 100, rows: 100 } })).status).toBe(201);
+    const cols = await post({ type: 'grid', grid: { x: 0, y: 0, cols: 101, rows: 1 } });
+    expect(cols.status).toBe(400);
+    expect(cols.body.error).toBe('grid.cols must be between 1 and 100');
+    const rows = await post({ type: 'grid', grid: { x: 0, y: 0, cols: 1, rows: 101 } });
+    expect(rows.status).toBe(400);
+    expect(rows.body.error).toBe('grid.rows must be between 1 and 100');
+  });
+
+  it('grid x/y: ±100000 ok, 100001 → 400', async () => {
+    expect((await post({ type: 'grid', grid: { x: -100000, y: 100000, cols: 1, rows: 1 } })).status).toBe(201);
+    for (const xy of [{ x: 100001, y: 0 }, { x: 0, y: -100001 }]) {
+      const res = await post({ type: 'grid', grid: { ...xy, cols: 1, rows: 1 } });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('grid.x and grid.y must be between -100000 and 100000');
+    }
+  });
+
+  it('freeform points: ±100000 ok, 1e6 → 400', async () => {
+    const ok = await post({ type: 'freeform', freeform: { points: [-100000, 0, 100000, 0, 100000, 10, 0, 10], closed: true } });
+    expect(ok.status).toBe(201);
+    const res = await post({ type: 'freeform', freeform: { points: [0, 0, 1e6, 0, 10, 10, 0, 10], closed: true } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('freeform.points must be between -100000 and 100000');
+  });
+
+  it('PATCH applies the same bounds', async () => {
+    const bed = await post({ type: 'grid', grid: { x: 0, y: 0, cols: 2, rows: 2 } });
+    const url = `/api/gardens/${gardenId}/beds/${bed.body.id}`;
+    expect((await agent.patch(url).send({ grid: { x: 0, y: 0, cols: 101, rows: 2 } })).status).toBe(400);
+    expect((await agent.patch(url).send({ grid: { x: 100001, y: 0, cols: 2, rows: 2 } })).status).toBe(400);
+    const ff = await agent.patch(url).send({ type: 'freeform', freeform: { points: [0, 0, 1e6, 0, 10, 10, 0, 10], closed: true } });
+    expect(ff.status).toBe(400);
+  });
+
+  it('PATCH lets a legacy oversized grid bed move, but not grow past 100', async () => {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows)
+       VALUES ($1, $2, 'grid', 'Legacy', 0, 0, 120, 5)
+       RETURNING id::text`,
+      [gardenId, new Date().getFullYear()],
+    );
+    const url = `/api/gardens/${gardenId}/beds/${rows[0].id}`;
+    const moved = await agent.patch(url).send({ grid: { x: 7, y: 0, cols: 120, rows: 5 } });
+    expect(moved.status).toBe(200);
+    expect(moved.body.grid).toMatchObject({ x: 7, cols: 120 });
+    const grown = await agent.patch(url).send({ grid: { x: 7, y: 0, cols: 121, rows: 5 } });
+    expect(grown.status).toBe(400);
+    expect(grown.body.error).toBe('grid.cols must be between 1 and 100');
+    const moveFar = await agent.patch(url).send({ grid: { x: 100001, y: 0, cols: 120, rows: 5 } });
+    expect(moveFar.status).toBe(400);
+
+    const { rows: small } = await pool.query<{ id: string }>(
+      `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows)
+       VALUES ($1, $2, 'grid', 'Small', 0, 0, 10, 10)
+       RETURNING id::text`,
+      [gardenId, new Date().getFullYear()],
+    );
+    const widen = await agent
+      .patch(`/api/gardens/${gardenId}/beds/${small[0].id}`)
+      .send({ grid: { x: 0, y: 0, cols: 120, rows: 10 } });
+    expect(widen.status).toBe(400);
+  });
+});
