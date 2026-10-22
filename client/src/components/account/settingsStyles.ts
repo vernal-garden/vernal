@@ -106,13 +106,4 @@ export const successTextSt: React.CSSProperties = {
   color: 'var(--c-success)',
 };
 
-export function apiErrorMessage(err: unknown, fallback: string): string {
-  if (err && typeof err === 'object' && 'body' in err) {
-    const body = (err as { body?: unknown }).body;
-    if (body && typeof body === 'object' && 'error' in body) {
-      const message = (body as { error?: unknown }).error;
-      if (typeof message === 'string') return message;
-    }
-  }
-  return fallback;
-}
+export { apiErrorMessage } from '../../lib/api';

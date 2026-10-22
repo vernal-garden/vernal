@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { get, post, del, ApiError } from '../../lib/api';
 import { useSignOut } from '../../hooks/useSignOut';
+import { useAuth } from '../../context/AuthContext';
 import ResponsiveDialog from '../shell/ResponsiveDialog';
 import type { AccountData } from './types';
 import {
@@ -259,18 +260,28 @@ export default function DataPrivacySettings({ account, onUpdate }: Props) {
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const signOut = useSignOut();
+  const { account: authAccount, refetch } = useAuth();
+  // Prefer the session's copy: the pending-deletion banner cancels through it,
+  // and this page's copy (from GET /api/me) would otherwise go stale.
+  const deletionScheduledAt = authAccount ? authAccount.deletionScheduledAt : account.deletionScheduledAt;
 
   async function handleCancelDeletion() {
     setError(null);
     setCancelling(true);
     try {
       await post('/api/me/cancel-deletion');
-      onUpdate({ deletionScheduledAt: null });
     } catch (err) {
       setError(apiErrorMessage(err, 'Could not cancel deletion.'));
-    } finally {
       setCancelling(false);
+      return;
     }
+    onUpdate({ deletionScheduledAt: null });
+    try {
+      await refetch();
+    } catch {
+      // The cancel succeeded; the next session refetch will catch up.
+    }
+    setCancelling(false);
   }
 
   return (
@@ -285,7 +296,7 @@ export default function DataPrivacySettings({ account, onUpdate }: Props) {
         <div style={cardSt}>
           <h3 style={cardTitleSt}>Delete account</h3>
 
-          {account.deletionScheduledAt ? (
+          {deletionScheduledAt ? (
             <>
               <p style={bodyTextSt}>
                 Your account is scheduled for deletion. This will happen 30 days after you initiated the request.

@@ -251,7 +251,7 @@ export default function MobileCanvasControls({
       <div style={{
         position: 'fixed',
         right: 'var(--sp-4)',
-        bottom: 'calc(var(--shell-bottom, 0px) + var(--sp-4))',
+        bottom: 'calc(var(--shell-bottom, 0px) + var(--sp-4) + var(--deletion-banner-h, 0px))',
         zIndex: 10,
         display: 'flex',
         flexDirection: 'column',

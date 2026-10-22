@@ -36,7 +36,7 @@ export default function BedManager({ beds, plantingsByBedId, onClose, onRename, 
 
   return (
     <div style={{
-      position: 'fixed', left: 0, top: 'var(--shell-top, 0px)', bottom: 0, width: 300,
+      position: 'fixed', left: 0, top: 'var(--shell-top, 0px)', bottom: 'var(--deletion-banner-h, 0px)', width: 300,
       display: 'flex', flexDirection: 'column',
       background: '#faf7f2', borderRight: '1px solid #d8ceba',
       boxShadow: '4px 0 32px rgba(20,40,20,0.12)',

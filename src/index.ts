@@ -30,6 +30,7 @@ import microFeedbackRouter from './routes/microFeedback';
 import metricsRouter from './routes/metrics';
 import notificationsRouter from './routes/notifications';
 import { sessionMiddleware } from './middleware/session';
+import { blockWhilePendingDeletion } from './middleware/pendingDeletion';
 import { dbBackpressure } from './middleware/dbBackpressure';
 import { apiLimiters } from './middleware/rateLimiters';
 import { requestMetricsMiddleware } from './lib/requestMetrics';
@@ -99,6 +100,7 @@ app.use(cookieParser());
 app.use('/api', apiLimiters);
 app.use('/api', dbBackpressure);
 app.use(sessionMiddleware);
+app.use('/api', blockWhilePendingDeletion);
 initPassport();
 app.use(passport.initialize());
 

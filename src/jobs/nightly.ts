@@ -1,5 +1,5 @@
-import { jobDb as db } from '../lib/db'; // long-running work: job pool, 5-min statement cap
-import { COMPANION_CONFIDENCE_THRESHOLD } from '../services/cambium';
+import { jobDb as db, db as webDb } from '../lib/db'; // long-running work: job pool, 5-min statement cap
+import { COMPANION_CONFIDENCE_THRESHOLD, deleteAccountRatings } from '../services/cambium';
 import { gardenThumbnailFolder, seedPhotoFolder, exportFolder } from '../lib/r2';
 import { queueR2Deletions, gardenFiles, drainR2Deletions, type R2Deletion } from '../lib/r2Cleanup';
 import { logger } from '../lib/logger';
@@ -158,7 +158,8 @@ async function purgeExpiredGuestBatch(sessionIds: string[]): Promise<number> {
 
 // Deletes expired, unmigrated guest sessions (queueing their R2 thumbnails), then
 // guest sessions over 2 days old that never created anything — those are
-// mostly bots and bounced visitors, and own nothing in R2. Both passes work in
+// mostly bots and bounced visitors, and own nothing in R2 — then account
+// sessions over 30 days past expiry that own no guest data. All passes work in
 // batches so a flood of junk rows can't exhaust memory. Also deletes expired
 // password reset and email verification tokens, and email-change and
 // email-revert tokens over 30 days old.
@@ -223,6 +224,25 @@ export async function purgeExpiredGuests(
       client.release();
     }
     if (candidates < batchSize) break;
+  }
+
+  // Account sessions 30 days past expiry (sign-outs, revocations, lapsed
+  // logins). A row that still owns unmerged guest gardens or seeds is kept:
+  // deleting it would cascade them away without queueing their R2 files.
+  for (;;) {
+    const result = await db.query(
+      `DELETE FROM guest_sessions gs
+        WHERE gs.id IN (
+          SELECT gs2.id FROM guest_sessions gs2
+           WHERE gs2.account_id IS NOT NULL
+             AND gs2.expires_at < NOW() - INTERVAL '30 days'
+             AND NOT EXISTS (SELECT 1 FROM gardens g WHERE g.guest_session_id = gs2.id)
+             AND NOT EXISTS (SELECT 1 FROM seeds s WHERE s.guest_session_id = gs2.id)
+           LIMIT $1)`,
+      [batchSize],
+    );
+    guestsAffected += result.rowCount ?? 0;
+    if ((result.rowCount ?? 0) < batchSize) break;
   }
 
   const tokensResult = await db.query(
@@ -344,6 +364,11 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
         { bucket: 'exports', path: exportFolder(id), isPrefix: true },
       ];
       await queueR2Deletions(client, files);
+      // These keep the row with user_id NULL (ON DELETE SET NULL), and the
+      // ratings have no FK at all, so they are deleted here.
+      await client.query('DELETE FROM feedback_submissions WHERE user_id = $1', [id]);
+      await client.query('DELETE FROM usage_events WHERE user_id = $1', [id]);
+      await deleteAccountRatings(client, id);
       // Cascades the sessions' guest gardens and seeds.
       await client.query('DELETE FROM guest_sessions WHERE account_id = $1', [id]);
       await client.query('DELETE FROM accounts WHERE id = $1', [id]);
@@ -409,7 +434,51 @@ export async function purgeExpiredExports(): Promise<{ affected: number }> {
   }
 }
 
+// Session-level advisory lock so two runs (an overlap, or a second process)
+// never purge at once. Arbitrary constant; only this job uses it. Needs a
+// direct Postgres connection: through a transaction-mode pooler (Neon
+// -pooler) lock and unlock can hit different backends and the lock sticks.
+export const NIGHTLY_LOCK_KEY = 7_302_118;
+
+// The lock client comes from the web pool: holding it for the whole run would
+// take one of the job pool's three connections. It sits idle, so the web
+// statement cap never applies. If the lock connection drops mid-run the lock
+// is lost and the run continues unguarded, which is acceptable for a
+// once-daily job.
 export async function runNightlyJob(): Promise<void> {
+  const lockClient = await webDb.connect();
+  // pg-pool removes its idle 'error' listener while a client is checked out; an
+  // unhandled 'error' here would otherwise take the whole process down.
+  const onLockLost = (err: Error) =>
+    console.error('[nightly] lock connection lost; run continues unlocked:', err.message);
+  lockClient.on('error', onLockLost);
+  let releaseErr: Error | undefined;
+  try {
+    const { rows } = await lockClient.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock($1) AS locked',
+      [NIGHTLY_LOCK_KEY],
+    );
+    if (!rows[0].locked) {
+      console.warn('[nightly] another run holds the lock; skipping');
+      return;
+    }
+    try {
+      await runNightlyTasks();
+    } finally {
+      try {
+        await lockClient.query('SELECT pg_advisory_unlock($1)', [NIGHTLY_LOCK_KEY]);
+      } catch (err) {
+        // Destroying the connection ends its session, which drops the lock.
+        releaseErr = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+  } finally {
+    lockClient.off('error', onLockLost);
+    lockClient.release(releaseErr);
+  }
+}
+
+async function runNightlyTasks(): Promise<void> {
   const started = new Date();
   const { rows } = await db.query<{ id: number }>(
     `INSERT INTO job_runs (job_key, status, started_at)

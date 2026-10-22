@@ -6,15 +6,18 @@ import { AuthProvider } from './context/AuthContext';
 import { CanvasPresenceProvider } from './context/CanvasPresenceContext';
 import MergePrompt from './components/MergePrompt';
 import FeedbackWidget from './components/FeedbackWidget';
+import PendingDeletionBanner from './components/PendingDeletionBanner';
 import router from './routes';
 
 interface UpdateBannerProps {
+  // Height of the pending-deletion banner, which sits below this one.
+  offset: number;
   onReload: () => void;
   // Reports the banner's rendered height so fixed-bottom chrome can sit above it.
   onHeightChange: (height: number) => void;
 }
 
-function UpdateBanner({ onReload, onHeightChange }: UpdateBannerProps) {
+function UpdateBanner({ offset, onReload, onHeightChange }: UpdateBannerProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,7 +37,7 @@ function UpdateBanner({ onReload, onHeightChange }: UpdateBannerProps) {
       data-print-hide
       style={{
         position: 'fixed',
-        bottom: 'var(--shell-bottom, 0px)',
+        bottom: `calc(var(--shell-bottom, 0px) + ${offset}px)`,
         left: 0,
         right: 0,
         zIndex: 9999,
@@ -69,18 +72,30 @@ function UpdateBanner({ onReload, onHeightChange }: UpdateBannerProps) {
 export default function App() {
   const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW();
   const [bannerHeight, setBannerHeight] = useState(0);
+  const [deletionBannerHeight, setDeletionBannerHeight] = useState(0);
+
+  // Published on <html> so fixed-bottom controls and scroll padding inside the
+  // router can sit above the pending-deletion banner.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--deletion-banner-h', `${deletionBannerHeight}px`);
+  }, [deletionBannerHeight]);
 
   return (
     <Sentry.ErrorBoundary fallback={<p className="p-4 text-red-500">Something went wrong. Please refresh.</p>}>
       <AuthProvider>
         <CanvasPresenceProvider>
           <RouterProvider router={router} />
-          <FeedbackWidget bottomOffset={needRefresh ? bannerHeight : 0} />
+          <FeedbackWidget bottomOffset={deletionBannerHeight + (needRefresh ? bannerHeight : 0)} />
         </CanvasPresenceProvider>
         <MergePrompt />
+        <PendingDeletionBanner onHeightChange={setDeletionBannerHeight} />
       </AuthProvider>
       {needRefresh && (
-        <UpdateBanner onReload={() => updateServiceWorker(true)} onHeightChange={setBannerHeight} />
+        <UpdateBanner
+          offset={deletionBannerHeight}
+          onReload={() => updateServiceWorker(true)}
+          onHeightChange={setBannerHeight}
+        />
       )}
     </Sentry.ErrorBoundary>
   );

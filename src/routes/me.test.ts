@@ -572,6 +572,20 @@ describe('DELETE /api/me', () => {
     const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE account_id = $1', [id]);
     expect(rows).toHaveLength(0);
   });
+
+  it('signs out the account on every other device', async () => {
+    const id = await createUser('me-delete-devices@example.com');
+    const deviceA = await loginAgent('me-delete-devices@example.com');
+    const deviceB = await loginAgent('me-delete-devices@example.com');
+    expect((await deviceB.get('/api/me')).status).toBe(200);
+
+    expect((await deviceA.delete('/api/me')).status).toBe(204);
+
+    expect((await deviceB.get('/api/me')).status).toBe(401);
+    // B's row is expired, not deleted, so its guest data isn't cascaded away.
+    const { rows } = await pool.query('SELECT 1 FROM guest_sessions WHERE account_id = $1', [id]);
+    expect(rows).toHaveLength(1);
+  });
 });
 
 // ── Test 12: POST /cancel-deletion ────────────────────────────────────────────
@@ -606,6 +620,32 @@ describe('POST /api/me/cancel-deletion', () => {
     const res = await agent.post('/api/me/cancel-deletion');
     expect(res.status).toBe(200);
     expect(res.body.data.deletionScheduledAt).toBeNull();
+  });
+});
+
+describe('Pending deletion freezes the account', () => {
+  let agent: ReturnType<typeof request.agent>;
+
+  beforeAll(async () => {
+    const id = await createUser('me-frozen@example.com');
+    await pool.query('UPDATE accounts SET deletion_scheduled_at = NOW() WHERE id = $1', [id]);
+    agent = await loginAgent('me-frozen@example.com');
+  });
+
+  it('blocks a write with 409 and the deletion_scheduled code', async () => {
+    const res = await agent.patch('/api/me').send({ displayName: 'Frozen' });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('deletion_scheduled');
+  });
+
+  it('still allows reads', async () => {
+    expect((await agent.get('/api/me')).status).toBe(200);
+  });
+
+  it('allows writes again after cancelling', async () => {
+    expect((await agent.post('/api/me/cancel-deletion')).status).toBe(200);
+    const res = await agent.patch('/api/me').send({ displayName: 'Thawed' });
+    expect(res.status).toBe(200);
   });
 });
 
