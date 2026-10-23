@@ -151,7 +151,8 @@ describe('drainR2Deletions', () => {
   it('records a failure and keeps the row', async () => {
     deleteFromR2Mock.mockRejectedValueOnce(new Error('R2 down'));
     await queueR2Deletions(pool, [{ bucket: 'public', path: 'k', isPrefix: false }]);
-    await drainR2Deletions();
+    const result = await drainR2Deletions();
+    expect(result).toEqual({ affected: 0, failed: 0 });
     expect(await rows()).toMatchObject([{ attempts: 1, last_error: 'R2 down' }]);
     expect(logger.warn).toHaveBeenCalled();
     expect(logger.error).not.toHaveBeenCalled();
@@ -161,7 +162,8 @@ describe('drainR2Deletions', () => {
     await queueR2Deletions(pool, [{ bucket: 'public', path: 'k', isPrefix: false }]);
     await pool.query('UPDATE r2_deletions SET attempts = 6');
     deleteFromR2Mock.mockRejectedValueOnce(new Error('R2 down'));
-    await drainR2Deletions();
+    const result = await drainR2Deletions();
+    expect(result).toEqual({ affected: 0, failed: 1 });
     expect(await rows()).toMatchObject([{ attempts: 7 }]);
     expect(logger.error).toHaveBeenCalled();
   });

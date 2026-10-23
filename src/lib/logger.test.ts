@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import * as Sentry from '@sentry/node';
 import { logger } from './logger';
+
+vi.mock('@sentry/node', () => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
 
 describe('logger', () => {
   const originalNodeEnv = process.env.NODE_ENV;
@@ -7,6 +13,45 @@ describe('logger', () => {
   afterEach(() => {
     process.env.NODE_ENV = originalNodeEnv;
     vi.restoreAllMocks();
+    vi.mocked(Sentry.captureException).mockClear();
+    vi.mocked(Sentry.captureMessage).mockClear();
+  });
+
+  describe('Sentry reporting', () => {
+    it('error with an Error captures the exception with redacted extras', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const err = new Error('boom');
+
+      logger.error('GET /seeds failed', err, { accountId: 7, email: 'a@b.c' });
+
+      expect(Sentry.captureException).toHaveBeenCalledWith(err, {
+        extra: { message: 'GET /seeds failed', accountId: 7, email: '[REDACTED]' },
+      });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('error without an error captures a message at level error', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      logger.error('budget exceeded');
+
+      expect(Sentry.captureMessage).toHaveBeenCalledWith('budget exceeded', {
+        level: 'error',
+        extra: {},
+      });
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('warn and info capture nothing', () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      logger.warn('slow query', { ms: 900 });
+      logger.info('started');
+
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
   });
 
   describe('logger.info', () => {

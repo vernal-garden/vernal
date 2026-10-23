@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Router } from 'express';
 import Stripe from 'stripe';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { stripe } from '../lib/stripe';
 import { requireAuth } from '../middleware/auth';
 import { checkoutLimiter } from '../middleware/rateLimiters';
@@ -58,7 +59,7 @@ router.get('/', async (req, res) => {
       hasCustomer: !!row.stripe_customer_id,
     });
   } catch (err) {
-    console.error('GET /subscription error:', err);
+    logger.error('GET /subscription failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -155,7 +156,7 @@ router.post('/checkout', checkoutLimiter, async (req, res) => {
 
     res.json({ url: session.url });
   } catch (err) {
-    console.error('POST /subscription/checkout error:', err);
+    logger.error('POST /subscription/checkout failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -182,7 +183,7 @@ router.post('/portal', async (req, res) => {
 
     res.json({ url: session.url });
   } catch (err) {
-    console.error('POST /subscription/portal error:', err);
+    logger.error('POST /subscription/portal failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

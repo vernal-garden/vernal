@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireAuth } from '../middleware/auth';
 import { isNumericId } from '../lib/validation';
 import { LIMITS } from '../lib/limits';
@@ -89,7 +90,7 @@ router.post('/', writeLimiter, async (req, res) => {
 
     res.status(201).json({ received: true });
   } catch (err) {
-    console.error('POST /corrections error:', err);
+    logger.error('POST /corrections failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -43,7 +43,7 @@ router.get('/stats', async (_req, res) => {
       subscriptions: subscriptionsResult.rows,
     });
   } catch (err) {
-    console.error('GET /admin/stats error:', err);
+    logger.error('GET /admin/stats failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -85,7 +85,7 @@ router.get('/accounts', async (req, res) => {
 
     res.json({ data: dataResult.rows, page, total: countResult.rows[0].total });
   } catch (err) {
-    console.error('GET /admin/accounts error:', err);
+    logger.error('GET /admin/accounts failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -123,7 +123,7 @@ router.get('/accounts/:id', async (req, res) => {
       gardenCount: gardenCountResult.rows[0].garden_count,
     });
   } catch (err) {
-    console.error('GET /admin/accounts/:id error:', err);
+    logger.error('GET /admin/accounts/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -165,7 +165,7 @@ function sendInvalidId(res: Response) {
 }
 
 function sendServerError(res: Response, label: string, err: unknown) {
-  logger.error(`${label} error`, err);
+  logger.error(`${label} failed`, err);
   res.status(500).json({ error: 'Internal server error' });
 }
 

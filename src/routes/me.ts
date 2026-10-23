@@ -88,7 +88,7 @@ router.get('/', async (req, res) => {
     }
     res.json({ data: formatAccount(rows[0]) });
   } catch (err) {
-    console.error('GET /me error:', err);
+    logger.error('GET /me failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -196,7 +196,7 @@ router.patch('/', writeLimiter, async (req, res) => {
     invalidateMetrics(req.session!.account!.id);
     res.json({ data: formatAccount(rows[0]) });
   } catch (err) {
-    console.error('PATCH /me error:', err);
+    logger.error('PATCH /me failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -244,7 +244,7 @@ router.patch('/preferences', writeLimiter, async (req, res) => {
     invalidateMetrics(req.session!.account!.id);
     res.json({ data: { preferences: rows[0].preferences } });
   } catch (err) {
-    console.error('PATCH /me/preferences error:', err);
+    logger.error('PATCH /me/preferences failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -332,7 +332,7 @@ router.patch('/password', passwordChangeLimiter, async (req, res) => {
     res.json({ data: { message: 'Password updated' } });
     if (rows[0].email) await sendPasswordChangedNotice(rows[0].email);
   } catch (err) {
-    console.error('PATCH /me/password error:', err);
+    logger.error('PATCH /me/password failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -441,7 +441,7 @@ router.patch('/email', emailChangeLimiter, async (req, res) => {
 
     res.json({ data: { pendingEmail: normalizedEmail } });
   } catch (err) {
-    console.error('PATCH /me/email error:', err);
+    logger.error('PATCH /me/email failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -462,7 +462,7 @@ router.delete('/email', writeLimiter, async (req, res) => {
     );
     res.json({ data: { pendingEmail: null } });
   } catch (err) {
-    console.error('DELETE /me/email error:', err);
+    logger.error('DELETE /me/email failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -487,7 +487,7 @@ router.post('/verify-email/resend', verificationResendLimiter, async (req, res) 
     await sendVerificationEmail(accountId, rows[0].email);
     res.json({ data: { sent: true } });
   } catch (err) {
-    logger.error('POST /me/verify-email/resend error:', err);
+    logger.error('POST /me/verify-email/resend failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -581,7 +581,7 @@ router.get('/email/confirm', async (req, res) => {
     res.json({ data: { email: matchedToken.new_email } });
     await sendEmailChangedNotice({ to: oldEmail, newEmail: matchedToken.new_email, rawToken: revertToken });
   } catch (err) {
-    console.error('GET /me/email/confirm error:', err);
+    logger.error('GET /me/email/confirm failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -647,7 +647,7 @@ router.delete('/', writeLimiter, async (req, res) => {
 
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /me error:', err);
+    logger.error('DELETE /me failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -683,7 +683,7 @@ router.post('/cancel-deletion', writeLimiter, async (req, res) => {
     );
     res.json({ data: { deletionScheduledAt: null } });
   } catch (err) {
-    console.error('POST /me/cancel-deletion error:', err);
+    logger.error('POST /me/cancel-deletion failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -700,7 +700,7 @@ router.post('/supporter-prompt/shown', writeLimiter, async (req, res) => {
     );
     res.json({ data: { supporterPromptShown: true } });
   } catch (err) {
-    console.error('POST /me/supporter-prompt/shown error:', err);
+    logger.error('POST /me/supporter-prompt/shown failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -788,7 +788,7 @@ router.post('/export', writeLimiter, async (req, res) => {
 
     res.status(202).json({ data: { jobId, status: 'pending' } });
   } catch (err) {
-    logger.error('POST /me/export error', err);
+    logger.error('POST /me/export failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -834,7 +834,7 @@ router.get('/export', async (req, res) => {
       },
     });
   } catch (err) {
-    logger.error('GET /me/export error', err);
+    logger.error('GET /me/export failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

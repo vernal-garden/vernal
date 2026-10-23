@@ -1,7 +1,13 @@
 import nodemailer from 'nodemailer';
+import { logger } from './logger';
 
 function createTransport() {
   if (!process.env.SMTP_HOST) {
+    // Without this, production mail would go to jsonTransport: nothing sent,
+    // and the dev printout below would log reset links.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('SMTP_HOST must be set in production');
+    }
     // Development fallback — log emails to the console
     return nodemailer.createTransport({ jsonTransport: true });
   }
@@ -25,6 +31,12 @@ interface MailOptions {
   html: string;
 }
 
+// The part after the last @, so logs never hold a full address.
+function recipientDomain(to: string): string {
+  const at = to.lastIndexOf('@');
+  return at >= 0 && at < to.length - 1 ? to.slice(at + 1).toLowerCase() : 'unknown';
+}
+
 export async function sendMail(opts: MailOptions): Promise<void> {
   const info = await transport.sendMail({
     from: process.env.SMTP_FROM ?? 'Vernal <noreply@vernal.garden>',
@@ -38,6 +50,6 @@ export async function sendMail(opts: MailOptions): Promise<void> {
     console.log(`  Subject: ${opts.subject}`);
     console.log(`  Text: ${opts.text}`);
   } else {
-    console.log(`[mailer] Sent to ${opts.to}: ${info.messageId}`);
+    logger.info('Email sent', { recipientDomain: recipientDomain(opts.to), messageId: info.messageId });
   }
 }

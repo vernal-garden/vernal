@@ -1,3 +1,5 @@
+import * as Sentry from '@sentry/node';
+
 type LogLevel = 'info' | 'warn' | 'error';
 type LogContext = Record<string, unknown>;
 
@@ -64,8 +66,16 @@ export const logger = {
   warn(message: string, context?: LogContext) {
     write('warn', message, context);
   },
+  // Also reports to Sentry (a no-op without SENTRY_DSN). warn and info stay
+  // log-only, so routine noise can't use up the Sentry quota.
   error(message: string, error?: unknown, context?: LogContext) {
     const errorContext = error !== undefined ? serializeError(error) : {};
     write('error', message, { ...errorContext, ...context });
+    const extra = redact(context ?? {});
+    if (error !== undefined) {
+      Sentry.captureException(error, { extra: { ...extra, message } });
+    } else {
+      Sentry.captureMessage(message, { level: 'error', extra });
+    }
   },
 };

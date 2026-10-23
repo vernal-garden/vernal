@@ -1,5 +1,7 @@
 import { Pool, PoolConfig } from 'pg';
 import dotenv from 'dotenv';
+import * as Sentry from '@sentry/node';
+import { logger } from './logger';
 
 dotenv.config();
 
@@ -59,7 +61,7 @@ export const db = new Pool(config);
 // An idle client can error (e.g. the server drops the connection). With no
 // listener, pg re-emits it as an uncaught exception and the process dies.
 db.on('error', (err) => {
-  console.error('[db] Idle client error:', err.message);
+  logger.error('[db] Idle client error', err);
 });
 
 // Background work (nightly job, data exports) gets its own small pool with a
@@ -76,7 +78,7 @@ export const jobDb = new Pool({
 });
 
 jobDb.on('error', (err) => {
-  console.error('[db] Idle job client error:', err.message);
+  logger.error('[db] Idle job client error', err);
 });
 
 // Logs the cap each pool actually got, so a host or provider change that
@@ -107,7 +109,9 @@ async function verifyConnection(attempts = 3, delayMs = 2_000): Promise<void> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (attempt === attempts) {
-        console.error(`[db] Connection failed after ${attempts} attempts:`, message);
+        logger.error(`[db] Connection failed after ${attempts} attempts`, err);
+        // Give Sentry a moment to send the report before exiting.
+        await Sentry.flush(2000);
         process.exit(1);
       }
       console.warn(`[db] Connection attempt ${attempt}/${attempts} failed (${message}), retrying...`);

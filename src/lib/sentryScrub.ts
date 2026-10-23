@@ -29,8 +29,16 @@ function scrubValue(value: unknown, depth: number): unknown {
   return out;
 }
 
+// Route errors reach Sentry through logger.error, and an error's message can
+// quote an address (a mail transport error, say).
+const EMAIL = /[^\s@<>"'()[\]]+@[^\s@<>"'()[\]]+\.[^\s@<>"'()[\]]+/g;
+
 export function scrubEvent<T extends Event>(event: T): T {
   delete event.user;
+  if (typeof event.message === 'string') event.message = event.message.replace(EMAIL, '[EMAIL]');
+  for (const ex of event.exception?.values ?? []) {
+    if (typeof ex.value === 'string') ex.value = ex.value.replace(EMAIL, '[EMAIL]');
+  }
   if (typeof event.transaction === 'string') event.transaction = stripQuery(event.transaction) as string;
   if (event.request) {
     delete event.request.data;
@@ -41,7 +49,9 @@ export function scrubEvent<T extends Event>(event: T): T {
   }
   if (event.breadcrumbs) {
     for (const crumb of event.breadcrumbs) {
-      if (typeof crumb.message === 'string') crumb.message = crumb.message.replace(TOKEN_PARAM, '$1[REDACTED]');
+      if (typeof crumb.message === 'string') {
+        crumb.message = crumb.message.replace(TOKEN_PARAM, '$1[REDACTED]').replace(EMAIL, '[EMAIL]');
+      }
       if (crumb.data) crumb.data = scrubValue(crumb.data, 0) as typeof crumb.data;
       // Console breadcrumbs carry raw log arguments (e.g. dev-mode email bodies with links).
       if (crumb.category === 'console' && crumb.data) delete crumb.data.arguments;

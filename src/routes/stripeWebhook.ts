@@ -255,7 +255,7 @@ export async function handleStripeWebhook(req: Request, res: Response) {
     }
     res.json({ received: true });
   } catch (err) {
-    logger.error('POST /webhooks/stripe error', err, { eventType: event.type });
+    logger.error('POST /webhooks/stripe failed', err, { eventType: event.type });
     res.status(500).json({ error: 'Internal server error' });
   }
 }

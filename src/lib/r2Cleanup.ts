@@ -100,9 +100,12 @@ export async function queueSessionGardens(
   return ids;
 }
 
+// failed counts rows that keep failing (7+ attempts); a first failure is
+// retried tomorrow and doesn't count. A stuck row keeps the nightly run failed
+// until someone fixes the cause or deletes the row (its last_error says why).
 export async function drainR2Deletions(
   { ids, limit = 1000 }: { ids?: number[]; limit?: number } = {},
-): Promise<{ affected: number }> {
+): Promise<{ affected: number; failed: number }> {
   const { rows } = await db.query<{
     id: string;
     bucket: 'public' | 'exports';
@@ -121,6 +124,7 @@ export async function drainR2Deletions(
   );
 
   let affected = 0;
+  let failed = 0;
   for (const row of rows) {
     try {
       const bucket = row.bucket === 'exports' ? exportsBucket() : undefined;
@@ -141,13 +145,14 @@ export async function drainR2Deletions(
       const attempts = updated[0]?.attempts ?? 0;
       const meta = { id: row.id, bucket: row.bucket, path: row.path, attempts, errMsg: message };
       if (attempts >= ERROR_AFTER_ATTEMPTS) {
+        failed += 1;
         logger.error('R2 delete keeps failing', err, meta);
       } else {
         logger.warn('R2 delete failed; will retry nightly', meta);
       }
     }
   }
-  return { affected };
+  return { affected, failed };
 }
 
 // Fire-and-forget drain of rows just committed. Never awaited by a response.

@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { logger } from '../lib/logger';
 import crypto from 'crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
@@ -120,6 +121,25 @@ describe('makeLoginLimiters', () => {
     expect(await login(app, '203.0.113.20', 'locked@example.com', 'right')).toBe(429);
     limiters.reset(' Locked@Example.com ', { ip: '203.0.113.18' } as unknown as import('express').Request);
     expect(await login(app, '203.0.113.18', 'locked@example.com', 'right')).toBe(200);
+  });
+
+  it('logs which login limiter refused, without the email, and keeps the 429 body', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const app = loginApp();
+      await login(app, '203.0.113.9', 'locked@example.com', 'wrong');
+      await login(app, '203.0.113.9', 'locked@example.com', 'wrong');
+      const res = await request(app)
+        .post('/login')
+        .set('X-Forwarded-For', '203.0.113.9')
+        .send({ email: 'locked@example.com', password: 'right' });
+      expect(res.status).toBe(429);
+      expect(res.body).toEqual({ error: 'Too many requests — please try again later' });
+      expect(warn).toHaveBeenCalledWith('Login rate limited', { limiter: 'pair', ip: '203.0.113.9' });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('locked@example.com');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

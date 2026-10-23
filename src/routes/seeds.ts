@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { PoolClient } from 'pg';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { LIMITS, withinCap, type CapResult } from '../lib/limits';
 import { requireAuth } from '../middleware/auth';
 import { escapeLike, isNumericId, textField } from '../lib/validation';
@@ -240,7 +241,7 @@ router.get('/', async (req, res) => {
       offset,
     });
   } catch (err) {
-    console.error('GET /seeds error:', err);
+    logger.error('GET /seeds failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -465,7 +466,7 @@ router.post('/', writeLimiter, async (req, res) => {
     res.status(201).json(formatSeed(result.rows[0]));
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('POST /seeds error:', err);
+    logger.error('POST /seeds failed', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
@@ -564,7 +565,7 @@ router.post('/add-from-cambium', writeLimiter, async (req, res) => {
     res.status(201).json(formatSeed(result.rows[0]));
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('POST /seeds/add-from-cambium error:', err);
+    logger.error('POST /seeds/add-from-cambium failed', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
@@ -625,7 +626,7 @@ router.get('/:id', async (req, res) => {
       })),
     });
   } catch (err) {
-    console.error('GET /seeds/:id error:', err);
+    logger.error('GET /seeds/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -878,7 +879,7 @@ router.patch('/:id', writeLimiter, async (req, res) => {
     );
     res.json(formatSeed(result.rows[0]));
   } catch (err) {
-    console.error('PATCH /seeds/:id error:', err);
+    logger.error('PATCH /seeds/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -935,7 +936,7 @@ router.delete('/:id', writeLimiter, async (req, res) => {
     drainSoon(queuedIds);
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /seeds/:id error:', err);
+    logger.error('DELETE /seeds/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1009,7 +1010,7 @@ router.post('/:id/contribute', writeLimiter, async (req, res) => {
 
     res.json({ contributionStatus: 'pending' });
   } catch (err) {
-    console.error('POST /seeds/:id/contribute error:', err);
+    logger.error('POST /seeds/:id/contribute failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

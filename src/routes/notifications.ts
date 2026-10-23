@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireAuth } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
@@ -38,7 +39,7 @@ router.get('/', async (req, res) => {
       })),
     });
   } catch (err) {
-    console.error('GET /notifications error:', err);
+    logger.error('GET /notifications failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -53,7 +54,7 @@ router.post('/read-all', writeLimiter, async (req, res) => {
     );
     res.json({ updated: result.rowCount ?? 0 });
   } catch (err) {
-    console.error('POST /notifications/read-all error:', err);
+    logger.error('POST /notifications/read-all failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -78,7 +79,7 @@ router.patch('/:id/read', writeLimiter, async (req, res) => {
     }
     res.json({ id: result.rows[0].id, readAt: result.rows[0].read_at });
   } catch (err) {
-    console.error('PATCH /notifications/:id/read error:', err);
+    logger.error('PATCH /notifications/:id/read failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -1,6 +1,7 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import type { Request, RequestHandler } from 'express';
 import { verifySignedToken, COOKIE_NAME } from '../lib/sessions';
+import { logger } from '../lib/logger';
 
 // Explicit key generator — express-rate-limit falls back to req.ip on its own,
 // but with trust proxy set we want that dependency spelled out rather than implicit.
@@ -77,7 +78,12 @@ export interface LoginLimiters {
 // store to scale out.
 export function makeLoginLimiters(opts: LoginLimiterOptions): LoginLimiters {
   const skip = opts.skip ?? (() => false);
-  const limiter = (max: number, key: (req: Request) => string, standardHeaders: boolean) =>
+  const limiter = (
+    name: 'ip' | 'pair' | 'email',
+    max: number,
+    key: (req: Request) => string,
+    standardHeaders: boolean,
+  ) =>
     rateLimit({
       windowMs: opts.windowMs,
       max,
@@ -88,15 +94,21 @@ export function makeLoginLimiters(opts: LoginLimiterOptions): LoginLimiters {
       requestWasSuccessful: (_req, res) => res.statusCode < 400 || res.statusCode === 429,
       skip,
       message: TOO_MANY,
+      // Same 429 as the default handler, plus a warning (never the address)
+      // so lockouts show up in the log.
+      handler: (req, res, _next, options) => {
+        logger.warn('Login rate limited', { limiter: name, ip: req.ip });
+        res.status(options.statusCode).json(options.message);
+      },
     });
   const pairKey = (email: string, req: Request) => `pair:${email}|${byIp(req)}`;
   const emailKey = (email: string) => `email:${email}`;
-  const perIp = limiter(opts.ipMax, (req) => `ip:${byIp(req)}`, true);
-  const perPair = limiter(opts.pairMax, (req) => {
+  const perIp = limiter('ip', opts.ipMax, (req) => `ip:${byIp(req)}`, true);
+  const perPair = limiter('pair', opts.pairMax, (req) => {
     const email = loginEmail(req);
     return email ? pairKey(email, req) : `noemail:${byIp(req)}`;
   }, false);
-  const perEmail = limiter(opts.emailMax, (req) => {
+  const perEmail = limiter('email', opts.emailMax, (req) => {
     const email = loginEmail(req);
     return email ? emailKey(email) : `noemail:${byIp(req)}`;
   }, false);
