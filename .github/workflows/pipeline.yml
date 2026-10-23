@@ -6,12 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '24', cache: 'npm' }
       - run: npm ci
       - run: npm --prefix client ci
@@ -38,8 +41,8 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '24', cache: 'npm' }
       - run: npm ci
       - run: npm --prefix client ci
@@ -89,7 +92,7 @@ jobs:
           ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
           APP_URL: http://localhost:4173
         run: npx playwright test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: failure()
         with:
           name: playwright-report
@@ -101,38 +104,26 @@ jobs:
     needs: [checks, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
     concurrency:
       group: deploy-production
       cancel-in-progress: false
 
     steps:
+      # Runs scripts/deploy.sh, installed on the server as /home/deploy/bin/vernal-deploy.
+      # authorized_keys on the server restricts the deploy key to that command.
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            set -e
-            cd /var/www/vernal
-            git fetch origin && git reset --hard ${{ github.sha }}
-            npm ci
-            npm run migrate
-            npm run build
-            cd /var/www/vernal/client
-            npm ci
-            npm run build
-            cd /var/www/vernal
-            pm2 reload vernal --update-env
-            sleep 5
-            pm2 jlist | node -e '
-            const list = JSON.parse(require("fs").readFileSync(0, "utf8"));
-            const p = list.find(x => x.name === "vernal");
-            if (!p) { console.error("FAIL: vernal not in pm2 list"); process.exit(1); }
-            if (p.pm2_env.status !== "online") { console.error("FAIL: status " + p.pm2_env.status); process.exit(1); }
-            const upSec = (Date.now() - p.pm2_env.pm_uptime) / 1000;
-            if (upSec > 60) { console.error("FAIL: uptime " + upSec + "s — reload did not restart the process"); process.exit(1); }
-            console.log("OK: vernal online, uptime " + Math.round(upSec) + "s");
-            '
-            curl -fsS --max-time 10 http://localhost:3000/health
-            echo "Deploy complete: $(date)"
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=30 -o ServerAliveInterval=30 \
+            "$DEPLOY_USER@$DEPLOY_HOST" /home/deploy/bin/vernal-deploy "$GITHUB_SHA"
