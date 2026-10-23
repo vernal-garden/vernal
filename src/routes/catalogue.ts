@@ -2,6 +2,7 @@ import { Router } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { searchSeeds, listFamilies, getSeedById, getCompanionsForSeed } from '../services/cambium';
 import { isNumericId } from '../lib/validation';
+import { logger } from '../lib/logger';
 
 const router = Router();
 
@@ -22,7 +23,7 @@ router.get('/families', async (_req, res) => {
     const families = await listFamilies();
     res.json({ data: families });
   } catch (err) {
-    console.error('listFamilies error:', err);
+    logger.error('GET /catalogue/families failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -54,7 +55,7 @@ router.get('/seeds/:id/companions', async (req, res) => {
 
     res.json({ data: companions });
   } catch (err) {
-    console.error('getCompanionsForSeed error:', err);
+    logger.error('GET /catalogue/seeds/:id/companions failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -84,7 +85,7 @@ router.get('/seeds', async (req, res) => {
 
     res.json({ data, total, limit, offset });
   } catch (err) {
-    console.error('searchSeeds error:', err);
+    logger.error('GET /catalogue/seeds failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -104,7 +105,7 @@ router.get('/seeds/:id', async (req, res) => {
     }
     res.json(seed);
   } catch (err) {
-    console.error('getSeedById error:', err);
+    logger.error('GET /catalogue/seeds/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

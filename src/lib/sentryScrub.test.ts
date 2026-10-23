@@ -3,6 +3,16 @@ import type { Event } from '@sentry/node';
 import { scrubEvent } from './sentryScrub';
 
 describe('scrubEvent', () => {
+  it('masks email addresses in the message and exception values', () => {
+    const event: Event = {
+      message: 'Send to someone@example.com failed',
+      exception: { values: [{ type: 'Error', value: 'Recipient <Jo.Bloggs+x@mail.example.org> rejected' }] },
+    };
+    const out = scrubEvent(event);
+    expect(out.message).toBe('Send to [EMAIL] failed');
+    expect(out.exception?.values?.[0].value).toBe('Recipient <[EMAIL]> rejected');
+  });
+
   it('removes request body, cookies, headers and query string', () => {
     const event: Event = {
       request: {
@@ -40,6 +50,15 @@ describe('scrubEvent', () => {
     });
     expect(out.breadcrumbs![0].message).toBe('Reset link: https://x/reset?token=[REDACTED]&y=1 done');
     expect(out.breadcrumbs![0].data).toEqual({ logger: 'console' });
+  });
+
+  it('masks email addresses in breadcrumb messages and Postgres key errors', () => {
+    const out = scrubEvent({
+      exception: { values: [{ type: 'Error', value: 'Key (email)=(jo@example.com) already exists.' }] },
+      breadcrumbs: [{ category: 'console', message: 'POST /me failed: jo@example.com taken' }],
+    });
+    expect(out.exception?.values?.[0].value).toBe('Key (email)=([EMAIL]) already exists.');
+    expect(out.breadcrumbs![0].message).toBe('POST /me failed: [EMAIL] taken');
   });
 
   it('strips query strings from transaction and span descriptions, and drops user', () => {

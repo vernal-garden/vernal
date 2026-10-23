@@ -291,6 +291,13 @@ authRouter.post('/login', ...loginLimiters.handlers, async (req: Request, res: R
   const valid = await bcrypt.compare(password, hash);
 
   if (!valid || rows.length === 0) {
+    // No email address in the log: the account id (when there is one) and IP
+    // are enough to spot credential stuffing.
+    logger.warn('Login failed', {
+      reason: rows.length === 0 ? 'unknown_account' : 'bad_password',
+      accountId: rows[0]?.id ?? null,
+      ip: req.ip,
+    });
     res.status(401).json({ error: 'Invalid email or password' });
     return;
   }
@@ -319,6 +326,7 @@ authRouter.post('/login', ...loginLimiters.handlers, async (req: Request, res: R
     );
     if (current.rows[0]?.password_hash !== account.password_hash) {
       await client.query('ROLLBACK');
+      logger.warn('Login failed', { reason: 'changed_during_login', accountId: account.id, ip: req.ip });
       res.status(401).json({ error: 'Invalid email or password' });
       return;
     }
@@ -641,7 +649,7 @@ authRouter.get(
       if (err instanceof OAuthLinkRequiresPasswordError) {
         return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_link_password`);
       }
-      logger.error('OAuth callback error:', err);
+      logger.error('GET /auth/oauth/google/callback failed', err);
       res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
     }
   },

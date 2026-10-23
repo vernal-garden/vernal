@@ -22,6 +22,7 @@ import {
   type WeekSummary,
 } from '../lib/weather/insights';
 import { geocode, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
+import { UpstreamError, logWeatherFailure } from '../lib/weather/upstream';
 import type { SessionData } from '../types';
 
 // Metrics Dashboard and Cross-Season Comparison (Phase 49). Read-only: every
@@ -703,7 +704,7 @@ async function buildAmendments(accountId: number, season: number) {
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out after ${ms} ms`)), ms);
+    timer = setTimeout(() => reject(new UpstreamError(`Timed out after ${ms} ms`)), ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -752,7 +753,7 @@ async function buildWeather(accountId: number, isCurrentSeason: boolean) {
       week = weekSummary(history);
       insights = buildInsights(history);
     } catch (err) {
-      logger.error('Metrics dashboard weather history failed', err);
+      logWeatherFailure('Metrics dashboard weather history failed', err);
       historyUnavailable = true;
     }
   }

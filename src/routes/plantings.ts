@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { PoolClient } from 'pg';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { LIMITS, withinCap } from '../lib/limits';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
@@ -245,7 +246,7 @@ gardenPlantingsRouter.get('/', async (req, res) => {
     );
     res.json({ data: rows.map(formatPlanting) });
   } catch (err) {
-    console.error('GET /gardens/:gardenId/plantings error:', err);
+    logger.error('GET /gardens/:gardenId/plantings failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -288,7 +289,7 @@ gardenPlantingsRouter.patch('/displayed-stage', writeLimiter, async (req, res) =
     );
     res.json({ updated: result.rowCount ?? 0 });
   } catch (err) {
-    console.error('PATCH /gardens/:gardenId/plantings/displayed-stage error:', err);
+    logger.error('PATCH /gardens/:gardenId/plantings/displayed-stage failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -316,7 +317,7 @@ plantingsNestedRouter.get('/', async (req, res) => {
     );
     res.json({ data: rows.map(formatPlanting) });
   } catch (err) {
-    console.error('GET /.../beds/:bedId/plantings error:', err);
+    logger.error('GET /gardens/:gardenId/beds/:bedId/plantings failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -528,7 +529,9 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
           [quantity, UI_MAX_QUANTITY, occ.id],
         );
         if (merged.length === 0) {
-          console.error(`POST planting merge: planting ${occ.id} vanished before the merge UPDATE`);
+          logger.error('POST /gardens/:gardenId/beds/:bedId/plantings merge target vanished before the merge UPDATE', undefined, {
+            plantingId: occ.id,
+          });
           return res.status(500).json({ error: 'Internal server error' });
         }
         return res.status(200).json({ ...(await selectFormatted(occ.id)), merged: true });
@@ -566,7 +569,7 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       return await resolveOccupied(raced);
     }
   } catch (err) {
-    console.error('POST /.../beds/:bedId/plantings error:', err);
+    logger.error('POST /gardens/:gardenId/beds/:bedId/plantings failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -709,7 +712,7 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
     );
     res.json(formatPlanting(rows[0]));
   } catch (err) {
-    console.error('PATCH /plantings/:id error:', err);
+    logger.error('PATCH /plantings/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -734,7 +737,7 @@ plantingsFlatRouter.delete('/:id', writeLimiter, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Planting not found' });
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /plantings/:id error:', err);
+    logger.error('DELETE /plantings/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

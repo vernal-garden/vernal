@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireAuth, requireSupporter } from '../middleware/auth';
 import { isNumericId, isRealDate, numberField, textField } from '../lib/validation';
 import { writeLimiter } from '../middleware/rateLimiters';
@@ -115,7 +116,7 @@ amendmentsNestedRouter.get('/', async (req: Request, res: Response): Promise<voi
 
     res.json({ data: rows.map(formatLog) });
   } catch (err) {
-    console.error(err);
+    logger.error('GET /gardens/:gardenId/amendments failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -259,7 +260,7 @@ amendmentsNestedRouter.post('/', requireSupporter, writeLimiter, async (req: Req
       client.release();
     }
   } catch (err) {
-    console.error(err);
+    logger.error('POST /gardens/:gardenId/amendments failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -421,7 +422,7 @@ amendmentsFlatRouter.patch('/:id', requireSupporter, writeLimiter, async (req: R
       client.release();
     }
   } catch (err) {
-    console.error(err);
+    logger.error('PATCH /amendments/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -449,7 +450,7 @@ amendmentsFlatRouter.delete('/:id', writeLimiter, async (req: Request, res: Resp
     invalidateMetrics(accountId);
     res.status(204).send();
   } catch (err) {
-    console.error(err);
+    logger.error('DELETE /amendments/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -1,5 +1,6 @@
 import { degreesToCompass } from '../compass';
 import type { NormalizedReading, DailyHistoryPoint } from '../types';
+import { UpstreamError, fetchProviderJson } from '../upstream';
 
 export interface GeoLocation {
   lat: number;
@@ -23,16 +24,12 @@ export async function geocode(label: string): Promise<GeoLocation> {
   if (cached) return cached;
 
   const url = `${nominatimBase()}/search?q=${encodeURIComponent(label)}&format=json&limit=1`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Vernal Garden App/1.0' } });
-
-  if (!res.ok) {
-    throw new Error(`Nominatim geocoding request failed with status ${res.status}`);
-  }
-
-  const results = (await res.json()) as Array<{ lat: string; lon: string }>;
+  const results = await fetchProviderJson<Array<{ lat: string; lon: string }>>('Nominatim', url, {
+    headers: { 'User-Agent': 'Vernal Garden App/1.0' },
+  });
   const first = results[0];
   if (!first) {
-    throw new Error(`No geocoding results for "${label}"`);
+    throw new UpstreamError('No geocoding results for the account location');
   }
 
   const location: GeoLocation = { lat: Number(first.lat), lon: Number(first.lon) };
@@ -57,12 +54,7 @@ export async function fetchOpenMeteoCurrent(lat: number, lon: number): Promise<N
     '&current=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m,uv_index' +
     '&temperature_unit=celsius&wind_speed_unit=ms&precipitation_unit=mm';
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Open-Meteo request failed with status ${res.status}`);
-  }
-
-  const body = (await res.json()) as { current: OpenMeteoCurrent };
+  const body = await fetchProviderJson<{ current: OpenMeteoCurrent }>('Open-Meteo', url);
   const current = body.current;
 
   return {
@@ -90,12 +82,7 @@ export async function fetchOpenMeteoHistory(lat: number, lon: number): Promise<D
     '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum' +
     '&past_days=7&forecast_days=1&temperature_unit=celsius&precipitation_unit=mm';
 
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Open-Meteo request failed with status ${res.status}`);
-  }
-
-  const body = (await res.json()) as { daily: OpenMeteoDaily };
+  const body = await fetchProviderJson<{ daily: OpenMeteoDaily }>('Open-Meteo', url);
   const daily = body.daily;
 
   return daily.time.map((date, i) => ({

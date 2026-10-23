@@ -12,6 +12,15 @@ describe('body size cap', () => {
     expect(res.status).toBe(413);
   });
 
+  it('answers malformed JSON with 400, not 500', async () => {
+    const res = await request(app)
+      .post('/api/feedback')
+      .set('Content-Type', 'application/json')
+      .send('{"category": ');
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Bad request' });
+  });
+
   it('accepts a normal-sized body', async () => {
     const res = await request(app)
       .post('/api/feedback')

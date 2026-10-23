@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireAuth, requireSupporter } from '../middleware/auth';
 import { isNumericId, isRealDate, numberField, textField } from '../lib/validation';
 import { writeLimiter } from '../middleware/rateLimiters';
@@ -86,7 +87,7 @@ soilNestedRouter.get('/', async (req: Request, res: Response): Promise<void> => 
 
     res.json({ data: rows.map(formatReading) });
   } catch (err) {
-    console.error(err);
+    logger.error('GET /gardens/:gardenId/soil-readings failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -203,7 +204,7 @@ soilNestedRouter.post('/', requireSupporter, writeLimiter, async (req: Request, 
     res.status(201).json(formatReading(rows[0]));
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error(err);
+    logger.error('POST /gardens/:gardenId/soil-readings failed', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
@@ -325,7 +326,7 @@ soilFlatRouter.patch('/:id', requireSupporter, writeLimiter, async (req: Request
     invalidateMetrics(accountId);
     res.json(formatReading(rows[0]));
   } catch (err) {
-    console.error(err);
+    logger.error('PATCH /soil-readings/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -353,7 +354,7 @@ soilFlatRouter.delete('/:id', writeLimiter, async (req: Request, res: Response):
     invalidateMetrics(accountId);
     res.status(204).send();
   } catch (err) {
-    console.error(err);
+    logger.error('DELETE /soil-readings/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

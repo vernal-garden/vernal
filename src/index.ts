@@ -132,13 +132,19 @@ app.use('/api/notifications', notificationsRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
-Sentry.setupExpressErrorHandler(app);
-
+// The only error handler. logger.error reports to Sentry, so Sentry's own
+// Express handler is not installed (it would report every error twice).
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   // body-parser tags an over-limit body with type 'entity.too.large'; that is a
   // client error, not a server fault.
   if ((err as Error & { type?: string }).type === 'entity.too.large') {
     return res.status(413).json({ error: 'Request body too large.' });
+  }
+  // Other client errors body-parser raises (malformed JSON, bad charset) carry
+  // a 4xx status and expose: true; answer with it and keep them out of Sentry.
+  const { status, expose } = err as Error & { status?: number; expose?: boolean };
+  if (expose === true && typeof status === 'number' && status >= 400 && status < 500) {
+    return res.status(status).json({ error: 'Bad request' });
   }
   logger.error('Unhandled error', err);
   res.status(500).json({ error: 'Internal server error' });
@@ -156,19 +162,21 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
 
   cron.schedule('0 3 * * *', () => {
     console.log('[nightly] job starting');
-    runNightlyJob().catch((err) => console.error('[nightly] job error:', err));
+    // Task failures are recorded and reported inside the run; this catches crashes.
+    runNightlyJob().catch((err) => logger.error('[nightly] job crashed', err));
   });
   console.log('[vernal] Nightly job scheduled at 03:00 UTC');
 
+  // logger.error captures to Sentry; flush before exiting so the event is sent.
   process.on('uncaughtException', (err) => {
     logger.error('Uncaught exception', err);
-    Sentry.captureException(err);
     void Sentry.flush(2000).finally(() => process.exit(1));
   });
 
   process.on('unhandledRejection', (reason) => {
-    logger.error('Unhandled promise rejection', reason instanceof Error ? reason : new Error(String(reason)));
-    Sentry.captureException(reason);
+    // Passed through as is: Sentry's own rejection handler captures it too, and
+    // only the same value is recognised as a duplicate (a wrapped copy is not).
+    logger.error('Unhandled promise rejection', reason);
     void Sentry.flush(2000).finally(() => process.exit(1));
   });
 }

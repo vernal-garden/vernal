@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import express, { Router } from 'express';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId, textField } from '../lib/validation';
@@ -209,7 +210,7 @@ router.get('/', async (req, res) => {
       })),
     });
   } catch (err) {
-    console.error('GET /gardens error:', err);
+    logger.error('GET /gardens failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -324,7 +325,7 @@ router.post('/', writeLimiter, async (req, res) => {
       client.release();
     }
   } catch (err) {
-    console.error('POST /gardens error:', err);
+    logger.error('POST /gardens failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -374,7 +375,7 @@ router.get('/:id', async (req, res) => {
       beds: bedsResult.rows.map(formatBed),
     });
   } catch (err) {
-    console.error('GET /gardens/:id error:', err);
+    logger.error('GET /gardens/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -464,7 +465,7 @@ router.patch('/:id', writeLimiter, async (req, res) => {
     );
     res.json(formatGarden(result.rows[0]));
   } catch (err) {
-    console.error('PATCH /gardens/:id error:', err);
+    logger.error('PATCH /gardens/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -510,7 +511,7 @@ router.delete('/:id', writeLimiter, async (req, res) => {
     drainSoon(queuedIds);
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /gardens/:id error:', err);
+    logger.error('DELETE /gardens/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -541,7 +542,7 @@ router.get('/:id/seasons', async (req, res) => {
       layoutSeasons: result.rows.map(r => r.season),
     });
   } catch (err) {
-    console.error('GET /gardens/:id/seasons error:', err);
+    logger.error('GET /gardens/:id/seasons failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -617,7 +618,7 @@ router.post(
 
       res.json({ thumbnailUrl: url });
     } catch (err) {
-      console.error('POST /gardens/:id/thumbnail error:', err);
+      logger.error('POST /gardens/:id/thumbnail failed', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   },
@@ -661,7 +662,7 @@ router.get('/:gardenId/beds', async (req, res) => {
     );
     res.json({ data: result.rows.map(formatBed) });
   } catch (err) {
-    console.error('GET /gardens/:gardenId/beds error:', err);
+    logger.error('GET /gardens/:gardenId/beds failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -766,7 +767,7 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
       client.release();
     }
   } catch (err) {
-    console.error('POST /gardens/:gardenId/beds error:', err);
+    logger.error('POST /gardens/:gardenId/beds failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -855,7 +856,7 @@ router.post('/:gardenId/beds/carry-forward', writeLimiter, async (req, res) => {
     res.status(201).json({ data: beds.map(formatBed) });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('POST /gardens/:gardenId/beds/carry-forward error:', err);
+    logger.error('POST /gardens/:gardenId/beds/carry-forward failed', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
@@ -1003,7 +1004,7 @@ router.patch('/:gardenId/beds/:bedId', writeLimiter, async (req, res) => {
     );
     res.json(formatBed(result.rows[0]));
   } catch (err) {
-    console.error('PATCH /gardens/:gardenId/beds/:bedId error:', err);
+    logger.error('PATCH /gardens/:gardenId/beds/:bedId failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1036,7 +1037,7 @@ router.delete('/:gardenId/beds/:bedId', writeLimiter, async (req, res) => {
     }
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /gardens/:gardenId/beds/:bedId error:', err);
+    logger.error('DELETE /gardens/:gardenId/beds/:bedId failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

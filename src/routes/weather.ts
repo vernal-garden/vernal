@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireAuth, requireSupporter } from '../middleware/auth';
 import { encryptToBuffer, decryptFromBuffer } from '../lib/crypto';
 import { getAccountLocation } from '../lib/weather/location';
@@ -8,6 +9,7 @@ import { getTtlMs } from '../lib/weather/ttl';
 import { fetchTempestCurrent } from '../lib/weather/providers/tempest';
 import { geocode, fetchOpenMeteoCurrent, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
 import type { NormalizedReading } from '../lib/weather/types';
+import { logWeatherFailure } from '../lib/weather/upstream';
 import { isNumericId } from '../lib/validation';
 import { LIMITS, withinCap } from '../lib/limits';
 import { writeLimiter, weatherTestLimiter } from '../middleware/rateLimiters';
@@ -168,7 +170,7 @@ weatherRouter.post('/connections', requireSupporter, writeLimiter, async (req: R
     });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
-    console.error(err);
+    logger.error('POST /weather/connections failed', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
@@ -198,7 +200,7 @@ weatherRouter.get('/connections', async (req: Request, res: Response): Promise<v
       })),
     });
   } catch (err) {
-    console.error(err);
+    logger.error('GET /weather/connections failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -226,7 +228,7 @@ weatherRouter.delete('/connections/:id', writeLimiter, async (req: Request, res:
     invalidateMetrics(accountId);
     res.status(204).send();
   } catch (err) {
-    console.error(err);
+    logger.error('DELETE /weather/connections/:id failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -310,7 +312,7 @@ weatherRouter.get('/current', requireSupporter, async (req: Request, res: Respon
     publicCurrentCache.set(cacheKey, { reading, fetchedAt: Date.now() });
     res.json({ ...reading, source: 'public_weather', cached: false });
   } catch (err) {
-    console.error(err);
+    logWeatherFailure('GET /weather/current failed', err);
     res.status(503).json({ error: 'Weather data unavailable' });
   }
 });
@@ -331,7 +333,7 @@ weatherRouter.get('/history', requireSupporter, async (req: Request, res: Respon
     const data = await fetchOpenMeteoHistory(geo.lat, geo.lon);
     res.json({ data, insights: buildInsights(data) });
   } catch (err) {
-    console.error(err);
+    logWeatherFailure('GET /weather/history failed', err);
     res.status(503).json({ error: 'Weather data unavailable' });
   }
 });

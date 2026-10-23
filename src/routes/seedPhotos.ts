@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireSupporter } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
@@ -96,7 +97,7 @@ router.get('/', async (req, res) => {
     );
     res.json({ photos: rows.map(formatPhoto) });
   } catch (err) {
-    console.error('GET /seeds/:id/photos error:', err);
+    logger.error('GET /seeds/:id/photos failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -138,7 +139,7 @@ router.post('/upload-url', requireSupporter, writeLimiter, async (req, res) => {
 
     res.json({ uploadUrl, key });
   } catch (err) {
-    console.error('POST /seeds/:id/photos/upload-url error:', err);
+    logger.error('POST /seeds/:id/photos/upload-url failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -216,7 +217,7 @@ router.post('/', requireSupporter, writeLimiter, async (req, res) => {
     res.status(201).json(formatPhoto(row));
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
-    console.error('POST /seeds/:id/photos error:', err);
+    logger.error('POST /seeds/:id/photos failed', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
@@ -259,7 +260,7 @@ router.patch('/:photoId', writeLimiter, async (req, res) => {
     }
     res.json(formatPhoto(rows[0]));
   } catch (err) {
-    console.error('PATCH /seeds/:id/photos/:photoId error:', err);
+    logger.error('PATCH /seeds/:id/photos/:photoId failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -303,7 +304,7 @@ router.delete('/:photoId', writeLimiter, async (req, res) => {
     drainSoon(queuedIds);
     res.status(204).send();
   } catch (err) {
-    console.error('DELETE /seeds/:id/photos/:photoId error:', err);
+    logger.error('DELETE /seeds/:id/photos/:photoId failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

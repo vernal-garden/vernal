@@ -307,7 +307,7 @@ export async function purgeOldUsageEvents(): Promise<{ affected: number }> {
 // first; if that fails the account is kept for tomorrow. Its R2 folders (every
 // seed, garden and harvest it owns, and its exports) are queued in the same
 // transaction as the delete, so the drain owns them from then on.
-export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
+export async function purgeScheduledAccounts(): Promise<{ affected: number; failed: number }> {
   const { rows } = await db.query<{
     id: number;
     stripe_subscription_id: string | null;
@@ -318,14 +318,15 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
   );
 
   let affected = 0;
+  let failed = 0;
   for (const { id, stripe_subscription_id, stripe_customer_id } of rows) {
     try {
       await teardownCustomer({ subId: stripe_subscription_id, customerId: stripe_customer_id });
     } catch (err) {
-      logger.warn('Could not end Stripe customer for purged account; keeping account', {
+      logger.error('Could not end Stripe customer for purged account; keeping account', err, {
         accountId: id,
-        errMsg: err instanceof Error ? err.message : String(err),
       });
+      failed += 1;
       continue;
     }
 
@@ -377,15 +378,13 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number }> {
     } catch (err) {
       // One bad account must not stop the others; it is retried tomorrow.
       await client.query('ROLLBACK').catch(() => {});
-      logger.warn('Could not purge account; keeping it', {
-        accountId: id,
-        errMsg: err instanceof Error ? err.message : String(err),
-      });
+      logger.error('Could not purge account; keeping it', err, { accountId: id });
+      failed += 1;
     } finally {
       client.release();
     }
   }
-  return { affected };
+  return { affected, failed };
 }
 
 // Lifetime accounts have subscription_interval = 'lifetime', excluded by the
@@ -450,7 +449,7 @@ export async function runNightlyJob(): Promise<void> {
   // pg-pool removes its idle 'error' listener while a client is checked out; an
   // unhandled 'error' here would otherwise take the whole process down.
   const onLockLost = (err: Error) =>
-    console.error('[nightly] lock connection lost; run continues unlocked:', err.message);
+    logger.error('[nightly] lock connection lost; run continues unlocked', err);
   lockClient.on('error', onLockLost);
   let releaseErr: Error | undefined;
   try {
@@ -488,7 +487,7 @@ async function runNightlyTasks(): Promise<void> {
   const runId = rows[0].id;
   const errors: string[] = [];
 
-  const tasks: Array<[string, () => Promise<{ affected: number }>]> = [
+  const tasks: Array<[string, () => Promise<{ affected: number; failed?: number }>]> = [
     ['deriveGrowth', deriveGrowth],
     ['refreshGardenBadges', refreshGardenBadges],
     ['purgeExpiredGuests', purgeExpiredGuests],
@@ -504,21 +503,25 @@ async function runNightlyTasks(): Promise<void> {
 
   for (const [name, task] of tasks) {
     try {
-      const { affected } = await task();
-      console.log(`[nightly] ${name}: ${affected} rows`);
+      const { affected, failed = 0 } = await task();
+      if (failed > 0) {
+        console.log(`[nightly] ${name}: ${affected} rows, ${failed} failed`);
+        // Each failed item was already reported via logger.error.
+        errors.push(`${name}: ${failed} item(s) failed`);
+      } else {
+        console.log(`[nightly] ${name}: ${affected} rows`);
+      }
     } catch (err) {
-      console.error(`[nightly] ${name} failed:`, err);
-      errors.push(`${name}: ${String(err)}`);
+      logger.error(`[nightly] ${name} failed`, err);
+      errors.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
+  // Failures are recorded here and were reported above, so the run doesn't
+  // throw for them; runNightlyJob rejects only when the job itself crashes.
   await db.query(
     `UPDATE job_runs SET status = $1, finished_at = NOW(), error_msg = $2
      WHERE id = $3`,
     [errors.length ? 'failed' : 'ok', errors.length ? errors.join('; ') : null, runId],
   );
-
-  if (errors.length) {
-    throw new Error(`Nightly job completed with errors: ${errors.join('; ')}`);
-  }
 }

@@ -1,5 +1,6 @@
 import { degreesToCompass } from '../compass';
 import type { NormalizedReading } from '../types';
+import { UpstreamError, fetchProviderJson } from '../upstream';
 
 interface TempestObservation {
   timestamp: number;
@@ -18,16 +19,10 @@ export async function fetchTempestCurrent(
   stationId: string,
 ): Promise<NormalizedReading> {
   const url = `https://swd.weatherflow.com/swd/rest/observations/station/${encodeURIComponent(stationId)}?token=${encodeURIComponent(accessToken)}`;
-  const res = await fetch(url);
-
-  if (!res.ok) {
-    throw new Error(`Tempest API request failed with status ${res.status}`);
-  }
-
-  const body = (await res.json()) as { obs?: TempestObservation[] };
+  const body = await fetchProviderJson<{ obs?: TempestObservation[] }>('Tempest API', url);
   const obs = body.obs?.[0];
   if (!obs) {
-    throw new Error('Tempest API returned no observations');
+    throw new UpstreamError('Tempest API returned no observations');
   }
 
   return {

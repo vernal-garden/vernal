@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { Pool } from 'pg';
+import type { PoolClient } from 'pg';
 import { EventEmitter } from 'node:events';
 
 vi.mock('../lib/r2', async (importOriginal) => ({
@@ -959,8 +960,9 @@ describe('purgeScheduledAccounts', () => {
     await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_keep' WHERE id = $1", [id]);
     teardownCustomerMock.mockRejectedValueOnce(new Error('stripe down'));
 
-    const { affected } = await purgeScheduledAccounts();
+    const { affected, failed } = await purgeScheduledAccounts();
     expect(affected).toBe(0);
+    expect(failed).toBe(1);
     expect(await accountIds()).toContain(id);
     expect(await queued()).toEqual([]);
   });
@@ -972,10 +974,42 @@ describe('purgeScheduledAccounts', () => {
       await pool.query('UPDATE accounts SET deletion_scheduled_at = NULL WHERE id = $1', [id]);
     });
 
-    const { affected } = await purgeScheduledAccounts();
+    const { affected, failed } = await purgeScheduledAccounts();
     expect(affected).toBe(0);
+    // A cancelled deletion isn't a failure.
+    expect(failed).toBe(0);
     expect(await accountIds()).toContain(id);
     expect(await queued()).toEqual([]);
+  });
+
+  it('counts a purge that rolls back as failed and keeps the account', async () => {
+    const id = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const realConnect = jobDb.connect.bind(jobDb) as (cb?: unknown) => Promise<PoolClient>;
+    const patched: Array<[PoolClient, PoolClient['query']]> = [];
+    const spy = vi.spyOn(jobDb, 'connect').mockImplementation(((cb?: unknown) => {
+      // Pool.query checks out its client via connect(callback); pass those through.
+      if (typeof cb === 'function') return realConnect(cb);
+      return (async () => {
+        const client = await realConnect();
+        const realQuery = client.query;
+        patched.push([client, realQuery]);
+        client.query = ((...args: unknown[]) =>
+          typeof args[0] === 'string' && args[0].includes('DELETE FROM feedback_submissions')
+            ? Promise.reject(new Error('boom'))
+            : (realQuery as (...a: unknown[]) => unknown).apply(client, args)) as PoolClient['query'];
+        return client;
+      })();
+    }) as never);
+    try {
+      const { affected, failed } = await purgeScheduledAccounts();
+      expect(affected).toBe(0);
+      expect(failed).toBe(1);
+    } finally {
+      spy.mockRestore();
+      // Pooled clients are reused, so restore their real query method.
+      for (const [client, realQuery] of patched) client.query = realQuery;
+    }
+    expect(await accountIds()).toContain(id);
   });
 
   it('purges the other accounts in a batch when one teardown fails', async () => {
@@ -987,8 +1021,9 @@ describe('purgeScheduledAccounts', () => {
       if (customerId === 'cus_first') throw new Error('stripe down');
     });
 
-    const { affected } = await purgeScheduledAccounts();
+    const { affected, failed } = await purgeScheduledAccounts();
     expect(affected).toBe(1);
+    expect(failed).toBe(1);
     const ids = await accountIds();
     expect(ids).toContain(first);
     expect(ids).not.toContain(second);
@@ -1347,7 +1382,7 @@ describe('runNightlyJob', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('releases the lock when the run fails', async () => {
+  it('records a failed run, resolves, and releases the lock when a task throws', async () => {
     const realQuery = jobDb.query.bind(jobDb) as (...args: unknown[]) => Promise<unknown>;
     const spy = vi.spyOn(jobDb, 'query').mockImplementation(((...args: unknown[]) => {
       if (typeof args[0] === 'string' && args[0].includes('DELETE FROM stripe_events')) {
@@ -1356,10 +1391,16 @@ describe('runNightlyJob', () => {
       return realQuery(...args);
     }) as never);
     try {
-      await expect(runNightlyJob()).rejects.toThrow(/purgeStripeEvents/);
+      await runNightlyJob();
     } finally {
       spy.mockRestore();
     }
+
+    const { rows: runs } = await pool.query<{ status: string; error_msg: string | null }>(
+      "SELECT status, error_msg FROM job_runs WHERE job_key = 'nightly' ORDER BY id DESC LIMIT 1",
+    );
+    expect(runs[0].status).toBe('failed');
+    expect(runs[0].error_msg).toMatch(/purgeStripeEvents: boom/);
 
     const probe = await pool.connect();
     try {
@@ -1372,6 +1413,22 @@ describe('runNightlyJob', () => {
       await probe.query('SELECT pg_advisory_unlock($1)', [NIGHTLY_LOCK_KEY]);
       probe.release();
     }
+  });
+
+  it('marks the run failed when a task reports failed items', async () => {
+    const id = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_fail' WHERE id = $1", [id]);
+    teardownCustomerMock.mockReset().mockRejectedValue(new Error('stripe down'));
+    try {
+      await runNightlyJob();
+    } finally {
+      teardownCustomerMock.mockReset().mockResolvedValue(undefined);
+    }
+    const { rows } = await pool.query<{ status: string; error_msg: string | null }>(
+      "SELECT status, error_msg FROM job_runs WHERE job_key = 'nightly' ORDER BY id DESC LIMIT 1",
+    );
+    expect(rows[0].status).toBe('failed');
+    expect(rows[0].error_msg).toContain('purgeScheduledAccounts: 1 item(s) failed');
   });
 
   it('handles an error on the lock connection and detaches its listener afterwards', async () => {
@@ -1392,8 +1449,8 @@ describe('runNightlyJob', () => {
     const connectSpy = vi.spyOn(webDb, 'connect').mockResolvedValueOnce(fake as never);
     const logSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      // Tasks run against the real job pool; they may or may not throw, only
-      // the listener bookkeeping matters here.
+      // Tasks run against the real job pool; only the listener bookkeeping
+      // matters here.
       await runNightlyJob().catch(() => {});
       expect(listenersDuringRun).toBe(1);
       expect(fake.listenerCount('error')).toBe(0);

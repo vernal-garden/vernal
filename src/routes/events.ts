@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../lib/db';
+import { logger } from '../lib/logger';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter, eventsBatchLimiter } from '../middleware/rateLimiters';
 import { isEventKey } from '../lib/eventKeys';
@@ -59,7 +60,7 @@ eventsRouter.post('/batch', requireSession, writeLimiter, eventsBatchLimiter, as
     }
     res.status(204).send();
   } catch (err) {
-    console.error(err);
+    logger.error('POST /events/batch failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

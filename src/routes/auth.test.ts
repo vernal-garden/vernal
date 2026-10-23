@@ -3,6 +3,7 @@ import request from 'supertest';
 import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import app from '../index';
+import { logger } from '../lib/logger';
 
 const pool = new Pool({
   connectionString: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL,
@@ -153,6 +154,41 @@ describe('POST /api/auth/login', () => {
       .send({ email: 'nobody@example.com', password: 'SomePassword1!' });
 
     expect(res.status).toBe(401);
+  });
+
+  it('logs a failed login with the reason and no email address', async () => {
+    await createUser('login-log@example.com', 'CorrectPass1!');
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'login-log@example.com', password: 'WrongPass1!' });
+      expect(res.status).toBe(401);
+      expect(warn).toHaveBeenCalledWith('Login failed', expect.objectContaining({
+        reason: 'bad_password',
+        accountId: expect.any(Number),
+      }));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('login-log@example.com');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs an unknown account as unknown_account with a null accountId', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'nobody-here@example.com', password: 'Whatever1!' });
+      expect(res.status).toBe(401);
+      expect(warn).toHaveBeenCalledWith('Login failed', expect.objectContaining({
+        reason: 'unknown_account',
+        accountId: null,
+      }));
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('nobody-here@example.com');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
