@@ -6,22 +6,42 @@ export class UpstreamError extends Error {
   name = 'UpstreamError';
 }
 
-// fetch plus JSON parse for a provider. Network failures, non-OK responses and
-// unparseable bodies all become UpstreamError.
-export async function fetchProviderJson<T>(provider: string, url: string, init?: RequestInit): Promise<T> {
-  let res: Response;
+// Longest a provider request may take, response body included.
+export const UPSTREAM_TIMEOUT_MS = 5000;
+
+// fetch plus JSON parse for a provider. Network failures, timeouts, non-OK
+// responses and unparseable bodies all become UpstreamError. The timer is a
+// plain setTimeout (not AbortSignal.timeout) so tests can drive it with fake
+// timers.
+export async function fetchProviderJson<T>(provider: string, url: string, init: RequestInit = {}): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, UPSTREAM_TIMEOUT_MS);
+  const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+
   try {
-    res = await (init ? fetch(url, init) : fetch(url));
-  } catch (err) {
-    throw new UpstreamError(`${provider} unreachable`, { cause: err });
-  }
-  if (!res.ok) {
-    throw new UpstreamError(`${provider} request failed with status ${res.status}`);
-  }
-  try {
-    return (await res.json()) as T;
-  } catch (err) {
-    throw new UpstreamError(`${provider} returned an unreadable response`, { cause: err });
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, signal });
+    } catch (err) {
+      throw new UpstreamError(timedOut ? `${provider} timed out` : `${provider} unreachable`, { cause: err });
+    }
+    if (!res.ok) {
+      throw new UpstreamError(`${provider} request failed with status ${res.status}`);
+    }
+    try {
+      return (await res.json()) as T;
+    } catch (err) {
+      throw new UpstreamError(
+        timedOut ? `${provider} timed out` : `${provider} returned an unreadable response`,
+        { cause: err },
+      );
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 

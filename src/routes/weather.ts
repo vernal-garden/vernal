@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { LRUCache } from 'lru-cache';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
 import { requireAuth, requireSupporter } from '../middleware/auth';
@@ -73,7 +74,15 @@ function formatReadingRow(row: WeatherReadingRow): NormalizedReading {
 }
 
 // In-memory cache of public-weather current conditions, keyed by "lat,lon".
-const publicCurrentCache = new Map<string, { reading: NormalizedReading; fetchedAt: number }>();
+// Bounded LRU; ttlResolution 0 + a perf that calls Date.now() each time so
+// expiry follows the current Date.
+const PUBLIC_CURRENT_CACHE_MAX = 5000;
+const publicCurrentCache = new LRUCache<string, NormalizedReading>({
+  max: PUBLIC_CURRENT_CACHE_MAX,
+  ttl: getTtlMs('public_weather'),
+  ttlResolution: 0,
+  perf: { now: () => Date.now() },
+});
 
 function tempestFailureReason(err: unknown): 'auth_failed' | 'not_found' | 'unreachable' {
   const message = err instanceof Error ? err.message : '';
@@ -300,16 +309,15 @@ weatherRouter.get('/current', requireSupporter, async (req: Request, res: Respon
 
     const geo = await geocode(location);
     const cacheKey = `${geo.lat},${geo.lon}`;
-    const ttlMs = getTtlMs('public_weather');
     const cached = publicCurrentCache.get(cacheKey);
 
-    if (cached && Date.now() - cached.fetchedAt < ttlMs) {
-      res.json({ ...cached.reading, source: 'public_weather', cached: true });
+    if (cached) {
+      res.json({ ...cached, source: 'public_weather', cached: true });
       return;
     }
 
     const reading = await fetchOpenMeteoCurrent(geo.lat, geo.lon);
-    publicCurrentCache.set(cacheKey, { reading, fetchedAt: Date.now() });
+    publicCurrentCache.set(cacheKey, reading);
     res.json({ ...reading, source: 'public_weather', cached: false });
   } catch (err) {
     logWeatherFailure('GET /weather/current failed', err);

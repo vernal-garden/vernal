@@ -54,6 +54,7 @@ describe('fetchTempestCurrent', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       'https://swd.weatherflow.com/swd/rest/observations/station/99?token=my-token',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -68,6 +69,7 @@ describe('fetchTempestCurrent', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       'https://swd.weatherflow.com/swd/rest/observations/station/123?token=a%2Fb%3Fc',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
