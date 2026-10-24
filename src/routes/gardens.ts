@@ -9,6 +9,7 @@ import { LIMITS, withinCap } from '../lib/limits';
 import { currentSeason } from '../lib/season';
 import { uploadToR2, isR2ConfigError, ownedThumbnailKey } from '../lib/r2';
 import { queueR2Deletions, queueDeletedGardens, drainSoon } from '../lib/r2Cleanup';
+import { processThumbnail, ImageRejectedError, ImageBusyError } from '../lib/imageProcessing';
 
 const router = Router();
 router.use(requireSession);
@@ -578,10 +579,24 @@ router.post(
         return res.status(400).json({ error: 'Expected a PNG image.' });
       }
 
+      // Re-encode so only decoded pixels reach storage (drops trailing data).
+      let png: Buffer;
+      try {
+        png = await processThumbnail(body);
+      } catch (err) {
+        if (err instanceof ImageRejectedError) {
+          return res.status(400).json({ error: 'Expected a PNG image.' });
+        }
+        if (err instanceof ImageBusyError) {
+          return res.status(503).json({ error: 'Busy, try again.' });
+        }
+        throw err;
+      }
+
       const key = `garden-thumbnails/${gardenId}/${crypto.randomUUID()}.png`;
       let url: string;
       try {
-        url = await uploadToR2(key, body, 'image/png');
+        url = await uploadToR2(key, png, 'image/png');
       } catch (err) {
         if (isR2ConfigError(err)) {
           return res.status(503).json({ error: 'Photo storage is not configured.' });

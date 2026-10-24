@@ -31,11 +31,22 @@ export function apiErrorMessage(err: unknown, fallback: string): string {
 }
 
 async function request<T>(method: string, path: string, payload?: unknown): Promise<T | undefined> {
+  return send<T>(method, path, {
+    headers: payload !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    body: payload !== undefined ? JSON.stringify(payload) : undefined,
+  });
+}
+
+async function send<T>(
+  method: string,
+  path: string,
+  init: { headers?: Record<string, string>; body?: BodyInit },
+): Promise<T | undefined> {
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     credentials: 'include',
-    headers: payload !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-    body: payload !== undefined ? JSON.stringify(payload) : undefined,
+    headers: init.headers,
+    body: init.body,
   });
 
   if (res.status === 204) return undefined;
@@ -55,3 +66,6 @@ export const post = <T>(path: string, body?: unknown)   => request<T>('POST',   
 export const patch = <T>(path: string, body?: unknown)  => request<T>('PATCH',  path, body);
 export const put  = <T>(path: string, body?: unknown)   => request<T>('PUT',    path, body);
 export const del  = <T>(path: string)                   => request<T>('DELETE', path);
+// Posts a raw Blob body (e.g. an image) with its own Content-Type, no JSON encoding.
+export const postBlob = <T>(path: string, blob: Blob, headers?: Record<string, string>) =>
+  send<T>('POST', path, { headers: { 'Content-Type': blob.type, ...headers }, body: blob });

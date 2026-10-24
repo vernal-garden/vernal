@@ -10,7 +10,17 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 // Config is read from process.env on every call (not at import time) so a
 // missing R2 setup only fails the code paths that actually touch storage.
+// The client is built once and reused: each one holds its own connection pool.
+let cachedClient: S3Client | null = null;
+
+/** Forget the cached client so the next call rebuilds it (used by tests). */
+export function resetR2Client(): void {
+  cachedClient = null;
+}
+
 function getClient(): S3Client {
+  if (cachedClient) return cachedClient;
+
   const accountId = process.env.R2_ACCOUNT_ID;
   const accessKeyId = process.env.R2_ACCESS_KEY_ID;
   const secretKey = process.env.R2_SECRET_ACCESS_KEY;
@@ -23,11 +33,12 @@ function getClient(): S3Client {
     );
   }
 
-  return new S3Client({
+  cachedClient = new S3Client({
     region: 'auto',
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey: secretKey },
   });
+  return cachedClient;
 }
 
 const BUCKET = () => {
@@ -78,33 +89,6 @@ export async function uploadToR2(
     }),
   );
   return `${PUBLIC_BASE()}/${key}`;
-}
-
-/**
- * Generate a presigned PUT URL for browser-direct upload.
- * Returns the URL; the caller PUTs the file directly to it.
- * Content-Type and Content-Length are both signed, so the PUT must send exactly
- * this Content-Type and Content-Length or R2 rejects it. (The presigner leaves
- * content-type unsigned by default, which would let a client store any type.)
- * expiresIn is in seconds (default 300 = 5 minutes).
- */
-export async function getPresignedUploadUrl(
-  key: string,
-  contentType: string,
-  contentLength: number,
-  expiresIn = 300,
-): Promise<string> {
-  const client = getClient();
-  return getSignedUrl(
-    client,
-    new PutObjectCommand({
-      Bucket: BUCKET(),
-      Key: key,
-      ContentType: contentType,
-      ContentLength: contentLength,
-    }),
-    { expiresIn, signableHeaders: new Set(['content-type', 'content-length']) },
-  );
 }
 
 /**
@@ -200,6 +184,21 @@ export async function listKeys(prefix: string, bucket?: string): Promise<string[
     for (const o of page.Contents ?? []) if (o.Key) keys.push(o.Key);
   }
   return keys;
+}
+
+/** Every object under a prefix, with its last-modified time. */
+export async function listObjects(
+  prefix: string,
+  bucket?: string,
+): Promise<{ key: string; lastModified: Date | null }[]> {
+  const client = getClient();
+  const objects: { key: string; lastModified: Date | null }[] = [];
+  for await (const page of listPages(client, { Bucket: bucket ?? BUCKET(), Prefix: prefix })) {
+    for (const o of page.Contents ?? []) {
+      if (o.Key) objects.push({ key: o.Key, lastModified: o.LastModified ?? null });
+    }
+  }
+  return objects;
 }
 
 // True for the plain Errors these helpers throw when R2 env vars are missing.

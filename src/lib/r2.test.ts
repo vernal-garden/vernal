@@ -24,6 +24,7 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 import {
+  S3Client,
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
@@ -32,7 +33,7 @@ import {
 } from '@aws-sdk/client-s3';
 import {
   uploadToR2,
-  getPresignedUploadUrl,
+  resetR2Client,
   getPresignedDownloadUrl,
   deleteFromR2,
   exportsBucket,
@@ -57,6 +58,8 @@ const R2_ENV = {
 describe('r2', () => {
   beforeEach(() => {
     Object.assign(process.env, R2_ENV);
+    resetR2Client();
+    vi.mocked(S3Client).mockClear();
     sendMock.mockReset().mockResolvedValue({});
     getSignedUrlMock.mockReset().mockResolvedValue('https://signed.example.com/url');
   });
@@ -79,23 +82,23 @@ describe('r2', () => {
     expect(url).toBe('https://cdn.example.com/photos/a.png');
   });
 
-  it('getPresignedUploadUrl signs a PutObjectCommand', async () => {
-    const url = await getPresignedUploadUrl('uploads/b.jpg', 'image/jpeg', 1234);
+  it('builds one S3Client and reuses it across calls', async () => {
+    await deleteFromR2('a');
+    await deleteFromR2('b');
+    expect(vi.mocked(S3Client)).toHaveBeenCalledTimes(1);
+  });
 
-    expect(getSignedUrlMock).toHaveBeenCalledTimes(1);
-    const [, cmd, opts] = getSignedUrlMock.mock.calls[0];
-    expect(cmd).toBeInstanceOf(PutObjectCommand);
-    expect(cmd.input).toMatchObject({
-      Bucket: 'test-bucket',
-      Key: 'uploads/b.jpg',
-      ContentType: 'image/jpeg',
-      ContentLength: 1234,
-    });
-    expect(opts.expiresIn).toBe(300);
-    expect(opts.signableHeaders).toBeInstanceOf(Set);
-    expect(opts.signableHeaders.has('content-type')).toBe(true);
-    expect(opts.signableHeaders.has('content-length')).toBe(true);
-    expect(typeof url).toBe('string');
+  it('resetR2Client makes the next call build a new client', async () => {
+    await deleteFromR2('a');
+    resetR2Client();
+    await deleteFromR2('b');
+    expect(vi.mocked(S3Client)).toHaveBeenCalledTimes(2);
+  });
+
+  it('still throws "R2 not configured" when env is missing, without building a client', async () => {
+    delete process.env.R2_ACCESS_KEY_ID;
+    await expect(deleteFromR2('a')).rejects.toThrow(/R2 not configured/);
+    expect(vi.mocked(S3Client)).not.toHaveBeenCalled();
   });
 
   it('getPresignedDownloadUrl signs a GetObjectCommand', async () => {

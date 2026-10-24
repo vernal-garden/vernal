@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import type { PoolClient } from 'pg';
 import { db } from '../lib/db';
@@ -10,8 +10,9 @@ import { currentSeason, isIsoDate } from '../lib/plantingSchedule';
 import { seasonOf } from '../lib/season';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { recomputeHarvestableCount } from '../lib/gardenBadges';
-import { getPresignedUploadUrl, harvestPhotoFolder } from '../lib/r2';
+import { harvestPhotoFolder, uploadToR2 } from '../lib/r2';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
+import { ImageBusyError, ImageRejectedError, processPhoto } from '../lib/imageProcessing';
 import { logger } from '../lib/logger';
 import type { SessionData } from '../types';
 
@@ -29,12 +30,12 @@ const UNITS = ['g', 'kg', 'oz', 'lb', 'count'] as const;
 const MAX_QUANTITY = 100000;
 const MAX_NOTES_LENGTH = 5000;
 const MAX_PHOTOS = 3;
-const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 const MAX_PLANT_OPTIONS = 30;
 const STORAGE_UNAVAILABLE = 'Photo storage is not configured.';
 const TOO_MANY_PHOTOS = `Up to ${MAX_PHOTOS} photos per harvest.`;
+const NOT_AN_IMAGE = "That file isn't a supported image.";
 
 const PACIFIC_DATE = new Intl.DateTimeFormat('en-CA', {
   timeZone: TZ,
@@ -1002,102 +1003,103 @@ router.delete('/:id', writeLimiter, async (req: Request, res: Response) => {
 
 const photoGuards = [requireAuth, requireSupporter, writeLimiter];
 
-// POST /api/harvests/:id/photos/upload-url
-router.post('/:id/photos/upload-url', ...photoGuards, async (req: Request, res: Response) => {
+// The photo is the raw request body; any other Content-Type leaves req.body
+// unset (or parsed as JSON), which the route answers with NOT_AN_IMAGE.
+const photoBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '5mb' });
+
+// Called after the upload landed but the entry didn't commit (the ROLLBACK
+// would have undone a queue row written in the transaction), so the queue
+// row goes in on its own through the pool. A failure here leaves an orphan
+// for the sweep script; it is logged, not rethrown.
+async function discardUpload(key: string): Promise<void> {
+  try {
+    const ids = await queueR2Deletions(db, [{ bucket: 'public', path: key, isPrefix: false }]);
+    drainSoon(ids);
+  } catch (err) {
+    logger.error('Could not queue an unsaved harvest photo for deletion', err, { key });
+  }
+}
+
+// POST /api/harvests/:id/photos — body: the raw image.
+router.post('/:id/photos', ...photoGuards, photoBody, async (req: Request, res: Response) => {
   const session = req.session as SessionData;
   const id = req.params.id as string;
   if (!isNumericId(id)) return res.status(400).json({ error: 'Invalid id' });
 
+  const input: unknown = req.body;
+  if (!Buffer.isBuffer(input)) return res.status(400).json({ error: NOT_AN_IMAGE });
+
+  // Set once the file is in R2; cleared just before COMMIT. Any exit in between queues
+  // the key for deletion.
+  let uploadedKey: string | null = null;
+
   try {
-    const entry = await fetchEntry(db, id, session);
-    if (!entry) return res.status(404).json({ error: 'Harvest not found' });
-    if (entry.photos.length >= MAX_PHOTOS) {
+    // Cheap checks before the encode; repeated under the row lock below.
+    const current = await fetchEntry(db, id, session);
+    if (!current) return res.status(404).json({ error: 'Harvest not found' });
+    if (current.photos.length >= MAX_PHOTOS) {
       return res.status(409).json({ error: TOO_MANY_PHOTOS });
     }
+    const base = publicBaseUrl();
+    if (!base) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
 
-    const body = bodyOf(req) ?? {};
-    if (body.contentType !== 'image/jpeg') {
-      return res.status(400).json({ error: 'Photos must be JPEG.' });
-    }
-    // The presigned PUT signs Content-Length, so the client must say how big
-    // the file is up front.
-    const size = body.size;
-    if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > MAX_PHOTO_BYTES) {
-      return res.status(400).json({ error: 'Photos must be 5 MB or smaller.' });
+    let photo: Buffer;
+    try {
+      photo = await processPhoto(input);
+    } catch (err) {
+      if (err instanceof ImageRejectedError) return res.status(400).json({ error: NOT_AN_IMAGE });
+      if (err instanceof ImageBusyError) return res.status(503).json({ error: 'Busy, try again.' });
+      throw err;
     }
 
     const key = `harvest-photos/${id}/${crypto.randomUUID()}.jpg`;
-    let uploadUrl: string;
     try {
-      uploadUrl = await getPresignedUploadUrl(key, 'image/jpeg', size, 300);
+      await uploadToR2(key, photo, 'image/jpeg');
     } catch (err) {
       if (isR2ConfigError(err)) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
       throw err;
     }
+    uploadedKey = key;
 
-    return res.json({ uploadUrl, key });
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Locked so concurrent uploads can't both pass the count check.
+      const existing = await lockEntry(client, id, session);
+      if (!existing) {
+        await client.query('ROLLBACK');
+        await discardUpload(key);
+        return res.status(404).json({ error: 'Harvest not found' });
+      }
+      if (existing.photos.length >= MAX_PHOTOS) {
+        await client.query('ROLLBACK');
+        await discardUpload(key);
+        return res.status(409).json({ error: TOO_MANY_PHOTOS });
+      }
+
+      await client.query(
+        `UPDATE harvest_entries SET photos = photos || jsonb_build_array($2::jsonb) WHERE id = $1`,
+        [id, JSON.stringify({ key, url: `${base}/${key}` })],
+      );
+
+      const entry = await fetchEntry(client, id, session);
+      // Cleared before COMMIT: if COMMIT errors the row may still have been
+      // saved, and a stray object is safer than deleting a referenced photo.
+      uploadedKey = null;
+      await client.query('COMMIT');
+      if (session.account) invalidateMetrics(session.account.id);
+      return res.json(formatEntry(entry!));
+    } catch (err) {
+      await rollback(client);
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (err) {
-    logger.error('POST /api/harvests/:id/photos/upload-url failed', err);
-    return res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// POST /api/harvests/:id/photos
-router.post('/:id/photos', ...photoGuards, async (req: Request, res: Response) => {
-  const session = req.session as SessionData;
-  const id = req.params.id as string;
-  if (!isNumericId(id)) return res.status(400).json({ error: 'Invalid id' });
-
-  const body = bodyOf(req) ?? {};
-
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Locked so concurrent attaches can't both pass the count check.
-    const existing = await lockEntry(client, id, session);
-    if (!existing) {
-      await rollback(client);
-      return res.status(404).json({ error: 'Harvest not found' });
-    }
-
-    const keyRe = new RegExp(`^harvest-photos/${id}/[0-9a-f-]{36}\\.jpg$`);
-    if (typeof body.key !== 'string' || !keyRe.test(body.key)) {
-      await rollback(client);
-      return res.status(400).json({ error: 'Invalid photo key.' });
-    }
-    const key = body.key;
-
-    if (existing.photos.length >= MAX_PHOTOS) {
-      await rollback(client);
-      return res.status(409).json({ error: TOO_MANY_PHOTOS });
-    }
-    if (existing.photos.some((p) => p.key === key)) {
-      await rollback(client);
-      return res.status(409).json({ error: 'Photo already added.' });
-    }
-
-    const base = publicBaseUrl();
-    if (!base) {
-      await rollback(client);
-      return res.status(503).json({ error: STORAGE_UNAVAILABLE });
-    }
-
-    await client.query(
-      `UPDATE harvest_entries SET photos = photos || jsonb_build_array($2::jsonb) WHERE id = $1`,
-      [id, JSON.stringify({ key, url: `${base}/${key}` })],
-    );
-
-    const entry = await fetchEntry(client, id, session);
-    await client.query('COMMIT');
-    if (session.account) invalidateMetrics(session.account.id);
-    return res.json(formatEntry(entry!));
-  } catch (err) {
-    await rollback(client);
+    if (uploadedKey) await discardUpload(uploadedKey);
     logger.error('POST /api/harvests/:id/photos failed', err);
     return res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    client.release();
   }
 });
 
