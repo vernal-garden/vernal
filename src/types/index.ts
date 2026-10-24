@@ -12,6 +12,7 @@ export interface SessionData {
   isGuest: boolean;     // true when account_id IS NULL
   expiresAt: Date;
   account: SessionAccount | null;
+  authenticatedAt: Date | null;  // last sign-in that linked this session to an account (migration 026)
 }
 
 export interface SessionAccount {

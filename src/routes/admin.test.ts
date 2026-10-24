@@ -12,8 +12,17 @@ const pool = new Pool({ connectionString: url });
 
 async function resetDb() {
   await pool.query(
-    'TRUNCATE accounts, guest_sessions, password_reset_tokens RESTART IDENTITY CASCADE',
+    'TRUNCATE accounts, guest_sessions, password_reset_tokens, admin_audit_log RESTART IDENTITY CASCADE',
   );
+}
+
+async function auditRows(targetType: string, targetId: number) {
+  const { rows } = await pool.query(
+    `SELECT admin_id, action, before, after FROM admin_audit_log
+     WHERE target_type = $1 AND target_id = $2 ORDER BY id`,
+    [targetType, targetId],
+  );
+  return rows;
 }
 
 async function createUser(
@@ -260,10 +269,38 @@ describe('Phase 37 admin API', () => {
       expect(res.body).toEqual({ error: 'Invalid id' });
     });
 
+    it('audits a tier change, and skips unchanged and missing accounts', async () => {
+      const auditTarget = await createUser('tier-audit-target@example.com', 'user');
+
+      const first = await adminAgent
+        .patch(`/api/admin/accounts/${auditTarget}/tier`)
+        .send({ tier: 'supporter' });
+      expect(first.status).toBe(200);
+      expect(await auditRows('account', auditTarget)).toEqual([
+        {
+          admin_id: adminId,
+          action: 'account.tier',
+          before: { tier: 'free' },
+          after: { tier: 'supporter' },
+        },
+      ]);
+
+      const again = await adminAgent
+        .patch(`/api/admin/accounts/${auditTarget}/tier`)
+        .send({ tier: 'supporter' });
+      expect(again.status).toBe(200);
+      expect(again.body).toEqual({ id: auditTarget, subscriptionTier: 'supporter' });
+      expect(await auditRows('account', auditTarget)).toHaveLength(1);
+
+      const missing = await adminAgent.patch('/api/admin/accounts/99999/tier').send({ tier: 'free' });
+      expect(missing.status).toBe(404);
+      expect(await auditRows('account', 99999)).toHaveLength(0);
+    });
+
     it('changes the role of another account', async () => {
       const res = await adminAgent
         .patch(`/api/admin/accounts/${targetId}/role`)
-        .send({ role: 'admin' });
+        .send({ role: 'admin', currentPassword: 'Password123!' });
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ id: targetId, role: 'admin' });
     });
@@ -412,6 +449,54 @@ describe('Phase 37 admin API', () => {
       expect(res.body.status).toBe('approved');
       expect(res.body.resolutionNote).toBeNull();
       expect(res.body.resolvedAt).not.toBeNull();
+    });
+
+    it('audits approve, reject and defer, and nothing on a 409', async () => {
+      const approveId = await insertModerationItem({ type: 'correction', cambiumSeedId });
+      const approve = await adminAgent
+        .patch(`/api/admin/moderation/${approveId}`)
+        .send({ action: 'approve', note: '  fine  ' });
+      expect(approve.status).toBe(200);
+      expect(await auditRows('moderation_item', approveId)).toEqual([
+        {
+          admin_id: adminId,
+          action: 'moderation.resolve',
+          before: { status: 'new' },
+          after: { status: 'approved', note: 'fine' },
+        },
+      ]);
+
+      const rejectId = await insertModerationItem({
+        type: 'correction',
+        cambiumSeedId,
+        status: 'under_review',
+      });
+      await adminAgent.patch(`/api/admin/moderation/${rejectId}`).send({ action: 'reject' });
+      expect(await auditRows('moderation_item', rejectId)).toEqual([
+        {
+          admin_id: adminId,
+          action: 'moderation.resolve',
+          before: { status: 'under_review' },
+          after: { status: 'rejected', note: null },
+        },
+      ]);
+
+      const deferId = await insertModerationItem({ type: 'correction', cambiumSeedId });
+      await adminAgent.patch(`/api/admin/moderation/${deferId}`).send({ action: 'defer' });
+      expect(await auditRows('moderation_item', deferId)).toEqual([
+        {
+          admin_id: adminId,
+          action: 'moderation.resolve',
+          before: { status: 'new' },
+          after: { status: 'under_review' },
+        },
+      ]);
+
+      const conflict = await adminAgent
+        .patch(`/api/admin/moderation/${approveId}`)
+        .send({ action: 'reject' });
+      expect(conflict.status).toBe(409);
+      expect(await auditRows('moderation_item', approveId)).toHaveLength(1);
     });
 
     it('returns 409 for any action on a resolved item', async () => {
@@ -747,6 +832,57 @@ describe('Phase 37 admin API', () => {
         .send({ ids: [newId, reviewedId, 99999], status: 'closed' });
       expect(res.status).toBe(200);
       expect(res.body.updated).toEqual([newId, reviewedId].sort((a, b) => a - b));
+    });
+
+    it('audits a single feedback status change, and skips a same-status request', async () => {
+      const id = await insertFeedback('new', 10);
+      const res = await adminAgent.patch(`/api/admin/feedback/${id}`).send({ status: 'reviewed' });
+      expect(res.status).toBe(200);
+      expect(await auditRows('feedback', id)).toEqual([
+        {
+          admin_id: adminId,
+          action: 'feedback.status',
+          before: { status: 'new' },
+          after: { status: 'reviewed' },
+        },
+      ]);
+
+      const same = await adminAgent.patch(`/api/admin/feedback/${id}`).send({ status: 'reviewed' });
+      expect(same.status).toBe(200);
+      expect(await auditRows('feedback', id)).toHaveLength(1);
+
+      const missing = await adminAgent.patch('/api/admin/feedback/99999').send({ status: 'closed' });
+      expect(missing.status).toBe(404);
+      expect(await auditRows('feedback', 99999)).toHaveLength(0);
+    });
+
+    it('audits only the rows a bulk update actually changes', async () => {
+      const a = await insertFeedback('new', 10);
+      const b = await insertFeedback('reviewed', 10);
+      const c = await insertFeedback('closed', 10);
+      const res = await adminAgent
+        .patch('/api/admin/feedback/bulk')
+        .send({ ids: [a, b, c], status: 'closed' });
+      expect(res.status).toBe(200);
+      expect(res.body.updated).toEqual([a, b, c].sort((x, y) => x - y));
+
+      expect(await auditRows('feedback', a)).toEqual([
+        {
+          admin_id: adminId,
+          action: 'feedback.status',
+          before: { status: 'new' },
+          after: { status: 'closed' },
+        },
+      ]);
+      expect(await auditRows('feedback', b)).toEqual([
+        {
+          admin_id: adminId,
+          action: 'feedback.status',
+          before: { status: 'reviewed' },
+          after: { status: 'closed' },
+        },
+      ]);
+      expect(await auditRows('feedback', c)).toHaveLength(0);
     });
 
     it('returns 400 for category=idea', async () => {

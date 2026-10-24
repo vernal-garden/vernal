@@ -28,6 +28,7 @@ function makeSession(overrides: Partial<SessionData> = {}): SessionData {
     isGuest: false,
     expiresAt: new Date(),
     account: null,
+    authenticatedAt: null,
     ...overrides,
   };
 }

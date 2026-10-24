@@ -11,7 +11,7 @@ import {
   type UsersCharts,
   type UsersSummary,
 } from '../../lib/adminApi';
-import { ApiError } from '../../lib/api';
+import { ApiError, get } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import Button from '../../components/admin/Button';
 import ConfirmDialog from '../../components/admin/ConfirmDialog';
@@ -293,6 +293,34 @@ export default function UsersPage() {
   const pendingRef = useRef(pending);
   pendingRef.current = pending;
 
+  // Role changes need the admin's password. AuthContext's account doesn't carry
+  // isPasswordAccount, so read it from /api/me; default true so the field shows
+  // until we know.
+  const [isPasswordAccount, setIsPasswordAccount] = useState(true);
+  const [rolePassword, setRolePassword] = useState('');
+  const [reauthRequired, setReauthRequired] = useState(false);
+  const [passwordHint, setPasswordHint] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    get<{ data: { isPasswordAccount: boolean } }>('/api/me')
+      .then((res) => {
+        if (!cancelled && res) setIsPasswordAccount(res.data.isPasswordAccount);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (pending === null) {
+      setRolePassword('');
+      setReauthRequired(false);
+      setPasswordHint(false);
+    }
+  }, [pending]);
+
   const openPanel = useCallback((accountId: number) => {
     if (selectedRef.current === null) {
       const active = document.activeElement;
@@ -323,13 +351,22 @@ export default function UsersPage() {
 
   function openAction(a: PendingAction) {
     setActionError(null);
+    setRolePassword('');
+    setReauthRequired(false);
+    setPasswordHint(false);
     setPending(a);
   }
 
   async function confirmAction() {
     if (!pending) return;
+    const needsPassword = pending.kind === 'role' && isPasswordAccount;
+    if (needsPassword && rolePassword === '') {
+      setPasswordHint(true);
+      return;
+    }
     setBusy(true);
     setActionError(null);
+    setReauthRequired(false);
     try {
       if (pending.kind === 'tier') {
         const res = await adminApi.setTier(pending.id, pending.next);
@@ -338,7 +375,7 @@ export default function UsersPage() {
         setList((prev) => (prev ? { ...prev, data: prev.data.map(patchRow) } : prev));
         setDetail((prev) => (prev ? patchRow(prev) : prev));
       } else {
-        const res = await adminApi.setRole(pending.id, pending.next);
+        const res = await adminApi.setRole(pending.id, pending.next, needsPassword ? rolePassword : undefined);
         const patchRow = <T extends AccountRow>(r: T): T => (r.id === res.id ? { ...r, role: res.role } : r);
         setList((prev) => (prev ? { ...prev, data: prev.data.map(patchRow) } : prev));
         setDetail((prev) => (prev ? patchRow(prev) : prev));
@@ -348,7 +385,13 @@ export default function UsersPage() {
       setRefreshKey((k) => k + 1);
       setPending(null);
     } catch (err: unknown) {
-      setActionError(apiErrorMessage(err, 'Could not update this account.'));
+      const body = err instanceof ApiError ? (err.body as { code?: unknown } | null) : null;
+      if (body && body.code === 'reauth_required') {
+        setReauthRequired(true);
+        setActionError(null);
+      } else {
+        setActionError(apiErrorMessage(err, 'Could not update this account.'));
+      }
     } finally {
       setBusy(false);
     }
@@ -691,7 +734,32 @@ export default function UsersPage() {
           setPending(null);
           setActionError(null);
         }}
-      />
+      >
+        {pending?.kind === 'role' && isPasswordAccount && (
+          <label style={labelStyle}>
+            Your password
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={rolePassword}
+              onChange={(e) => {
+                setRolePassword(e.target.value);
+                setPasswordHint(false);
+              }}
+              style={{ ...controlStyle, width: '100%' }}
+            />
+            {passwordHint && (
+              <span style={{ fontSize: 12, color: 'var(--c-danger)' }}>Enter your password to confirm.</span>
+            )}
+          </label>
+        )}
+        {pending?.kind === 'role' && reauthRequired && (
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--c-danger)' }}>
+            For security, sign in again to change roles.{' '}
+            <a href="/api/auth/oauth/google?returnTo=%2Fadmin%2Fusers">Sign in again</a>
+          </p>
+        )}
+      </ConfirmDialog>
     </div>
   );
 }
