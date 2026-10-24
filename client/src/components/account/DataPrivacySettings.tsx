@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
-import { get, post, del, ApiError } from '../../lib/api';
+import { get, post, del, ApiError, apiUrl } from '../../lib/api';
 import { useSignOut } from '../../hooks/useSignOut';
 import { useAuth } from '../../context/AuthContext';
 import ResponsiveDialog from '../shell/ResponsiveDialog';
@@ -235,7 +235,7 @@ function ExportDataCard() {
         <div style={{ marginTop: 'var(--sp-3)', display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
           <button
             type="button"
-            onClick={() => window.open(view.downloadUrl, '_blank', 'noopener,noreferrer')}
+            onClick={() => window.open(apiUrl(view.downloadUrl), '_blank', 'noopener,noreferrer')}
             style={{ ...primaryButtonSt, ...tallButton }}
           >
             Download

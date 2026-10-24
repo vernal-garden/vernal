@@ -1,8 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { sendMock, getSignedUrlMock } = vi.hoisted(() => ({
+const { sendMock, getSignedUrlMock, uploadCtorMock, uploadDoneMock, uploadAbortMock } = vi.hoisted(() => ({
   sendMock: vi.fn(),
   getSignedUrlMock: vi.fn(),
+  uploadCtorMock: vi.fn(),
+  uploadDoneMock: vi.fn(),
+  uploadAbortMock: vi.fn(),
+}));
+
+vi.mock('@aws-sdk/lib-storage', () => ({
+  Upload: class Upload {
+    constructor(opts: Record<string, unknown>) {
+      uploadCtorMock(opts);
+    }
+    done = uploadDoneMock;
+    abort = uploadAbortMock;
+  },
 }));
 
 vi.mock('@aws-sdk/client-s3', () => {
@@ -31,8 +44,10 @@ import {
   ListObjectsV2Command,
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
+import { PassThrough } from 'stream';
 import {
   uploadToR2,
+  uploadStreamToR2,
   resetR2Client,
   getPresignedDownloadUrl,
   deleteFromR2,
@@ -62,6 +77,9 @@ describe('r2', () => {
     vi.mocked(S3Client).mockClear();
     sendMock.mockReset().mockResolvedValue({});
     getSignedUrlMock.mockReset().mockResolvedValue('https://signed.example.com/url');
+    uploadCtorMock.mockReset();
+    uploadDoneMock.mockReset().mockResolvedValue({});
+    uploadAbortMock.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -80,6 +98,43 @@ describe('r2', () => {
       ContentType: 'image/png',
     });
     expect(url).toBe('https://cdn.example.com/photos/a.png');
+  });
+
+  describe('uploadStreamToR2', () => {
+    it('streams the body to the given bucket in 5 MB parts, one at a time', async () => {
+      const body = new PassThrough();
+      await uploadStreamToR2('exports/1/2.zip', body, 'application/zip', 'test-exports');
+
+      expect(uploadCtorMock).toHaveBeenCalledTimes(1);
+      const opts = uploadCtorMock.mock.calls[0][0];
+      expect(opts).toMatchObject({
+        params: { Bucket: 'test-exports', Key: 'exports/1/2.zip', Body: body, ContentType: 'application/zip' },
+        partSize: 5 * 1024 * 1024,
+        queueSize: 1,
+      });
+      expect(opts.client).toBe(vi.mocked(S3Client).mock.results[0].value);
+      expect(uploadDoneMock).toHaveBeenCalledTimes(1);
+      expect(uploadAbortMock).not.toHaveBeenCalled();
+    });
+
+    it('defaults to R2_BUCKET_NAME', async () => {
+      await uploadStreamToR2('k', new PassThrough(), 'text/plain');
+      expect(uploadCtorMock.mock.calls[0][0].params.Bucket).toBe('test-bucket');
+    });
+
+    it('aborts the upload and rethrows when it fails', async () => {
+      uploadDoneMock.mockRejectedValueOnce(new Error('part failed'));
+      await expect(
+        uploadStreamToR2('k', new PassThrough(), 'application/zip', 'test-exports'),
+      ).rejects.toThrow('part failed');
+      expect(uploadAbortMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('rethrows the upload error even when abort also fails', async () => {
+      uploadDoneMock.mockRejectedValueOnce(new Error('part failed'));
+      uploadAbortMock.mockRejectedValueOnce(new Error('abort failed'));
+      await expect(uploadStreamToR2('k', new PassThrough(), 'application/zip')).rejects.toThrow('part failed');
+    });
   });
 
   it('builds one S3Client and reuses it across calls', async () => {

@@ -8,6 +8,7 @@ import { hashToken } from '../lib/tokens';
 import * as mailer from '../lib/mailer';
 import * as exportWorker from '../lib/exportWorker';
 import * as billing from '../lib/billing';
+import * as r2 from '../lib/r2';
 
 vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
 const sendMailMock = vi.mocked(mailer.sendMail);
@@ -17,6 +18,14 @@ vi.mock('../lib/exportWorker', async (importOriginal) => ({
   processExportJob: vi.fn().mockResolvedValue(undefined),
 }));
 const processExportJobMock = vi.mocked(exportWorker.processExportJob);
+
+vi.mock('../lib/r2', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/r2')>()),
+  getPresignedDownloadUrl: vi.fn(),
+  exportsBucket: vi.fn(() => 'test-exports'),
+}));
+const presignMock = vi.mocked(r2.getPresignedDownloadUrl);
+const exportsBucketMock = vi.mocked(r2.exportsBucket);
 
 vi.mock('../lib/billing', () => ({
   stopRenewal: vi.fn().mockResolvedValue(undefined),
@@ -1070,20 +1079,14 @@ describe('/api/me/export', () => {
 
   async function insertJob(
     status: string,
-    opts: { expiresInDays?: number; downloadUrl?: string; requestedMinutesAgo?: number } = {},
+    opts: { expiresInDays?: number; requestedMinutesAgo?: number; account?: number } = {},
   ): Promise<number> {
     const { rows } = await pool.query<{ id: number }>(
-      `INSERT INTO data_export_jobs (account_id, status, requested_at, download_url, expires_at)
-       VALUES ($1, $2, NOW() - ($3::text || ' minutes')::interval, $4,
-               CASE WHEN $5::int IS NULL THEN NULL ELSE NOW() + ($5::text || ' days')::interval END)
+      `INSERT INTO data_export_jobs (account_id, status, requested_at, expires_at)
+       VALUES ($1, $2, NOW() - ($3::text || ' minutes')::interval,
+               CASE WHEN $4::int IS NULL THEN NULL ELSE NOW() + ($4::text || ' days')::interval END)
        RETURNING id`,
-      [
-        accountId,
-        status,
-        opts.requestedMinutesAgo ?? 0,
-        opts.downloadUrl ?? null,
-        opts.expiresInDays ?? null,
-      ],
+      [opts.account ?? accountId, status, opts.requestedMinutesAgo ?? 0, opts.expiresInDays ?? null],
     );
     return rows[0].id;
   }
@@ -1096,6 +1099,8 @@ describe('/api/me/export', () => {
   beforeEach(async () => {
     await pool.query('DELETE FROM data_export_jobs WHERE account_id = $1', [accountId]);
     processExportJobMock.mockClear();
+    presignMock.mockReset().mockResolvedValue('https://signed.example.com/export.zip?sig=abc');
+    exportsBucketMock.mockReset().mockReturnValue('test-exports');
   });
 
   it('POST inserts a pending job and returns 202 with its id', async () => {
@@ -1128,11 +1133,11 @@ describe('/api/me/export', () => {
   });
 
   it('POST returns the existing download for an unexpired complete job', async () => {
-    await insertJob('complete', { expiresInDays: 3, downloadUrl: 'https://r2.example.com/x.zip' });
+    await insertJob('complete', { expiresInDays: 3 });
     const res = await agent.post('/api/me/export');
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe('complete');
-    expect(res.body.data.downloadUrl).toBe('https://r2.example.com/x.zip');
+    expect(res.body.data.downloadUrl).toBe('/api/me/export/download');
     expect(res.body.data.expiresAt).toBeTruthy();
     expect(processExportJobMock).not.toHaveBeenCalled();
 
@@ -1144,10 +1149,7 @@ describe('/api/me/export', () => {
   });
 
   it('POST creates a new job once the complete job has expired', async () => {
-    const oldId = await insertJob('complete', {
-      expiresInDays: -1,
-      downloadUrl: 'https://r2.example.com/old.zip',
-    });
+    const oldId = await insertJob('complete', { expiresInDays: -1 });
     const res = await agent.post('/api/me/export');
     expect(res.status).toBe(202);
     expect(res.body.data.jobId).not.toBe(oldId);
@@ -1162,17 +1164,14 @@ describe('/api/me/export', () => {
 
   it('GET returns the latest job', async () => {
     await insertJob('failed', { requestedMinutesAgo: 60 });
-    const latestId = await insertJob('complete', {
-      expiresInDays: 7,
-      downloadUrl: 'https://r2.example.com/new.zip',
-    });
+    const latestId = await insertJob('complete', { expiresInDays: 7 });
 
     const res = await agent.get('/api/me/export');
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({
       jobId: latestId,
       status: 'complete',
-      downloadUrl: 'https://r2.example.com/new.zip',
+      downloadUrl: '/api/me/export/download',
       expired: false,
     });
     expect(res.body.data.requestedAt).toBeTruthy();
@@ -1180,7 +1179,7 @@ describe('/api/me/export', () => {
   });
 
   it('GET marks a complete job past expires_at as expired with no download URL', async () => {
-    await insertJob('complete', { expiresInDays: -1, downloadUrl: 'https://r2.example.com/old.zip' });
+    await insertJob('complete', { expiresInDays: -1 });
     const res = await agent.get('/api/me/export');
     expect(res.status).toBe(200);
     expect(res.body.data.status).toBe('complete');
@@ -1249,6 +1248,79 @@ describe('/api/me/export', () => {
     await guest.post('/api/auth/guest');
     expect((await guest.post('/api/me/export')).status).toBe(401);
     expect((await guest.get('/api/me/export')).status).toBe(401);
+    expect((await guest.get('/api/me/export/download')).status).toBe(401);
+  });
+
+  it.each(['pending', 'processing', 'failed'])('GET returns no download link for a %s job', async (status) => {
+    await insertJob(status);
+    const res = await agent.get('/api/me/export');
+    expect(res.status).toBe(200);
+    expect(res.body.data.downloadUrl).toBeNull();
+  });
+
+  it('GET returns the link for a complete job even if an old URL was stored', async () => {
+    const jobId = await insertJob('complete', { expiresInDays: 2 });
+    await pool.query(`UPDATE data_export_jobs SET download_url = 'https://old.example.com/x' WHERE id = $1`, [jobId]);
+    const res = await agent.get('/api/me/export');
+    expect(res.body.data.downloadUrl).toBe('/api/me/export/download');
+    expect(JSON.stringify(res.body)).not.toContain('old.example.com');
+  });
+
+  describe('GET /api/me/export/download', () => {
+    it('redirects to a 5-minute signed link for the latest unexpired export', async () => {
+      await insertJob('complete', { expiresInDays: 1, requestedMinutesAgo: 60 });
+      const jobId = await insertJob('complete', { expiresInDays: 6 });
+
+      const res = await agent.get('/api/me/export/download');
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe('https://signed.example.com/export.zip?sig=abc');
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(presignMock).toHaveBeenCalledWith(`exports/${accountId}/${jobId}.zip`, 300, 'test-exports');
+    });
+
+    it('returns 404 with no export', async () => {
+      const res = await agent.get('/api/me/export/download');
+      expect(res.status).toBe(404);
+      expect(res.body.error).toBe('No export available.');
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(presignMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for an expired export', async () => {
+      await insertJob('complete', { expiresInDays: -1 });
+      expect((await agent.get('/api/me/export/download')).status).toBe(404);
+    });
+
+    it.each(['pending', 'processing', 'failed'])('returns 404 for a %s job', async (status) => {
+      await insertJob(status);
+      expect((await agent.get('/api/me/export/download')).status).toBe(404);
+    });
+
+    it("never signs another account's export", async () => {
+      const otherId = await createUser('me-export-download-other@example.com');
+      await insertJob('complete', { expiresInDays: 3, account: otherId });
+
+      expect((await agent.get('/api/me/export/download')).status).toBe(404);
+      expect(presignMock).not.toHaveBeenCalled();
+
+      await pool.query('DELETE FROM accounts WHERE id = $1', [otherId]);
+    });
+
+    it('returns 503 when export storage is not configured', async () => {
+      await insertJob('complete', { expiresInDays: 3 });
+      exportsBucketMock.mockImplementation(() => {
+        throw new Error('R2_EXPORTS_BUCKET_NAME is not set.');
+      });
+      const res = await agent.get('/api/me/export/download');
+      expect(res.status).toBe(503);
+      expect(res.body.error).toBe('Export storage is not configured.');
+    });
+
+    it('returns 500 when signing fails for another reason', async () => {
+      await insertJob('complete', { expiresInDays: 3 });
+      presignMock.mockRejectedValueOnce(new Error('boom'));
+      expect((await agent.get('/api/me/export/download')).status).toBe(500);
+    });
   });
 });
 
