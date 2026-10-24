@@ -309,6 +309,19 @@ export const passwordChangeLimiter = rateLimit({
   message: { error: 'Too many password change attempts — please try again later' },
 });
 
+// PATCH /api/admin/accounts/:id/role — each attempt may run bcrypt on the
+// admin's password. Only failed attempts count.
+export const adminRoleChangeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
+  skipSuccessfulRequests: true,
+  skip: skipInTest,
+  message: { error: 'Too many role change attempts — please try again later' },
+});
+
 // POST /api/subscription/checkout — each request can create Stripe objects.
 export const checkoutLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
