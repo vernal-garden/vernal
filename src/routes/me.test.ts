@@ -4,6 +4,7 @@ import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { Pool } from 'pg';
 import app from '../index';
+import { hashToken } from '../lib/tokens';
 import * as mailer from '../lib/mailer';
 import * as exportWorker from '../lib/exportWorker';
 import * as billing from '../lib/billing';
@@ -74,14 +75,13 @@ async function loginAgent(email: string, password = 'Password123!') {
   return agent;
 }
 
-// A session row written the pre-021 way (raw token only; the trigger fills
-// token_hash) and a cookie signed from that raw token.
+// A session row (stored by token hash) and a cookie signed from the raw token.
 async function insertLegacySession(accountId: number): Promise<string> {
   const raw = crypto.randomBytes(32).toString('hex');
   await pool.query(
-    `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+    `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
      VALUES ($1, now() + interval '1 day', $2, now())`,
-    [raw, accountId],
+    [hashToken(raw), accountId],
   );
   const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
   return `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`;
@@ -368,9 +368,9 @@ describe('PATCH /api/me/password', () => {
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+      `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
        VALUES ($1, $2, $3, now())`,
-      [token, expiresAt, acct.id],
+      [hashToken(token), expiresAt, acct.id],
     );
     const secret = process.env.SESSION_SECRET!;
     const sig = crypto.createHmac('sha256', secret).update(token).digest('hex');
@@ -768,8 +768,8 @@ describe('PATCH /api/me/email', () => {
     const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at) VALUES ($1, $2, $3, now())`,
-      [token, expiresAt, oauthId],
+      `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at) VALUES ($1, $2, $3, now())`,
+      [hashToken(token), expiresAt, oauthId],
     );
     const secret = process.env.SESSION_SECRET!;
     const sig = crypto.createHmac('sha256', secret).update(token).digest('hex');

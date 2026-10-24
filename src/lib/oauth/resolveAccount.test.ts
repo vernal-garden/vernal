@@ -58,7 +58,7 @@ describe('resolveOAuthAccount', () => {
   it('claims an unverified password account: password removed, tokens and sessions cleared', async () => {
     const id = await passwordAccount('squatted@example.com', false);
     await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+      `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
        VALUES ('squatter-session', now() + interval '1 day', $1, now())`,
       [id],
     );

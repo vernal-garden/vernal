@@ -47,36 +47,21 @@ describe('verifySignedToken', () => {
 const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 afterAll(() => pool.end());
 
-describe('guest_sessions token_hash trigger (old-code writes)', () => {
-  it('fills token_hash from a raw token on insert', async () => {
-    const raw = 'trigger-insert-' + Date.now();
-    const { rows } = await pool.query<{ token_hash: string }>(
-      `INSERT INTO guest_sessions (token, expires_at) VALUES ($1, now() + interval '1 day')
-       RETURNING token_hash`,
-      [raw],
+// Migration 024: raw tokens are cleared and the hashing trigger is gone. The
+// column itself is dropped by a later migration.
+describe('guest_sessions plaintext token retired', () => {
+  it('has no rows with a plaintext token', async () => {
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM guest_sessions WHERE token IS NOT NULL',
     );
-    expect(rows[0].token_hash).toBe(hashToken(raw));
+    expect(rows[0].n).toBe(0);
   });
 
-  it('refills token_hash when an old process rotates the raw token', async () => {
-    const raw = 'trigger-old-' + Date.now();
-    const next = 'trigger-new-' + Date.now();
-    await pool.query(`INSERT INTO guest_sessions (token, expires_at) VALUES ($1, now() + interval '1 day')`, [raw]);
-    const { rows } = await pool.query<{ token_hash: string }>(
-      'UPDATE guest_sessions SET token = $1 WHERE token = $2 RETURNING token_hash',
-      [next, raw],
-    );
-    expect(rows[0].token_hash).toBe(hashToken(next));
-  });
-
-  it('leaves token_hash alone when token is NULL (new-code writes)', async () => {
-    const hash = hashToken('trigger-null-' + Date.now());
-    const { rows } = await pool.query<{ token: string | null; token_hash: string }>(
-      `INSERT INTO guest_sessions (token_hash, expires_at) VALUES ($1, now() + interval '1 day')
-       RETURNING token, token_hash`,
-      [hash],
-    );
-    expect(rows[0]).toEqual({ token: null, token_hash: hash });
+  it('no longer has the token_hash trigger or its function', async () => {
+    const trigger = await pool.query("SELECT 1 FROM pg_trigger WHERE tgname = 'guest_sessions_fill_token_hash'");
+    const fn = await pool.query("SELECT 1 FROM pg_proc WHERE proname = 'guest_sessions_fill_token_hash'");
+    expect(trigger.rows).toHaveLength(0);
+    expect(fn.rows).toHaveLength(0);
   });
 });
 

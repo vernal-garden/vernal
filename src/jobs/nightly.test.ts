@@ -610,7 +610,7 @@ describe('purgeExpiredGuests', () => {
     opts: { migratedToAccountId?: number; thumbnail?: boolean } = {},
   ): Promise<{ sessionId: string; gardenId: number }> {
     const { rows: sessions } = await pool.query<{ id: string }>(
-      `INSERT INTO guest_sessions (token, expires_at, migrated_at, account_id)
+      `INSERT INTO guest_sessions (token_hash, expires_at, migrated_at, account_id)
        VALUES ($1, NOW() - INTERVAL '1 day',
                CASE WHEN $2::int IS NULL THEN NULL ELSE NOW() END, $2::int)
        RETURNING id`,
@@ -685,19 +685,19 @@ describe('purgeExpiredGuests', () => {
   it('deletes expired non-migrated sessions but keeps expired migrated sessions', async () => {
     const ownerId = await createAccount();
     await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at, migrated_at)
+      `INSERT INTO guest_sessions (token_hash, expires_at, migrated_at)
        VALUES ('nightly-expired-not-migrated', NOW() - INTERVAL '1 day', NULL)`,
     );
     await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at, migrated_at, account_id)
+      `INSERT INTO guest_sessions (token_hash, expires_at, migrated_at, account_id)
        VALUES ('nightly-expired-migrated', NOW() - INTERVAL '1 day', NOW(), $1)`,
       [ownerId],
     );
 
     await purgeExpiredGuests();
 
-    const { rows } = await pool.query<{ token: string }>('SELECT token FROM guest_sessions');
-    const tokens = rows.map((r) => r.token);
+    const { rows } = await pool.query<{ token_hash: string }>('SELECT token_hash FROM guest_sessions');
+    const tokens = rows.map((r) => r.token_hash);
     expect(tokens).not.toContain('nightly-expired-not-migrated');
     expect(tokens).toContain('nightly-expired-migrated');
   });
@@ -732,7 +732,7 @@ describe('purgeExpiredGuests — empty guests and batching', () => {
   async function insertGuest(createdAgo: string, opts: { expired?: boolean; migratedTo?: number } = {}) {
     tokenCounter += 1;
     const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO guest_sessions (token, created_at, expires_at, migrated_at, account_id)
+      `INSERT INTO guest_sessions (token_hash, created_at, expires_at, migrated_at, account_id)
        VALUES ($1, NOW() - $2::interval,
                CASE WHEN $3::boolean THEN NOW() - INTERVAL '1 hour' ELSE NOW() + INTERVAL '20 days' END,
                CASE WHEN $4::int IS NULL THEN NULL ELSE NOW() END, $4::int)
@@ -840,7 +840,7 @@ describe('purgeExpiredGuests — empty guests and batching', () => {
   async function insertAccountSession(accountId: number, expiredAgo: string): Promise<string> {
     tokenCounter += 1;
     const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO guest_sessions (token, created_at, expires_at, migrated_at, account_id)
+      `INSERT INTO guest_sessions (token_hash, created_at, expires_at, migrated_at, account_id)
        VALUES ($1, NOW() - INTERVAL '60 days', NOW() - $2::interval, NOW() - INTERVAL '60 days', $3)
        RETURNING id`,
       [`account-session-${tokenCounter}`, expiredAgo, accountId],
@@ -1097,7 +1097,7 @@ describe('purgeScheduledAccounts', () => {
   it("deletes the account's sessions and queues their pending guest gardens", async () => {
     const accountId = await createAccount({ deletionScheduledAtDaysAgo: 31 });
     const { rows: sessions } = await pool.query<{ id: string }>(
-      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
+      `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
        VALUES ('purge-linked', NOW() + INTERVAL '1 day', $1, NOW()) RETURNING id`,
       [accountId],
     );
