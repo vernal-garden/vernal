@@ -47,14 +47,13 @@ describe('verifySignedToken', () => {
 const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 afterAll(() => pool.end());
 
-// Migration 024: raw tokens are cleared and the hashing trigger is gone. The
-// column itself is dropped by a later migration.
+// Migrations 024 and 025: the hashing trigger and the plaintext column are gone.
 describe('guest_sessions plaintext token retired', () => {
-  it('has no rows with a plaintext token', async () => {
-    const { rows } = await pool.query<{ n: number }>(
-      'SELECT count(*)::int AS n FROM guest_sessions WHERE token IS NOT NULL',
+  it('no longer has a token column', async () => {
+    const { rows } = await pool.query(
+      "SELECT 1 FROM information_schema.columns WHERE table_name = 'guest_sessions' AND column_name = 'token'",
     );
-    expect(rows[0].n).toBe(0);
+    expect(rows).toHaveLength(0);
   });
 
   it('no longer has the token_hash trigger or its function', async () => {

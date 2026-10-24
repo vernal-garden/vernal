@@ -537,11 +537,11 @@ describe('hashed session tokens', () => {
   it('stores only the hash for a new guest session', async () => {
     const guest = await request(app).post('/api/auth/guest');
     const raw = rawTokenOf(cookiesOf(guest));
-    const { rows } = await pool.query<{ token: string | null; token_hash: string }>(
-      'SELECT token, token_hash FROM guest_sessions WHERE token_hash = $1',
+    const { rows } = await pool.query<{ token_hash: string }>(
+      'SELECT token_hash FROM guest_sessions WHERE token_hash = $1',
       [hashToken(raw)],
     );
-    expect(rows).toEqual([{ token: null, token_hash: hashToken(raw) }]);
+    expect(rows).toEqual([{ token_hash: hashToken(raw) }]);
   });
 
   it('stores only the hash after login, and the cookie authenticates', async () => {
@@ -549,11 +549,11 @@ describe('hashed session tokens', () => {
     await createUser(email);
     const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123!' });
     const cookie = cookiesOf(login);
-    const { rows } = await pool.query<{ token: string | null }>(
-      'SELECT token FROM guest_sessions WHERE token_hash = $1',
+    const { rows } = await pool.query(
+      'SELECT 1 FROM guest_sessions WHERE token_hash = $1',
       [hashToken(rawTokenOf(cookie))],
     );
-    expect(rows).toEqual([{ token: null }]);
+    expect(rows).toHaveLength(1);
     expect((await request(app).get('/api/me').set('Cookie', cookie)).status).toBe(200);
   });
 
