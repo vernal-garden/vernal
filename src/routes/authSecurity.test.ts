@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
-import crypto from 'crypto';
 import { Pool } from 'pg';
 import app from '../index';
 import * as mailer from '../lib/mailer';
@@ -543,7 +542,6 @@ describe('hashed session tokens', () => {
       [hashToken(raw)],
     );
     expect(rows).toEqual([{ token: null, token_hash: hashToken(raw) }]);
-    expect((await pool.query('SELECT 1 FROM guest_sessions WHERE token = $1', [raw])).rows).toHaveLength(0);
   });
 
   it('stores only the hash after login, and the cookie authenticates', async () => {
@@ -557,33 +555,6 @@ describe('hashed session tokens', () => {
     );
     expect(rows).toEqual([{ token: null }]);
     expect((await request(app).get('/api/me').set('Cookie', cookie)).status).toBe(200);
-  });
-
-  it('a session written the old way (raw token only) still authenticates', async () => {
-    const accountId = await createUser(nextEmail('hashed-legacy'));
-    const raw = crypto.randomBytes(32).toString('hex');
-    await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
-       VALUES ($1, now() + interval '1 day', $2, now())`,
-      [raw, accountId],
-    );
-    const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
-    const res = await request(app).get('/api/me').set('Cookie', `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`);
-    expect(res.status).toBe(200);
-  });
-
-  it('logging in over an old-style session clears its plaintext token', async () => {
-    const email = nextEmail('hashed-rotate-legacy');
-    await createUser(email);
-    const raw = crypto.randomBytes(32).toString('hex');
-    await pool.query(`INSERT INTO guest_sessions (token, expires_at) VALUES ($1, now() + interval '1 day')`, [raw]);
-    const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
-    const login = await request(app)
-      .post('/api/auth/login')
-      .set('Cookie', `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`)
-      .send({ email, password: 'Password123!' });
-    expect(login.status).toBe(200);
-    expect((await pool.query('SELECT 1 FROM guest_sessions WHERE token = $1', [raw])).rows).toHaveLength(0);
   });
 
   it('GET /session cold path still reports a recoverable expired guest', async () => {
@@ -605,22 +576,6 @@ describe('hashed session tokens', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.authenticated).toBe(false);
     expect(res.body.data.guestExpired).toBe('gone');
-  });
-
-  it('logout deletes a session row written the old way (raw token only)', async () => {
-    const accountId = await createUser(nextEmail('hashed-legacy-logout'));
-    const raw = crypto.randomBytes(32).toString('hex');
-    await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at, account_id, migrated_at)
-       VALUES ($1, now() + interval '1 day', $2, now())`,
-      [raw, accountId],
-    );
-    const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(raw).digest('hex');
-    const cookie = `_vernal_sid=${encodeURIComponent(`${raw}.${sig}`)}`;
-    const out = await request(app).delete('/api/auth/session').set('Cookie', cookie);
-    expect(out.status).toBe(200);
-    expect((await pool.query('SELECT 1 FROM guest_sessions WHERE account_id = $1', [accountId])).rows).toHaveLength(0);
-    expect((await request(app).get('/api/me').set('Cookie', cookie)).status).toBe(401);
   });
 });
 

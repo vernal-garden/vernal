@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import app from '../index';
 import { COOKIE_NAME } from '../lib/sessions';
+import { hashToken } from '../lib/tokens';
 
 const pool = new Pool({
   connectionString: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL,
@@ -69,8 +70,8 @@ describe('Session expiry', () => {
     const expiresAt = new Date(Date.now() - 60 * 1000); // 1 minute in the past
 
     await pool.query(
-      `INSERT INTO guest_sessions (token, expires_at) VALUES ($1, $2)`,
-      [rawToken, expiresAt],
+      `INSERT INTO guest_sessions (token_hash, expires_at) VALUES ($1, $2)`,
+      [hashToken(rawToken), expiresAt],
     );
 
     const cookie = `${COOKIE_NAME}=${signToken(rawToken)}`;

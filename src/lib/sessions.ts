@@ -120,10 +120,9 @@ async function updateSessionToken(
 ): Promise<{ signedToken: string; expiresAt: Date } | null> {
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const token = generateToken();
-  // token = NULL also clears the plaintext on rows created before migration 021.
   const result = await runner.query(
     `UPDATE guest_sessions
-        SET token = NULL, token_hash = $1, account_id = $2,
+        SET token_hash = $1, account_id = $2,
             migrated_at = COALESCE(migrated_at, now()), expires_at = $3
       WHERE token_hash = $4 AND (account_id IS NULL OR account_id = $2)
         ${requireLive ? 'AND expires_at > now()' : ''}`,
