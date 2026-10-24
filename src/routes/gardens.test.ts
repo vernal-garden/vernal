@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
+import sharp from 'sharp';
 
 vi.mock('../lib/r2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/r2')>()),
@@ -409,7 +410,8 @@ describe('Id validation', () => {
 describe('Garden thumbnails', () => {
   const BASE_URL = 'https://cdn.test.example';
   const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const png = () => Buffer.concat([PNG_SIG, Buffer.from('fake-image-data')]);
+  let realPng: Buffer;
+  const png = () => realPng;
   const KEY_RE = (gardenId: string) =>
     new RegExp(`^garden-thumbnails/${gardenId}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.png$`);
 
@@ -436,6 +438,9 @@ describe('Garden thumbnails', () => {
   beforeAll(async () => {
     prevBaseUrl = process.env.R2_PUBLIC_BASE_URL;
     process.env.R2_PUBLIC_BASE_URL = BASE_URL;
+    realPng = await sharp({ create: { width: 32, height: 24, channels: 3, background: '#4a7' } })
+      .png()
+      .toBuffer();
     await createUser('thumb-user@example.com');
     agent = await loginAgent('thumb-user@example.com');
   });
@@ -491,6 +496,24 @@ describe('Garden thumbnails', () => {
   it('non-PNG bytes → 400', async () => {
     const gardenId = await createGarden(agent);
     const res = await upload(agent, gardenId, Buffer.from('GIF89a not a png at all'));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Expected a PNG image.');
+    expect(uploadToR2).not.toHaveBeenCalled();
+  });
+
+  it('re-encodes the PNG: trailing data is dropped', async () => {
+    const gardenId = await createGarden(agent);
+    const res = await upload(agent, gardenId, Buffer.concat([png(), Buffer.from('TRAILING-DATA')]));
+    expect(res.status).toBe(200);
+    expect(uploadToR2).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(uploadToR2).mock.calls[0][1] as Buffer;
+    expect((await sharp(sent).metadata()).format).toBe('png');
+    expect(sent.includes(Buffer.from('TRAILING-DATA'))).toBe(false);
+  });
+
+  it('PNG signature followed by garbage → 400 and no upload', async () => {
+    const gardenId = await createGarden(agent);
+    const res = await upload(agent, gardenId, Buffer.concat([PNG_SIG, Buffer.from('fake-image-data')]));
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Expected a PNG image.');
     expect(uploadToR2).not.toHaveBeenCalled();

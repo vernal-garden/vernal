@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, del, get, patch, post } from '../lib/api';
+import { del, get, patch, post, postBlob } from '../lib/api';
 import type {
   HarvestEntry,
   HarvestInput,
@@ -114,19 +114,11 @@ export async function fetchPlantOptions(q: string): Promise<PlantOption[]> {
   return res?.data ?? [];
 }
 
-// upload-url → PUT to storage (no credentials) → attach. Returns the entry.
+// Posts the compressed image to the API, which processes and stores it. Returns the entry.
 export async function uploadHarvestPhoto(entryId: string, blob: Blob): Promise<HarvestEntry> {
-  const target = await post<{ uploadUrl: string; key: string }>(
-    `/api/harvests/${entryId}/photos/upload-url`,
-    { contentType: 'image/jpeg', size: blob.size },
-  );
-  const put = await fetch(target!.uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'image/jpeg' },
-    body: blob,
-  });
-  if (!put.ok) throw new ApiError(put.status, null);
-  return (await post<HarvestEntry>(`/api/harvests/${entryId}/photos`, { key: target!.key }))!;
+  return (await postBlob<HarvestEntry>(`/api/harvests/${entryId}/photos`, blob, {
+    'Content-Type': 'image/jpeg',
+  }))!;
 }
 
 export async function removeHarvestPhoto(entryId: string, key: string): Promise<HarvestEntry> {

@@ -2,10 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
+import sharp from 'sharp';
 
 vi.mock('../lib/r2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/r2')>()),
-  getPresignedUploadUrl: vi.fn(),
+  uploadToR2: vi.fn(),
   deleteFromR2: vi.fn(),
 }));
 
@@ -14,13 +15,20 @@ vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
   drainSoon: vi.fn(),
 }));
 
-import { getPresignedUploadUrl, deleteFromR2 } from '../lib/r2';
+// The real processor, wrapped so a test can force a busy limiter.
+vi.mock('../lib/imageProcessing', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/imageProcessing')>();
+  return { ...actual, processPhoto: vi.fn(actual.processPhoto) };
+});
+
+import { uploadToR2, deleteFromR2 } from '../lib/r2';
 import { drainSoon } from '../lib/r2Cleanup';
+import { ImageBusyError, processPhoto } from '../lib/imageProcessing';
 import { refreshGardenBadges } from '../jobs/nightly';
 import { addDays, currentSeason } from '../lib/plantingSchedule';
 import app from '../index';
 
-const getPresignedUploadUrlMock = vi.mocked(getPresignedUploadUrl);
+const uploadToR2Mock = vi.mocked(uploadToR2);
 const deleteFromR2Mock = vi.mocked(deleteFromR2);
 
 const url = process.env.TEST_DATABASE_URL;
@@ -166,10 +174,14 @@ async function createEntry(agent: Agent, body: Record<string, unknown>) {
 let peaId: number;
 let tomatoId: number;
 let originalBase: string | undefined;
+let jpeg: Buffer;
 
 beforeAll(async () => {
   originalBase = process.env.R2_PUBLIC_BASE_URL;
   process.env.R2_PUBLIC_BASE_URL = `${PUBLIC_BASE}/`;
+  jpeg = await sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a7' } })
+    .jpeg()
+    .toBuffer();
   await resetDb();
   peaId = await createCambiumSeed('Pea', 'Pisum sativum');
   tomatoId = await createCambiumSeed('Tomato', 'Solanum lycopersicum');
@@ -178,8 +190,9 @@ beforeAll(async () => {
 beforeEach(async () => {
   await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
   vi.mocked(drainSoon).mockClear();
-  getPresignedUploadUrlMock.mockReset();
-  getPresignedUploadUrlMock.mockResolvedValue('https://r2.test/put');
+  vi.mocked(processPhoto).mockClear();
+  uploadToR2Mock.mockReset();
+  uploadToR2Mock.mockImplementation(async (key: string) => `${PUBLIC_BASE}/${key}`);
   deleteFromR2Mock.mockReset();
   deleteFromR2Mock.mockResolvedValue(undefined);
 });
@@ -316,13 +329,13 @@ describe('Ownership', () => {
       ['GET /?gardenId', () => me.get(`/api/harvests?gardenId=${theirGarden}`)],
       ['GET /export.csv', () => me.get(`/api/harvests/export.csv?gardenId=${theirGarden}`)],
       [
-        'POST /:id/photos/upload-url',
+        'POST /:id/photos',
         () =>
           me
-            .post(`/api/harvests/${theirEntry}/photos/upload-url`)
-            .send({ contentType: 'image/jpeg', size: 1000 }),
+            .post(`/api/harvests/${theirEntry}/photos`)
+            .set('Content-Type', 'image/jpeg')
+            .send(jpeg),
       ],
-      ['POST /:id/photos', () => me.post(`/api/harvests/${theirEntry}/photos`).send({ key: photoKey })],
       [
         'DELETE /:id/photos',
         () => me.delete(`/api/harvests/${theirEntry}/photos?key=${encodeURIComponent(photoKey)}`),
@@ -332,6 +345,7 @@ describe('Ownership', () => {
       const r = await send();
       expect(r.status, label).toBe(404);
     }
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
 
     const list = await me.get('/api/harvests');
     expect(list.body.data.map((e: { id: string }) => e.id)).toEqual([myEntry]);
@@ -719,6 +733,7 @@ describe('Photos', () => {
   let free: Agent;
   let guest: Agent;
   let entryId: string;
+  let gardenId: number;
 
   const uuid = (n: number) => `${String(n).repeat(8)}-1111-4111-8111-111111111111`;
   const keyFor = (id: string, n: number) => `harvest-photos/${id}/${uuid(n)}.jpg`;
@@ -729,91 +744,149 @@ describe('Photos', () => {
     supporter = await loginAgent('harvest-supporter@example.com');
     free = await loginAgent('harvest-free@example.com');
     guest = await guestAgent();
-    const gardenId = await createGarden(supporter);
+    gardenId = await createGarden(supporter);
     entryId = (await createEntry(supporter, { gardenId, cambiumSeedId: peaId })).id;
   });
 
+  const postPhoto = (agent: Agent, id: string, body: Buffer = jpeg) =>
+    agent.post(`/api/harvests/${id}/photos`).set('Content-Type', 'image/jpeg').send(body);
+
+  // An entry of the supporter's own with `count` photos already attached.
+  async function entryWithPhotos(count: number): Promise<string> {
+    const id = (await createEntry(supporter, { gardenId, cambiumSeedId: peaId })).id;
+    const photos = Array.from({ length: count }, (_, i) => ({
+      key: keyFor(id, i + 1),
+      url: `${PUBLIC_BASE}/${keyFor(id, i + 1)}`,
+    }));
+    await pool.query('UPDATE harvest_entries SET photos = $2::jsonb WHERE id = $1', [
+      id,
+      JSON.stringify(photos),
+    ]);
+    return id;
+  }
+
   it('free account → 402; guest → 401', async () => {
-    const free402 = await free
-      .post(`/api/harvests/${entryId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
+    const free402 = await postPhoto(free, entryId);
     expect(free402.status).toBe(402);
-    expect((await free.post(`/api/harvests/${entryId}/photos`).send({ key: keyFor(entryId, 1) })).status).toBe(402);
+    expect(free402.body.upgrade_required).toBe(true);
     // Photo removal is open to free accounts (read-only paid data); on another
     // account's entry that is the ownership 404, not 402.
     expect((await free.delete(`/api/harvests/${entryId}/photos?key=x`)).status).toBe(404);
 
-    const guest401 = await guest
-      .post(`/api/harvests/${entryId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
+    const guest401 = await postPhoto(guest, entryId);
     expect(guest401.status).toBe(401);
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 
-  it('supporter gets an upload URL for image/jpeg; image/png → 400', async () => {
-    const ok = await supporter
-      .post(`/api/harvests/${entryId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
-    expect(ok.status).toBe(200);
-    expect(ok.body.uploadUrl).toBe('https://r2.test/put');
-    expect(ok.body.key).toMatch(new RegExp(`^harvest-photos/${entryId}/[0-9a-f-]{36}\\.jpg$`));
-    expect(getPresignedUploadUrlMock).toHaveBeenCalledWith(ok.body.key, 'image/jpeg', 1000, 300);
+  it('a JSON body or non-image bytes → 400, nothing uploaded', async () => {
+    const json = await supporter
+      .post(`/api/harvests/${entryId}/photos`)
+      .send({ key: keyFor(entryId, 1) });
+    expect(json.status).toBe(400);
+    expect(json.body).toEqual({ error: "That file isn't a supported image." });
 
-    const png = await supporter
-      .post(`/api/harvests/${entryId}/photos/upload-url`)
-      .send({ contentType: 'image/png', size: 1000 });
-    expect(png.status).toBe(400);
+    const text = await postPhoto(supporter, entryId, Buffer.from('hello, not an image'));
+    expect(text.status).toBe(400);
+    expect(text.body).toEqual({ error: "That file isn't a supported image." });
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 
-  it('503 when R2 is not configured', async () => {
-    getPresignedUploadUrlMock.mockRejectedValue(new Error('R2 not configured: ...'));
-    const res = await supporter
-      .post(`/api/harvests/${entryId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
+  it('busy image limiter → 503, nothing uploaded', async () => {
+    vi.mocked(processPhoto).mockRejectedValueOnce(new ImageBusyError());
+    const res = await postPhoto(supporter, entryId);
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: 'Busy, try again.' });
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('503 when R2 is not configured, nothing queued', async () => {
+    uploadToR2Mock.mockRejectedValueOnce(new Error('R2 not configured: ...'));
+    const res = await postPhoto(supporter, entryId);
     expect(res.status).toBe(503);
     expect(res.body).toEqual({ error: 'Photo storage is not configured.' });
+    expect(await queued()).toEqual([]);
   });
 
-  it('attaching a key with the wrong prefix → 400', async () => {
-    const res = await supporter
-      .post(`/api/harvests/${entryId}/photos`)
-      .send({ key: `harvest-photos/999/${uuid(1)}.jpg` });
-    expect(res.status).toBe(400);
-  });
-
-  it('attaches up to three; a fourth → 409; delete removes one', async () => {
-    for (const n of [1, 2, 3]) {
-      const res = await supporter
-        .post(`/api/harvests/${entryId}/photos`)
-        .send({ key: keyFor(entryId, n) });
-      expect(res.status).toBe(200);
-      expect(res.body.photos).toHaveLength(n);
-      expect(res.body.photos[n - 1]).toEqual({
-        key: keyFor(entryId, n),
-        url: `${PUBLIC_BASE}/${keyFor(entryId, n)}`,
-      });
+  it('503 when R2_PUBLIC_BASE_URL is unset, nothing uploaded', async () => {
+    const saved = process.env.R2_PUBLIC_BASE_URL;
+    delete process.env.R2_PUBLIC_BASE_URL;
+    try {
+      const res = await postPhoto(supporter, entryId);
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({ error: 'Photo storage is not configured.' });
+      expect(uploadToR2Mock).not.toHaveBeenCalled();
+    } finally {
+      process.env.R2_PUBLIC_BASE_URL = saved;
     }
+  });
 
-    const fourth = await supporter
-      .post(`/api/harvests/${entryId}/photos`)
-      .send({ key: keyFor(entryId, 4) });
-    expect(fourth.status).toBe(409);
-    expect(fourth.body).toEqual({ error: 'Up to 3 photos per harvest.' });
+  it('the limit is reached while uploading → 409 and the upload is queued for deletion', async () => {
+    const id = await entryWithPhotos(2);
+    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+      await pool.query(
+        `UPDATE harvest_entries SET photos = photos || jsonb_build_array($2::jsonb) WHERE id = $1`,
+        [id, JSON.stringify({ key: keyFor(id, 3), url: `${PUBLIC_BASE}/${keyFor(id, 3)}` })],
+      );
+      return `${PUBLIC_BASE}/${key}`;
+    });
+    const res = await postPhoto(supporter, id);
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'Up to 3 photos per harvest.' });
+    expect(uploadToR2Mock).toHaveBeenCalledTimes(1);
+    const key = uploadToR2Mock.mock.calls[0][0];
+    expect(await queued()).toEqual([{ bucket: 'public', path: key, is_prefix: false }]);
+    expect(drainSoon).toHaveBeenCalled();
+  });
 
-    const fourthUrl = await supporter
+  it('the entry is deleted while uploading → 404 and the upload is queued for deletion', async () => {
+    const id = await entryWithPhotos(0);
+    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+      await pool.query('DELETE FROM harvest_entries WHERE id = $1', [id]);
+      return `${PUBLIC_BASE}/${key}`;
+    });
+    const res = await postPhoto(supporter, id);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Harvest not found' });
+    expect(uploadToR2Mock).toHaveBeenCalledTimes(1);
+    const key = uploadToR2Mock.mock.calls[0][0];
+    expect(await queued()).toEqual([{ bucket: 'public', path: key, is_prefix: false }]);
+    expect(drainSoon).toHaveBeenCalled();
+  });
+
+  it('POST upload-url → 404 (removed)', async () => {
+    const res = await supporter
       .post(`/api/harvests/${entryId}/photos/upload-url`)
       .send({ contentType: 'image/jpeg', size: 1000 });
-    expect(fourthUrl.status).toBe(409);
+    expect(res.status).toBe(404);
+  });
+
+  it('attaches up to three; a fourth → 409 without uploading; delete removes one', async () => {
+    const keys: string[] = [];
+    for (const n of [1, 2, 3]) {
+      const res = await postPhoto(supporter, entryId);
+      expect(res.status).toBe(200);
+      expect(res.body.photos).toHaveLength(n);
+      const [key, body, contentType] = uploadToR2Mock.mock.calls[n - 1];
+      expect(key).toMatch(new RegExp(`^harvest-photos/${entryId}/[0-9a-f-]{36}\\.jpg$`));
+      expect([...(body as Buffer).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
+      expect(contentType).toBe('image/jpeg');
+      expect(res.body.photos[n - 1]).toEqual({ key, url: `${PUBLIC_BASE}/${key}` });
+      keys.push(key);
+    }
+    expect(await queued()).toEqual([]);
+
+    const fourth = await postPhoto(supporter, entryId);
+    expect(fourth.status).toBe(409);
+    expect(fourth.body).toEqual({ error: 'Up to 3 photos per harvest.' });
+    expect(uploadToR2Mock).toHaveBeenCalledTimes(3);
 
     const removed = await supporter.delete(
-      `/api/harvests/${entryId}/photos?key=${encodeURIComponent(keyFor(entryId, 2))}`,
+      `/api/harvests/${entryId}/photos?key=${encodeURIComponent(keys[1])}`,
     );
     expect(removed.status).toBe(200);
-    expect(removed.body.photos.map((p: { key: string }) => p.key)).toEqual([
-      keyFor(entryId, 1),
-      keyFor(entryId, 3),
-    ]);
+    expect(removed.body.photos.map((p: { key: string }) => p.key)).toEqual([keys[0], keys[2]]);
     expect(await queued()).toEqual([
-      { bucket: 'public', path: keyFor(entryId, 2), is_prefix: false },
+      { bucket: 'public', path: keys[1], is_prefix: false },
     ]);
     expect(drainSoon).toHaveBeenCalled();
 
@@ -847,18 +920,10 @@ describe('Photos', () => {
       { bucket: 'public', path: keyFor(ownId, 5), is_prefix: false },
     ]);
 
-    const uploadUrl = await lapsed
-      .post(`/api/harvests/${ownId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
-    expect(uploadUrl.status).toBe(402);
-    expect(uploadUrl.body.upgrade_required).toBe(true);
-    expect(getPresignedUploadUrlMock).not.toHaveBeenCalled();
-
-    const attach = await lapsed
-      .post(`/api/harvests/${ownId}/photos`)
-      .send({ key: keyFor(ownId, 7) });
+    const attach = await postPhoto(lapsed, ownId);
     expect(attach.status).toBe(402);
     expect(attach.body.upgrade_required).toBe(true);
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 
   it("DELETE of another user's harvest → 404 and queues nothing", async () => {

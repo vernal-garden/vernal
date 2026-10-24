@@ -2,10 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
+import sharp from 'sharp';
 
 vi.mock('../lib/r2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/r2')>()),
-  getPresignedUploadUrl: vi.fn(),
+  uploadToR2: vi.fn(),
   deleteFromR2: vi.fn(),
 }));
 
@@ -14,11 +15,18 @@ vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
   drainSoon: vi.fn(),
 }));
 
-import { getPresignedUploadUrl, deleteFromR2 } from '../lib/r2';
+// The real processor, wrapped so a test can force a busy limiter.
+vi.mock('../lib/imageProcessing', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/imageProcessing')>();
+  return { ...actual, processPhoto: vi.fn(actual.processPhoto) };
+});
+
+import { uploadToR2, deleteFromR2 } from '../lib/r2';
 import { drainSoon } from '../lib/r2Cleanup';
+import { ImageBusyError, processPhoto } from '../lib/imageProcessing';
 import app from '../index';
 
-const getPresignedUploadUrlMock = vi.mocked(getPresignedUploadUrl);
+const uploadToR2Mock = vi.mocked(uploadToR2);
 const deleteFromR2Mock = vi.mocked(deleteFromR2);
 
 const url = process.env.TEST_DATABASE_URL;
@@ -30,7 +38,8 @@ const PUBLIC_BASE = 'https://photos.test';
 const UUID_A = '11111111-1111-4111-8111-111111111111';
 const UUID_B = '22222222-2222-4222-8222-222222222222';
 const UUID_C = '33333333-3333-4333-8333-333333333333';
-const UUID_D = '44444444-4444-4444-8444-444444444444';
+
+let jpeg: Buffer;
 
 async function queued() {
   const { rows } = await pool.query<{ bucket: string; path: string; is_prefix: boolean }>(
@@ -79,6 +88,16 @@ async function insertPhoto(seedId: string, uuid: string, notes: string | null = 
   return { id: rows[0].id, key };
 }
 
+function postPhoto(agent: ReturnType<typeof request.agent>, seedId: string, body: Buffer = jpeg) {
+  return agent.post(`/api/seeds/${seedId}/photos`).set('Content-Type', 'image/jpeg').send(body);
+}
+
+// The key the route passed to the (mocked) uploadToR2 on its only call.
+function uploadedKey(): string {
+  expect(uploadToR2Mock).toHaveBeenCalledTimes(1);
+  return uploadToR2Mock.mock.calls[0][0];
+}
+
 let supporter: ReturnType<typeof request.agent>;
 let freeUser: ReturnType<typeof request.agent>;
 let otherSupporter: ReturnType<typeof request.agent>;
@@ -87,6 +106,10 @@ let originalBase: string | undefined;
 beforeAll(async () => {
   originalBase = process.env.R2_PUBLIC_BASE_URL;
   process.env.R2_PUBLIC_BASE_URL = `${PUBLIC_BASE}/`; // trailing slash is stripped
+
+  jpeg = await sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a7' } })
+    .jpeg()
+    .toBuffer();
 
   await resetDb();
   const supporterId = await createUser('photos-supporter@example.com');
@@ -105,8 +128,9 @@ beforeAll(async () => {
 beforeEach(async () => {
   await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
   vi.mocked(drainSoon).mockClear();
-  getPresignedUploadUrlMock.mockReset();
-  getPresignedUploadUrlMock.mockResolvedValue('https://r2.test/put');
+  vi.mocked(processPhoto).mockClear();
+  uploadToR2Mock.mockReset();
+  uploadToR2Mock.mockImplementation(async (key: string) => `${PUBLIC_BASE}/${key}`);
   deleteFromR2Mock.mockReset();
   deleteFromR2Mock.mockResolvedValue(undefined);
 });
@@ -123,8 +147,7 @@ describe('Auth guards', () => {
   it('401 with no session on every route', async () => {
     const results = await Promise.all([
       request(app).get('/api/seeds/1/photos'),
-      request(app).post('/api/seeds/1/photos/upload-url').send({ contentType: 'image/jpeg', size: 1000 }),
-      request(app).post('/api/seeds/1/photos').send({ key: `seed-photos/1/${UUID_A}.jpg` }),
+      request(app).post('/api/seeds/1/photos').set('Content-Type', 'image/jpeg').send(jpeg),
       request(app).patch('/api/seeds/1/photos/1').send({ notes: 'x' }),
       request(app).delete('/api/seeds/1/photos/1'),
     ]);
@@ -143,20 +166,11 @@ describe('Free account', () => {
     ({ id: photoId } = await insertPhoto(seedId, UUID_A, 'old note'));
   });
 
-  it('upload-url → 402 upgrade_required', async () => {
-    const res = await freeUser
-      .post(`/api/seeds/${seedId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
+  it('POST photo → 402 upgrade_required, nothing uploaded', async () => {
+    const res = await postPhoto(freeUser, seedId);
     expect(res.status).toBe(402);
     expect(res.body.upgrade_required).toBe(true);
-  });
-
-  it('confirm → 402 upgrade_required', async () => {
-    const res = await freeUser
-      .post(`/api/seeds/${seedId}/photos`)
-      .send({ key: `seed-photos/${seedId}/${UUID_B}.jpg` });
-    expect(res.status).toBe(402);
-    expect(res.body.upgrade_required).toBe(true);
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 
   it('GET lists the existing photo', async () => {
@@ -196,8 +210,7 @@ describe('Ownership', () => {
   it("another account's seed → 404 on every route", async () => {
     const results = await Promise.all([
       supporter.get(`/api/seeds/${otherSeedId}/photos`),
-      supporter.post(`/api/seeds/${otherSeedId}/photos/upload-url`).send({ contentType: 'image/jpeg', size: 1000 }),
-      supporter.post(`/api/seeds/${otherSeedId}/photos`).send({ key: `seed-photos/${otherSeedId}/${UUID_D}.jpg` }),
+      postPhoto(supporter, otherSeedId),
       supporter.patch(`/api/seeds/${otherSeedId}/photos/${otherPhotoId}`).send({ notes: 'x' }),
       supporter.delete(`/api/seeds/${otherSeedId}/photos/${otherPhotoId}`),
     ]);
@@ -205,6 +218,7 @@ describe('Ownership', () => {
       expect(r.status).toBe(404);
       expect(r.body.error).toBe('Seed not found');
     }
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
     const { rows } = await pool.query('SELECT 1 FROM seed_photos WHERE id = $1', [otherPhotoId]);
     expect(rows).toHaveLength(1);
   });
@@ -230,145 +244,184 @@ describe('Ownership', () => {
   });
 });
 
-// ── upload-url ────────────────────────────────────────────────────────────────
+// ── POST photo ────────────────────────────────────────────────────────────────
 
-describe('POST upload-url', () => {
-  let seedId: string;
-
-  beforeAll(async () => {
-    seedId = await createSeed(supporter, 'Upload Seed');
-  });
-
-  it('image/jpeg, size 1000000 → 200 with a key for this seed', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000000 });
-    expect(res.status).toBe(200);
-    expect(res.body.uploadUrl).toBe('https://r2.test/put');
-    expect(res.body.key).toMatch(
-      new RegExp(`^seed-photos/${seedId}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jpg$`),
-    );
-    expect(getPresignedUploadUrlMock).toHaveBeenCalledWith(res.body.key, 'image/jpeg', 1000000, 300);
-  });
-
-  it('image/png → 400', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos/upload-url`)
-      .send({ contentType: 'image/png', size: 1000 });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Photos must be JPEG.');
-  });
-
-  it.each([
-    ['no size', undefined],
-    ['size 0', 0],
-    ['size over 5 MB', 5 * 1024 * 1024 + 1],
-    ['fractional size', 2.5],
-  ])('%s → 400', async (_label, size) => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Photos must be 5 MB or smaller.');
-    expect(getPresignedUploadUrlMock).not.toHaveBeenCalled();
-  });
-
-  it("R2 not configured → 503", async () => {
-    getPresignedUploadUrlMock.mockRejectedValue(new Error('R2 not configured: R2_ACCOUNT_ID ...'));
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
-    expect(res.status).toBe(503);
-    expect(res.body.error).toBe('Photo storage is not configured.');
-  });
-
-  it('any other R2 error → 500', async () => {
-    getPresignedUploadUrlMock.mockRejectedValue(new Error('network down'));
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
-    expect(res.status).toBe(500);
-  });
-});
-
-// ── confirm ───────────────────────────────────────────────────────────────────
-
-describe('POST confirm', () => {
-  let seedId: string;
-  let otherSeedId: string;
-
-  beforeAll(async () => {
-    seedId = await createSeed(supporter, 'Confirm Seed');
-    otherSeedId = await createSeed(supporter, 'Confirm Other Seed');
-  });
-
-  it('valid key → 201, storage_url and r2_key stored', async () => {
-    const key = `seed-photos/${seedId}/${UUID_A}.jpg`;
-    const res = await supporter.post(`/api/seeds/${seedId}/photos`).send({ key, notes: '  first  ' });
+describe('POST photo', () => {
+  it('raw JPEG → 201; re-encoded JPEG uploaded under this seed; row stored', async () => {
+    const seedId = await createSeed(supporter, 'Upload Seed');
+    const res = await postPhoto(supporter, seedId);
     expect(res.status).toBe(201);
+    expect(Object.keys(res.body).sort()).toEqual(['createdAt', 'id', 'notes', 'url']);
     expect(typeof res.body.id).toBe('string');
+    expect(res.body.notes).toBeNull();
+
+    const key = uploadedKey();
+    expect(key).toMatch(new RegExp(`^seed-photos/${seedId}/[0-9a-f-]{36}\\.jpg$`));
+    const [, body, contentType] = uploadToR2Mock.mock.calls[0];
+    expect(Buffer.isBuffer(body)).toBe(true);
+    expect([...(body as Buffer).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
+    expect(contentType).toBe('image/jpeg');
     expect(res.body.url).toBe(`${PUBLIC_BASE}/${key}`);
-    expect(res.body.notes).toBe('first');
 
     const { rows } = await pool.query<{ storage_url: string; r2_key: string }>(
       'SELECT storage_url, r2_key FROM seed_photos WHERE id = $1',
       [res.body.id],
     );
-    expect(rows[0].storage_url).toBe(`${PUBLIC_BASE}/${key}`);
-    expect(rows[0].r2_key).toBe(key);
+    expect(rows[0]).toEqual({ storage_url: `${PUBLIC_BASE}/${key}`, r2_key: key });
+    expect(await queued()).toEqual([]);
   });
 
-  it('empty notes are stored as null', async () => {
-    const key = `seed-photos/${otherSeedId}/${UUID_B}.jpg`;
-    const res = await supporter.post(`/api/seeds/${otherSeedId}/photos`).send({ key, notes: '   ' });
+  it('X-Photo-Notes header is decoded and stored', async () => {
+    const seedId = await createSeed(supporter, 'Notes Seed');
+    const res = await postPhoto(supporter, seedId).set(
+      'X-Photo-Notes',
+      encodeURIComponent('  Sown 3 Mar ✓  '),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.notes).toBe('Sown 3 Mar ✓');
+  });
+
+  it('blank notes are stored as null', async () => {
+    const seedId = await createSeed(supporter, 'Blank Notes Seed');
+    const res = await postPhoto(supporter, seedId).set('X-Photo-Notes', '%20%20');
     expect(res.status).toBe(201);
     expect(res.body.notes).toBeNull();
   });
 
-  it('key with another seed id → 400', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos`)
-      .send({ key: `seed-photos/${otherSeedId}/${UUID_C}.jpg` });
+  it('malformed notes encoding → 400, nothing uploaded', async () => {
+    const seedId = await createSeed(supporter, 'Bad Notes Seed');
+    const res = await postPhoto(supporter, seedId).set('X-Photo-Notes', '%E0%A4%A');
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Invalid photo key.');
-  });
-
-  it('non-UUID key → 400', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos`)
-      .send({ key: `seed-photos/${seedId}/not-a-uuid.jpg` });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Invalid photo key.');
-  });
-
-  it('same key twice → 409', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos`)
-      .send({ key: `seed-photos/${seedId}/${UUID_A}.jpg` });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe('Photo already added.');
+    expect(res.body.error).toBe('Notes must be text.');
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 
   it('notes over 500 chars → 400', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos`)
-      .send({ key: `seed-photos/${seedId}/${UUID_D}.jpg`, notes: 'a'.repeat(501) });
+    const seedId = await createSeed(supporter, 'Long Notes Seed');
+    const res = await postPhoto(supporter, seedId).set('X-Photo-Notes', 'a'.repeat(501));
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('Notes must be 500 characters or fewer.');
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 
-  it('R2_PUBLIC_BASE_URL unset → 503', async () => {
+  it('a JSON body → 400, nothing uploaded', async () => {
+    const seedId = await createSeed(supporter, 'Json Seed');
+    const res = await supporter
+      .post(`/api/seeds/${seedId}/photos`)
+      .send({ key: `seed-photos/${seedId}/${UUID_A}.jpg` });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("That file isn't a supported image.");
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('text bytes sent as image/jpeg → 400, nothing uploaded', async () => {
+    const seedId = await createSeed(supporter, 'Text Seed');
+    const res = await postPhoto(supporter, seedId, Buffer.from('hello, not an image'));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("That file isn't a supported image.");
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('a body over 5 MB → 413', async () => {
+    const seedId = await createSeed(supporter, 'Big Seed');
+    const res = await postPhoto(supporter, seedId, Buffer.alloc(5 * 1024 * 1024 + 1));
+    expect(res.status).toBe(413);
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('busy image limiter → 503, nothing uploaded', async () => {
+    const seedId = await createSeed(supporter, 'Busy Seed');
+    vi.mocked(processPhoto).mockRejectedValueOnce(new ImageBusyError());
+    const res = await postPhoto(supporter, seedId);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe('Busy, try again.');
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('R2_PUBLIC_BASE_URL unset → 503, nothing uploaded', async () => {
+    const seedId = await createSeed(supporter, 'No Base Seed');
     const saved = process.env.R2_PUBLIC_BASE_URL;
     delete process.env.R2_PUBLIC_BASE_URL;
     try {
-      const res = await supporter
-        .post(`/api/seeds/${seedId}/photos`)
-        .send({ key: `seed-photos/${seedId}/${UUID_D}.jpg` });
+      const res = await postPhoto(supporter, seedId);
       expect(res.status).toBe(503);
       expect(res.body.error).toBe('Photo storage is not configured.');
+      expect(uploadToR2Mock).not.toHaveBeenCalled();
     } finally {
       process.env.R2_PUBLIC_BASE_URL = saved;
     }
+  });
+
+  it('R2 not configured → 503, nothing queued', async () => {
+    const seedId = await createSeed(supporter, 'No R2 Seed');
+    uploadToR2Mock.mockRejectedValueOnce(new Error('R2 not configured: R2_ACCOUNT_ID ...'));
+    const res = await postPhoto(supporter, seedId);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe('Photo storage is not configured.');
+    expect(await queued()).toEqual([]);
+  });
+
+  it('any other R2 error → 500', async () => {
+    const seedId = await createSeed(supporter, 'R2 Down Seed');
+    uploadToR2Mock.mockRejectedValueOnce(new Error('network down'));
+    const res = await postPhoto(supporter, seedId);
+    expect(res.status).toBe(500);
+  });
+
+  it('the limit is reached while uploading → 409 and the upload is queued for deletion', async () => {
+    const seedId = await createSeed(supporter, 'Race Seed');
+    await insertPhoto(seedId, UUID_A);
+    await insertPhoto(seedId, UUID_B);
+    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+      await insertPhoto(seedId, UUID_C);
+      return `${PUBLIC_BASE}/${key}`;
+    });
+    const res = await postPhoto(supporter, seedId);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Up to 3 photos per seed.');
+    const key = uploadedKey();
+    expect(await queued()).toEqual([{ bucket: 'public', path: key, is_prefix: false }]);
+    expect(drainSoon).toHaveBeenCalled();
+    const { rows } = await pool.query('SELECT 1 FROM seed_photos WHERE r2_key = $1', [key]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('the seed is deleted while uploading → 404 and the upload is queued for deletion', async () => {
+    const seedId = await createSeed(supporter, 'Vanishing Seed');
+    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+      await pool.query('DELETE FROM seeds WHERE id = $1', [seedId]);
+      return `${PUBLIC_BASE}/${key}`;
+    });
+    const res = await postPhoto(supporter, seedId);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Seed not found');
+    expect(await queued()).toEqual([{ bucket: 'public', path: uploadedKey(), is_prefix: false }]);
+    expect(drainSoon).toHaveBeenCalled();
+  });
+
+  it('the insert fails after upload → 500 and the upload is queued for deletion', async () => {
+    const seedId = await createSeed(supporter, 'Insert Fail Seed');
+    const otherSeedId = await createSeed(supporter, 'Insert Fail Other Seed');
+    // r2_key is UNIQUE: another row taking the key makes the INSERT fail.
+    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+      await pool.query(
+        'INSERT INTO seed_photos (seed_id, storage_url, r2_key) VALUES ($1, $2, $3)',
+        [otherSeedId, `${PUBLIC_BASE}/${key}`, key],
+      );
+      return `${PUBLIC_BASE}/${key}`;
+    });
+    const res = await postPhoto(supporter, seedId);
+    expect(res.status).toBe(500);
+    expect(await queued()).toEqual([{ bucket: 'public', path: uploadedKey(), is_prefix: false }]);
+    expect(drainSoon).toHaveBeenCalled();
+  });
+
+  it('POST upload-url → 404 (removed)', async () => {
+    const seedId = await createSeed(supporter, 'Old Flow Seed');
+    const res = await supporter
+      .post(`/api/seeds/${seedId}/photos/upload-url`)
+      .send({ contentType: 'image/jpeg', size: 1000 });
+    expect(res.status).toBe(404);
   });
 });
 
@@ -384,21 +437,12 @@ describe('Three-photo limit', () => {
     await insertPhoto(seedId, UUID_C);
   });
 
-  it('a fourth photo → 409 from upload-url', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos/upload-url`)
-      .send({ contentType: 'image/jpeg', size: 1000 });
+  it('a fourth photo → 409 without uploading', async () => {
+    const res = await postPhoto(supporter, seedId);
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('Up to 3 photos per seed.');
-    expect(getPresignedUploadUrlMock).not.toHaveBeenCalled();
-  });
-
-  it('a fourth photo → 409 from confirm', async () => {
-    const res = await supporter
-      .post(`/api/seeds/${seedId}/photos`)
-      .send({ key: `seed-photos/${seedId}/${UUID_D}.jpg` });
-    expect(res.status).toBe(409);
-    expect(res.body.error).toBe('Up to 3 photos per seed.');
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+    expect(processPhoto).not.toHaveBeenCalled();
   });
 });
 

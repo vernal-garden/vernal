@@ -5,7 +5,6 @@ import { Pool } from 'pg';
 
 vi.mock('../lib/r2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/r2')>()),
-  getPresignedUploadUrl: vi.fn(),
   deleteFromR2: vi.fn(() => Promise.resolve()),
 }));
 

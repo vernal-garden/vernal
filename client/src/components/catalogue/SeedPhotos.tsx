@@ -1,7 +1,7 @@
 // client/src/components/catalogue/SeedPhotos.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { get, post, patch, del, ApiError } from '../../lib/api';
+import { get, postBlob, patch, del, ApiError } from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import { compressImage } from '../../lib/imageCompress';
 import type { SeedPhoto } from '../../types/catalogue';
@@ -118,28 +118,17 @@ export default function SeedPhotos({ seedId, onCountChange }: Props) {
         return;
       }
 
-      const target = await post<{ uploadUrl: string; key: string }>(
-        `/api/seeds/${seedId}/photos/upload-url`,
-        { contentType: 'image/jpeg', size: blob.size },
-      );
-      if (!target) throw new Error('No upload URL');
-
-      const put = await fetch(target.uploadUrl, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'image/jpeg' },
-        body: blob,
-        credentials: 'omit',
+      const photo = await postBlob<SeedPhoto>(`/api/seeds/${seedId}/photos`, blob, {
+        'Content-Type': 'image/jpeg',
       });
-      if (!put.ok) throw new Error(`Upload PUT failed: ${put.status}`);
-
-      const photo = await post<SeedPhoto>(`/api/seeds/${seedId}/photos`, { key: target.key });
       if (photo) setPhotos(prev => [photo, ...prev]);
     } catch (err) {
       if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
         const msg = (err.body as { error?: string } | null)?.error;
         setUploadError(msg ?? 'Upload failed. Try again.');
       } else if (err instanceof ApiError && err.status === 503) {
-        setUploadError("Photo storage isn't available right now.");
+        const msg = (err.body as { error?: string } | null)?.error;
+        setUploadError(msg ?? "Photo storage isn't available right now.");
       } else {
         setUploadError('Upload failed. Try again.');
       }

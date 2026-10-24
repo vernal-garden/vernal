@@ -1,12 +1,13 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import crypto from 'crypto';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
 import { requireSupporter } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
-import { getPresignedUploadUrl, isR2ConfigError } from '../lib/r2';
+import { isR2ConfigError, uploadToR2 } from '../lib/r2';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
+import { ImageBusyError, ImageRejectedError, processPhoto } from '../lib/imageProcessing';
 
 // Mounted by seeds.ts at /api/seeds/:id/photos, after its router.use(requireAuth).
 const router = Router({ mergeParams: true });
@@ -15,8 +16,12 @@ const router = Router({ mergeParams: true });
 
 const MAX_PHOTOS_PER_SEED = 3;
 const MAX_NOTES_LENGTH = 500;
-const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const STORAGE_UNAVAILABLE = 'Photo storage is not configured.';
+const NOT_AN_IMAGE = "That file isn't a supported image.";
+
+// The photo is the raw request body; any other Content-Type leaves req.body
+// unset (or parsed as JSON), which the route answers with NOT_AN_IMAGE.
+const photoBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '5mb' });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -76,6 +81,19 @@ async function photoCount(seedId: string): Promise<number> {
   return rows[0].count;
 }
 
+// Called after the upload landed but the row didn't commit (the ROLLBACK
+// would have undone a queue row written in the transaction), so the queue
+// row goes in on its own through the pool. A failure here leaves an orphan
+// for the sweep script; it is logged, not rethrown.
+async function discardUpload(key: string): Promise<void> {
+  try {
+    const ids = await queueR2Deletions(db, [{ bucket: 'public', path: key, isPrefix: false }]);
+    drainSoon(ids);
+  } catch (err) {
+    logger.error('Could not queue an unsaved seed photo for deletion', err, { key });
+  }
+}
+
 // ── GET /api/seeds/:id/photos ─────────────────────────────────────────────────
 
 router.get('/', async (req, res) => {
@@ -102,125 +120,111 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── POST /api/seeds/:id/photos/upload-url ─────────────────────────────────────
+// ── POST /api/seeds/:id/photos ────────────────────────────────────────────────
 
-router.post('/upload-url', requireSupporter, writeLimiter, async (req, res) => {
+// Body: the raw image. Optional X-Photo-Notes header, URI-encoded (headers
+// can't carry raw non-ASCII).
+router.post('/', requireSupporter, writeLimiter, photoBody, async (req, res) => {
   const accountId = req.session!.account!.id;
   const seedId = (req.params as { id: string }).id;
 
   if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
 
+  let rawNotes: string | undefined;
   try {
+    const header = req.get('X-Photo-Notes');
+    rawNotes = header === undefined ? undefined : decodeURIComponent(header);
+  } catch {
+    return res.status(400).json({ error: 'Notes must be text.' });
+  }
+  const notesResult = parseNotes(rawNotes);
+  if ('error' in notesResult) {
+    return res.status(400).json({ error: notesResult.error });
+  }
+
+  const input: unknown = req.body;
+  if (!Buffer.isBuffer(input)) return res.status(400).json({ error: NOT_AN_IMAGE });
+
+  // Set once the file is in R2; cleared just before COMMIT. Any exit in between queues
+  // the key for deletion.
+  let uploadedKey: string | null = null;
+
+  try {
+    // Cheap checks before the encode; repeated under the row lock below.
     if (!(await ownsSeed(seedId, accountId))) {
       return res.status(404).json({ error: 'Seed not found' });
     }
-
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    if (body.contentType !== 'image/jpeg') {
-      return res.status(400).json({ error: 'Photos must be JPEG.' });
-    }
-    const size = body.size;
-    if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > MAX_PHOTO_BYTES) {
-      return res.status(400).json({ error: 'Photos must be 5 MB or smaller.' });
-    }
-
     if ((await photoCount(seedId)) >= MAX_PHOTOS_PER_SEED) {
       return res.status(409).json({ error: `Up to ${MAX_PHOTOS_PER_SEED} photos per seed.` });
     }
+    const base = publicBaseUrl();
+    if (!base) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
+
+    let photo: Buffer;
+    try {
+      photo = await processPhoto(input);
+    } catch (err) {
+      if (err instanceof ImageRejectedError) return res.status(400).json({ error: NOT_AN_IMAGE });
+      if (err instanceof ImageBusyError) return res.status(503).json({ error: 'Busy, try again.' });
+      throw err;
+    }
 
     const key = `seed-photos/${seedId}/${crypto.randomUUID()}.jpg`;
-    let uploadUrl: string;
     try {
-      uploadUrl = await getPresignedUploadUrl(key, 'image/jpeg', size, 300);
+      await uploadToR2(key, photo, 'image/jpeg');
     } catch (err) {
       if (isR2ConfigError(err)) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
       throw err;
     }
+    uploadedKey = key;
 
-    res.json({ uploadUrl, key });
-  } catch (err) {
-    logger.error('POST /seeds/:id/photos/upload-url failed', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ── POST /api/seeds/:id/photos ────────────────────────────────────────────────
-
-router.post('/', requireSupporter, writeLimiter, async (req, res) => {
-  const accountId = req.session!.account!.id;
-  const seedId = (req.params as { id: string }).id;
-
-  if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
-
-  const body = (req.body ?? {}) as Record<string, unknown>;
-
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
-
-    // Lock the seed row so concurrent confirms can't both pass the count check.
-    const seedResult = await client.query(
-      'SELECT 1 FROM seeds WHERE id = $1 AND owner_id = $2 FOR UPDATE',
-      [seedId, accountId],
-    );
-    if (seedResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Seed not found' });
-    }
-
-    const keyRe = new RegExp(`^seed-photos/${seedId}/[0-9a-f-]{36}\\.jpg$`);
-    if (typeof body.key !== 'string' || !keyRe.test(body.key)) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Invalid photo key.' });
-    }
-    const key = body.key;
-
-    const notesResult = parseNotes(body.notes);
-    if ('error' in notesResult) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: notesResult.error });
-    }
-
-    const base = publicBaseUrl();
-    if (!base) {
-      await client.query('ROLLBACK');
-      return res.status(503).json({ error: STORAGE_UNAVAILABLE });
-    }
-
-    const countResult = await client.query<{ count: number }>(
-      'SELECT COUNT(*)::int AS count FROM seed_photos WHERE seed_id = $1',
-      [seedId],
-    );
-    if (countResult.rows[0].count >= MAX_PHOTOS_PER_SEED) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({ error: `Up to ${MAX_PHOTOS_PER_SEED} photos per seed.` });
-    }
-
-    let row: PhotoRow;
+    const client = await db.connect();
     try {
+      await client.query('BEGIN');
+
+      // Lock the seed row so concurrent uploads can't both pass the count check.
+      const seedResult = await client.query(
+        'SELECT 1 FROM seeds WHERE id = $1 AND owner_id = $2 FOR UPDATE',
+        [seedId, accountId],
+      );
+      if (seedResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        await discardUpload(key);
+        return res.status(404).json({ error: 'Seed not found' });
+      }
+
+      const countResult = await client.query<{ count: number }>(
+        'SELECT COUNT(*)::int AS count FROM seed_photos WHERE seed_id = $1',
+        [seedId],
+      );
+      if (countResult.rows[0].count >= MAX_PHOTOS_PER_SEED) {
+        await client.query('ROLLBACK');
+        await discardUpload(key);
+        return res.status(409).json({ error: `Up to ${MAX_PHOTOS_PER_SEED} photos per seed.` });
+      }
+
       const insert = await client.query<PhotoRow>(
         `INSERT INTO seed_photos (seed_id, storage_url, r2_key, notes)
          VALUES ($1, $2, $3, $4)
          RETURNING ${PHOTO_SELECT}`,
         [seedId, `${base}/${key}`, key, notesResult.notes],
       );
-      row = insert.rows[0];
-    } catch (err) {
-      await client.query('ROLLBACK');
-      if ((err as { code?: string }).code === '23505') {
-        return res.status(409).json({ error: 'Photo already added.' });
-      }
-      throw err;
-    }
 
-    await client.query('COMMIT');
-    res.status(201).json(formatPhoto(row));
+      // Cleared before COMMIT: if COMMIT errors the row may still have been
+      // saved, and a stray object is safer than deleting a referenced photo.
+      uploadedKey = null;
+      await client.query('COMMIT');
+      res.status(201).json(formatPhoto(insert.rows[0]));
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    if (uploadedKey) await discardUpload(uploadedKey);
     logger.error('POST /seeds/:id/photos failed', err);
     res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    client.release();
   }
 });
 

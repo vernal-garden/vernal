@@ -22,6 +22,7 @@
     "clean:test-seeds": "tsx scripts/clean-test-seeds.ts",
     "backfill:lifetime-pi": "tsx scripts/backfill-lifetime-payment-intents.ts",
     "cleanup:r2-orphans": "tsx scripts/cleanup-r2-orphans.ts",
+    "sweep:orphan-photos": "tsx scripts/sweep-orphan-photos.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -51,6 +52,7 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "pg": "^8.21.0",
+    "sharp": "0.35.5",
     "stripe": "^22.3.2",
     "uuid": "^14.0.0"
   },
