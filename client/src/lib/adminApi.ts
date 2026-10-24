@@ -340,7 +340,8 @@ export const adminApi = {
   searchAccounts: (email: string) => aget<AccountsSearch>(`/accounts${qs({ email })}`),
   account: (id: number) => aget<AccountDetail>(`/accounts/${id}`),
   setTier: (id: number, tier: SubscriptionTier) => apatch<TierUpdateResponse>(`/accounts/${id}/tier`, { tier }),
-  setRole: (id: number, role: AccountRole) => apatch<RoleUpdateResponse>(`/accounts/${id}/role`, { role }),
+  setRole: (id: number, role: AccountRole, currentPassword?: string) =>
+    apatch<RoleUpdateResponse>(`/accounts/${id}/role`, currentPassword ? { role, currentPassword } : { role }),
 
   seedsSummary: () => aget<SeedsSummary>('/seeds/summary'),
   seeds: (params: {

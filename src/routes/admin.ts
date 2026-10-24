@@ -1,8 +1,11 @@
 import { Router, type Response } from 'express';
+import bcrypt from 'bcrypt';
 import { db } from '../lib/db';
 import { requireAdmin } from '../middleware/auth';
+import { adminRoleChangeLimiter } from '../middleware/rateLimiters';
 import { escapeLike, isNumericId } from '../lib/validation';
 import { logger } from '../lib/logger';
+import { recordAdminAction } from '../lib/adminAudit';
 import { EVENT_KEYS, MICRO_FEEDBACK_TRIGGERS } from '../lib/eventKeys';
 import { getRequestMetrics } from '../lib/requestMetrics';
 
@@ -183,15 +186,46 @@ router.patch('/accounts/:id/tier', async (req, res) => {
     return;
   }
 
+  let client;
   try {
-    const result = await db.query(
-      'UPDATE accounts SET subscription_tier = $1, updated_at = NOW() WHERE id = $2 RETURNING id',
-      [tier, id],
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'PATCH /admin/accounts/:id/tier', err);
+    return;
+  }
+
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query<{ subscription_tier: string }>(
+      'SELECT subscription_tier FROM accounts WHERE id = $1 FOR UPDATE',
+      [id],
     );
-    if (result.rows.length === 0) {
+    if (existing.rows.length === 0) {
+      await client.query('ROLLBACK');
       res.status(404).json({ error: 'Not found' });
       return;
     }
+    const oldTier = existing.rows[0].subscription_tier;
+    if (oldTier === tier) {
+      await client.query('ROLLBACK');
+      res.json({ id, subscriptionTier: tier });
+      return;
+    }
+
+    await client.query(
+      'UPDATE accounts SET subscription_tier = $1, updated_at = NOW() WHERE id = $2',
+      [tier, id],
+    );
+    await recordAdminAction(client, {
+      adminId: req.session!.account!.id,
+      action: 'account.tier',
+      targetType: 'account',
+      targetId: id,
+      before: { tier: oldTier },
+      after: { tier },
+    });
+    await client.query('COMMIT');
+
     logger.info('admin tier override', {
       targetAccountId: id,
       tier,
@@ -199,15 +233,19 @@ router.patch('/accounts/:id/tier', async (req, res) => {
     });
     res.json({ id, subscriptionTier: tier });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
     sendServerError(res, 'PATCH /admin/accounts/:id/tier', err);
+  } finally {
+    client.release();
   }
 });
 
 // ── PATCH /accounts/:id/role ─────────────────────────────────────────────────
 
 const ROLES = ['user', 'admin'] as const;
+const ADMIN_REAUTH_WINDOW_MS = 10 * 60 * 1000;
 
-router.patch('/accounts/:id/role', async (req, res) => {
+router.patch('/accounts/:id/role', adminRoleChangeLimiter, async (req, res) => {
   const id = parseIdParam(req.params.id);
   if (id === null) return sendInvalidId(res);
 
@@ -223,19 +261,99 @@ router.patch('/accounts/:id/role', async (req, res) => {
     return;
   }
 
+  const { currentPassword } = (req.body ?? {}) as { currentPassword?: unknown };
+
+  let client;
   try {
-    const result = await db.query(
-      'UPDATE accounts SET role = $1, updated_at = NOW() WHERE id = $2 RETURNING id',
-      [role, id],
+    // Step-up: the admin's password, or a recent sign-in for OAuth-only admins.
+    const me = await db.query<{ password_hash: string | null }>(
+      'SELECT password_hash FROM accounts WHERE id = $1',
+      [adminId],
     );
-    if (result.rows.length === 0) {
+    const hash = me.rows[0]?.password_hash ?? null;
+    if (hash) {
+      if (typeof currentPassword !== 'string' || currentPassword.length === 0) {
+        res.status(400).json({ error: 'currentPassword is required' });
+        return;
+      }
+      if (!(await bcrypt.compare(currentPassword, hash))) {
+        res.status(403).json({ error: 'Current password is incorrect', code: 'password_incorrect' });
+        return;
+      }
+    } else {
+      const at = req.session!.authenticatedAt;
+      if (!at || Date.now() - at.getTime() > ADMIN_REAUTH_WINDOW_MS) {
+        res.status(403).json({ error: 'Sign in again to change roles', code: 'reauth_required' });
+        return;
+      }
+    }
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'PATCH /admin/accounts/:id/role', err);
+    return;
+  }
+
+  try {
+    await client.query('BEGIN');
+    // Lock every admin and the target in id order, so concurrent demotions
+    // serialize and the count below can't go stale.
+    const locked = await client.query<{ id: number; role: string; is_owner: boolean }>(
+      `SELECT id, role, is_owner FROM accounts WHERE role = 'admin' OR id = $1 ORDER BY id FOR UPDATE`,
+      [id],
+    );
+    const target = locked.rows.find((r) => Number(r.id) === id);
+    const admins = locked.rows.filter((r) => r.role === 'admin');
+    const actor = admins.find((r) => Number(r.id) === adminId);
+
+    if (!target) {
+      await client.query('ROLLBACK');
       res.status(404).json({ error: 'Not found' });
       return;
     }
+    if (target.is_owner) {
+      await client.query('ROLLBACK');
+      res.status(403).json({ error: "The owner's role can't be changed here." });
+      return;
+    }
+    if (target.role === role) {
+      await client.query('ROLLBACK');
+      res.json({ id, role });
+      return;
+    }
+    if (target.role === 'admin' && admins.length <= 2 && !actor?.is_owner) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'At least two admins must remain.' });
+      return;
+    }
+    // A concurrent request may have demoted the acting admin after
+    // requireAdmin ran; re-check against the locked rows.
+    if (!actor) {
+      await client.query('ROLLBACK');
+      res.status(403).json({ error: 'Admin access required' });
+      return;
+    }
+
+    await client.query(
+      'UPDATE accounts SET role = $1, updated_at = NOW() WHERE id = $2',
+      [role, id],
+    );
+    await recordAdminAction(client, {
+      adminId,
+      action: 'account.role',
+      targetType: 'account',
+      targetId: id,
+      before: { role: target.role },
+      after: { role },
+    });
+    await client.query('COMMIT');
+
     logger.info('admin role change', { targetAccountId: id, role, adminId });
     res.json({ id, role });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
     sendServerError(res, 'PATCH /admin/accounts/:id/role', err);
+  } finally {
+    client.release();
   }
 });
 
@@ -594,6 +712,19 @@ router.patch('/moderation/:id', async (req, res) => {
       }
     }
 
+    const u = updated.rows[0];
+    await recordAdminAction(client, {
+      adminId: req.session!.account!.id,
+      action: 'moderation.resolve',
+      targetType: 'moderation_item',
+      targetId: id,
+      before: { status: item.status },
+      after:
+        (action as ModerationAction) === 'defer'
+          ? { status: u.status }
+          : { status: u.status, note: u.resolution_note },
+    });
+
     await client.query('COMMIT');
 
     logger.info('admin moderation action', {
@@ -602,7 +733,6 @@ router.patch('/moderation/:id', async (req, res) => {
       adminId: req.session!.account!.id,
     });
 
-    const u = updated.rows[0];
     res.json({
       id: u.id,
       status: u.status,
@@ -1016,15 +1146,44 @@ router.patch('/feedback/bulk', async (req, res) => {
     return;
   }
 
+  let client;
   try {
-    const result = await db.query<{ id: number }>(
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'PATCH /admin/feedback/bulk', err);
+    return;
+  }
+
+  try {
+    await client.query('BEGIN');
+    const locked = await client.query<{ id: number; status: string }>(
+      'SELECT id, status FROM feedback_submissions WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE',
+      [ids],
+    );
+    const result = await client.query<{ id: number }>(
       `UPDATE feedback_submissions SET status = $1, updated_at = NOW()
        WHERE id = ANY($2::int[]) RETURNING id`,
       [status, ids],
     );
+    const adminId = req.session!.account!.id;
+    for (const row of locked.rows) {
+      if (row.status === status) continue;
+      await recordAdminAction(client, {
+        adminId,
+        action: 'feedback.status',
+        targetType: 'feedback',
+        targetId: row.id,
+        before: { status: row.status },
+        after: { status },
+      });
+    }
+    await client.query('COMMIT');
     res.json({ updated: result.rows.map((r) => r.id).sort((a, b) => a - b) });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
     sendServerError(res, 'PATCH /admin/feedback/bulk', err);
+  } finally {
+    client.release();
   }
 });
 
@@ -1038,34 +1197,58 @@ router.patch('/feedback/:id', async (req, res) => {
     return;
   }
 
+  let client;
   try {
-    const existing = await db.query<{ status: string; updated_at: Date }>(
-      'SELECT status, updated_at FROM feedback_submissions WHERE id = $1',
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'PATCH /admin/feedback/:id', err);
+    return;
+  }
+
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query<{ status: string; updated_at: Date }>(
+      'SELECT status, updated_at FROM feedback_submissions WHERE id = $1 FOR UPDATE',
       [id],
     );
     if (existing.rows.length === 0) {
+      await client.query('ROLLBACK');
       res.status(404).json({ error: 'Not found' });
       return;
     }
     const current = existing.rows[0];
     if (current.status === status) {
+      await client.query('ROLLBACK');
       res.json({ id, status, updatedAt: current.updated_at });
       return;
     }
     if (!lookup(FEEDBACK_TRANSITIONS, current.status)?.includes(status)) {
+      await client.query('ROLLBACK');
       res.status(409).json({ error: `Cannot change status from ${current.status} to ${status}.` });
       return;
     }
 
-    const result = await db.query<{ id: number; status: string; updated_at: Date }>(
+    const result = await client.query<{ id: number; status: string; updated_at: Date }>(
       `UPDATE feedback_submissions SET status = $1, updated_at = NOW()
        WHERE id = $2 RETURNING id, status, updated_at`,
       [status, id],
     );
+    await recordAdminAction(client, {
+      adminId: req.session!.account!.id,
+      action: 'feedback.status',
+      targetType: 'feedback',
+      targetId: id,
+      before: { status: current.status },
+      after: { status },
+    });
+    await client.query('COMMIT');
     const u = result.rows[0];
     res.json({ id: u.id, status: u.status, updatedAt: u.updated_at });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
     sendServerError(res, 'PATCH /admin/feedback/:id', err);
+  } finally {
+    client.release();
   }
 });
 

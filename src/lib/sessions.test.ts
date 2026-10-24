@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import crypto from 'crypto';
 import { Pool } from 'pg';
-import { verifySignedToken, rotateLiveSessionToken } from './sessions';
+import { verifySignedToken, rotateLiveSessionToken, claimSession, createGuestSession, findSession } from './sessions';
 import { hashToken } from './tokens';
 
 function sign(token: string): string {
@@ -100,5 +100,71 @@ describe('rotateLiveSessionToken', () => {
     const { rows } = await pool.query<{ token_hash: string }>('SELECT token_hash FROM guest_sessions WHERE id = $1', [id]);
     expect(rows[0].token_hash).toBe(hashToken(raw));
     expect(rows[0].token_hash).not.toBe(hash);
+  });
+});
+
+describe('authenticated_at', () => {
+  async function insertAccount(): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO accounts (email, zone, zone_location_label) VALUES ($1, '7b', 'Test City') RETURNING id`,
+      [`auth-at-${crypto.randomBytes(6).toString('hex')}@example.com`],
+    );
+    return Number(rows[0].id);
+  }
+
+  async function authenticatedAtFor(signedToken: string): Promise<Date | null> {
+    const { rows } = await pool.query<{ authenticated_at: Date | null }>(
+      'SELECT authenticated_at FROM guest_sessions WHERE token_hash = $1',
+      [hashToken(verifySignedToken(signedToken)!)],
+    );
+    return rows[0].authenticated_at;
+  }
+
+  function expectRecent(at: Date | null) {
+    expect(at).not.toBeNull();
+    expect(Math.abs(Date.now() - at!.getTime())).toBeLessThan(5000);
+  }
+
+  it('claimSession with no existing token creates a row with authenticated_at set', async () => {
+    const { signedToken } = await claimSession(await insertAccount(), null);
+    expectRecent(await authenticatedAtFor(signedToken));
+  });
+
+  it('claimSession on an existing guest row sets authenticated_at', async () => {
+    const guest = await createGuestSession();
+    expect(await authenticatedAtFor(guest.signedToken)).toBeNull();
+    const guestHash = hashToken(verifySignedToken(guest.signedToken)!);
+    const { signedToken } = await claimSession(await insertAccount(), guestHash);
+    expectRecent(await authenticatedAtFor(signedToken));
+  });
+
+  it('rotateLiveSessionToken moves an old authenticated_at to now', async () => {
+    const hash = hashToken('auth-at-rotate-' + crypto.randomBytes(8).toString('hex'));
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO guest_sessions (token_hash, expires_at, authenticated_at)
+       VALUES ($1, now() + interval '1 hour', now() - interval '1 hour') RETURNING id`,
+      [hash],
+    );
+    const rotated = await rotateLiveSessionToken(pool, hash, await insertAccount());
+    expect(rotated).not.toBeNull();
+    const after = await pool.query<{ authenticated_at: Date }>(
+      'SELECT authenticated_at FROM guest_sessions WHERE id = $1',
+      [rows[0].id],
+    );
+    expectRecent(after.rows[0].authenticated_at);
+  });
+
+  it('createGuestSession leaves authenticated_at NULL', async () => {
+    const { signedToken } = await createGuestSession();
+    expect(await authenticatedAtFor(signedToken)).toBeNull();
+  });
+
+  it('findSession returns authenticatedAt as a Date for an account session and null for a guest', async () => {
+    const account = await claimSession(await insertAccount(), null);
+    const found = await findSession(account.signedToken);
+    expect(found!.authenticatedAt).toBeInstanceOf(Date);
+
+    const guest = await createGuestSession();
+    expect((await findSession(guest.signedToken))!.authenticatedAt).toBeNull();
   });
 });

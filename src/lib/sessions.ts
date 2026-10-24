@@ -94,8 +94,8 @@ export async function rotateSessionToken(
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
   const token = generateToken();
   await runner.query(
-    `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
-     VALUES ($1, $2, $3, now())`,
+    `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at, authenticated_at)
+     VALUES ($1, $2, $3, now(), now())`,
     [hashToken(token), expiresAt, accountId],
   );
   return { signedToken: signToken(token), expiresAt };
@@ -123,7 +123,8 @@ async function updateSessionToken(
   const result = await runner.query(
     `UPDATE guest_sessions
         SET token_hash = $1, account_id = $2,
-            migrated_at = COALESCE(migrated_at, now()), expires_at = $3
+            migrated_at = COALESCE(migrated_at, now()), expires_at = $3,
+            authenticated_at = now()
       WHERE token_hash = $4 AND (account_id IS NULL OR account_id = $2)
         ${requireLive ? 'AND expires_at > now()' : ''}`,
     [hashToken(token), accountId, expiresAt, oldTokenHash],
@@ -170,8 +171,8 @@ export async function claimSession(
   const token = generateToken();
   const signedToken = signToken(token);
   await runner.query(
-    `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at)
-     VALUES ($1, $2, $3, now())`,
+    `INSERT INTO guest_sessions (token_hash, expires_at, account_id, migrated_at, authenticated_at)
+     VALUES ($1, $2, $3, now(), now())`,
     [hashToken(token), expiresAt, accountId],
   );
   return { signedToken, expiresAt };
@@ -235,10 +236,12 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
     role: string | null;
     subscription_tier: string | null;
     deletion_scheduled_at: string | null;
+    authenticated_at: Date | null;
   }>(
     `SELECT
        gs.id, gs.token_hash AS token, gs.expires_at, gs.account_id,
-       a.email, a.role, a.subscription_tier, a.deletion_scheduled_at
+       a.email, a.role, a.subscription_tier, a.deletion_scheduled_at,
+       gs.authenticated_at
      FROM guest_sessions gs
      LEFT JOIN accounts a ON a.id = gs.account_id
      WHERE gs.token_hash = $1
@@ -265,5 +268,6 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
     isGuest: account === null,
     expiresAt: row.expires_at,
     account,
+    authenticatedAt: row.authenticated_at,
   };
 }
