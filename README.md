@@ -97,7 +97,7 @@ Development is underway. The commit history is the honest record of how this get
 
 ## Tech
 
-- Web-first PWA, installable from the browser, works offline
+- Installable from your browser on desktop and phone. Needs a connection to load and save your garden.
 - Android via TWA/Capacitor when ready; iOS after that
 - Frontend: React
 - Canvas: Konva.js

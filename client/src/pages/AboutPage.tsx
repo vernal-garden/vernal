@@ -65,6 +65,9 @@ export default function AboutPage() {
           <ExternalLink href={REPO_URL} testId="about-source-link">
             Source code
           </ExternalLink>
+          <ExternalLink href="/third-party-notices.txt" testId="about-notices-link">
+            Third-party notices
+          </ExternalLink>
         </section>
 
         <section style={sectionStyle} aria-label="Feedback">

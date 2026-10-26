@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "npm --prefix .. run notices",
     "build": "vite build",
     "build:test": "vite build --mode test",
     "preview": "vite preview",
