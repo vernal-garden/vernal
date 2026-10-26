@@ -7,6 +7,8 @@ import {
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Upload } from '@aws-sdk/lib-storage';
+import type { Readable } from 'stream';
 
 // Config is read from process.env on every call (not at import time) so a
 // missing R2 setup only fails the code paths that actually touch storage.
@@ -92,8 +94,34 @@ export async function uploadToR2(
 }
 
 /**
+ * Upload a stream of unknown length (multipart once it passes one part).
+ * Holds at most one 5 MB part in memory at a time.
+ * bucket defaults to R2_BUCKET_NAME.
+ */
+export async function uploadStreamToR2(
+  key: string,
+  body: Readable,
+  contentType: string,
+  bucket?: string,
+): Promise<void> {
+  const upload = new Upload({
+    client: getClient(),
+    params: { Bucket: bucket ?? BUCKET(), Key: key, Body: body, ContentType: contentType },
+    partSize: 5 * 1024 * 1024,
+    queueSize: 1,
+  });
+  try {
+    await upload.done();
+  } catch (err) {
+    // Best effort: lib-storage already cleans up a failed multipart upload.
+    await upload.abort().catch(() => undefined);
+    throw err;
+  }
+}
+
+/**
  * Generate a presigned GET URL for private downloads.
- * Used for data export download_url.
+ * Used for data export downloads (GET /api/me/export/download).
  * expiresIn is in seconds (default 604800 = 7 days).
  * bucket defaults to R2_BUCKET_NAME.
  */

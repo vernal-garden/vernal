@@ -11,7 +11,8 @@ import { verificationResendLimiter, emailChangeLimiter, passwordChangeLimiter, w
 import { logger } from '../lib/logger';
 import { isValidEmail, textField } from '../lib/validation';
 import { stopRenewal, resumeRenewal } from '../lib/billing';
-import { processExportJob } from '../lib/exportWorker';
+import { processExportJob, exportKey } from '../lib/exportWorker';
+import { getPresignedDownloadUrl, exportsBucket, isR2ConfigError } from '../lib/r2';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { queueSessionGardens, drainSoon } from '../lib/r2Cleanup';
 
@@ -709,6 +710,11 @@ router.post('/supporter-prompt/shown', writeLimiter, async (req, res) => {
 // mid-job, or a crash before processExportJob ran) and is marked failed.
 const EXPORT_STALE_MINUTES = 15;
 
+// Where the client downloads a finished export. The route signs a fresh R2
+// link on each request; no working link is ever stored or returned.
+const EXPORT_DOWNLOAD_PATH = '/api/me/export/download';
+const EXPORT_LINK_TTL_SECONDS = 300;
+
 async function failStaleExportJobs(
   q: { query: typeof db.query },
   accountId: number,
@@ -752,8 +758,8 @@ router.post('/export', writeLimiter, async (req, res) => {
         return res.status(409).json({ error: 'An export is already in progress.' });
       }
 
-      const { rows: ready } = await client.query<{ download_url: string; expires_at: Date }>(
-        `SELECT download_url, expires_at FROM data_export_jobs
+      const { rows: ready } = await client.query<{ expires_at: Date }>(
+        `SELECT expires_at FROM data_export_jobs
          WHERE account_id = $1 AND status = 'complete' AND expires_at > now()
          ORDER BY expires_at DESC
          LIMIT 1`,
@@ -764,7 +770,7 @@ router.post('/export', writeLimiter, async (req, res) => {
         return res.status(200).json({
           data: {
             status: 'complete',
-            downloadUrl: ready[0].download_url,
+            downloadUrl: EXPORT_DOWNLOAD_PATH,
             expiresAt: ready[0].expires_at,
           },
         });
@@ -805,11 +811,10 @@ router.get('/export', async (req, res) => {
       status: string;
       requested_at: Date;
       completed_at: Date | null;
-      download_url: string | null;
       expires_at: Date | null;
       expired: boolean;
     }>(
-      `SELECT id, status, requested_at, completed_at, download_url, expires_at,
+      `SELECT id, status, requested_at, completed_at, expires_at,
               COALESCE(status = 'complete' AND expires_at <= now(), false) AS expired
        FROM data_export_jobs
        WHERE account_id = $1
@@ -828,13 +833,52 @@ router.get('/export', async (req, res) => {
         status: job.status,
         requestedAt: job.requested_at,
         completedAt: job.completed_at,
-        downloadUrl: job.expired ? null : job.download_url,
+        downloadUrl: job.status === 'complete' && !job.expired ? EXPORT_DOWNLOAD_PATH : null,
         expiresAt: job.expires_at,
         expired: job.expired,
       },
     });
   } catch (err) {
     logger.error('GET /me/export failed', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/me/export/download
+// Redirects to a short-lived signed link for the account's latest unexpired
+// export, so the link only ever reaches the signed-in owner.
+router.get('/export/download', async (req, res) => {
+  const accountId = req.session!.account!.id;
+  res.set('Cache-Control', 'no-store');
+
+  try {
+    const { rows } = await db.query<{ id: number }>(
+      `SELECT id FROM data_export_jobs
+       WHERE account_id = $1 AND status = 'complete' AND expires_at > now()
+       ORDER BY expires_at DESC
+       LIMIT 1`,
+      [accountId],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'No export available.' });
+    }
+
+    let link: string;
+    try {
+      link = await getPresignedDownloadUrl(
+        exportKey(accountId, rows[0].id),
+        EXPORT_LINK_TTL_SECONDS,
+        exportsBucket(),
+      );
+    } catch (err) {
+      if (isR2ConfigError(err)) {
+        return res.status(503).json({ error: 'Export storage is not configured.' });
+      }
+      throw err;
+    }
+    res.redirect(302, link);
+  } catch (err) {
+    logger.error('GET /me/export/download failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

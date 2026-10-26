@@ -1,30 +1,37 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
-import { Pool } from 'pg';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { Pool, PoolClient } from 'pg';
+import type { Readable } from 'stream';
 
-const { appendedNames } = vi.hoisted(() => ({ appendedNames: [] as string[] }));
+const { entries } = vi.hoisted(() => ({ entries: new Map<string, string>() }));
 
 vi.mock('./r2', () => ({
-  uploadToR2: vi.fn(),
-  getPresignedDownloadUrl: vi.fn(),
-  deleteFromR2: vi.fn(),
+  uploadStreamToR2: vi.fn(),
   exportsBucket: vi.fn(() => 'test-exports'),
   exportFolder: (id: number) => `exports/${id}/`,
 }));
 
-// Minimal stand-in for archiver's ZipArchive: records entry names and writes a
-// placeholder payload to the piped stream on finalize.
-vi.mock('archiver', () => {
-  class ZipArchive {
+// Stand-in for archiver's ZipArchive: reads each entry to the end, records its
+// text by name, then emits 'entry' like the real one. finalize() ends the
+// piped stream with a placeholder payload.
+vi.mock('archiver', async () => {
+  const { EventEmitter } = await import('events');
+  class ZipArchive extends EventEmitter {
     private dest: NodeJS.WritableStream | null = null;
-    on() {
-      return this;
-    }
     pipe<T extends NodeJS.WritableStream>(dest: T): T {
       this.dest = dest;
       return dest;
     }
-    append(_data: string, opts: { name: string }) {
-      appendedNames.push(opts.name);
+    append(source: string | Buffer | Readable, opts: { name: string }) {
+      void (async () => {
+        let text = '';
+        if (typeof source === 'string' || Buffer.isBuffer(source)) text = source.toString();
+        else for await (const chunk of source) text += chunk.toString();
+        entries.set(opts.name, text);
+        this.emit('entry', { name: opts.name });
+      })().catch(() => undefined); // a failing source reports through its own 'error' event
+      return this;
+    }
+    abort() {
       return this;
     }
     async finalize() {
@@ -34,11 +41,11 @@ vi.mock('archiver', () => {
   return { ZipArchive };
 });
 
-import { uploadToR2, getPresignedDownloadUrl, exportsBucket } from './r2';
-import { collectExportData, processExportJob } from './exportWorker';
+import { uploadStreamToR2, exportsBucket } from './r2';
+import { jobDb } from './db';
+import { processExportJob } from './exportWorker';
 
-const uploadMock = vi.mocked(uploadToR2);
-const presignMock = vi.mocked(getPresignedDownloadUrl);
+const uploadMock = vi.mocked(uploadStreamToR2);
 const exportsBucketMock = vi.mocked(exportsBucket);
 
 const url = process.env.TEST_DATABASE_URL;
@@ -60,6 +67,11 @@ const EXPECTED_FILES = [
   'weather_connections.json',
   'feedback.json',
   'usage_events.json',
+  'oauth_identities.json',
+  'notifications.json',
+  'contributions.json',
+  'seed_ratings.json',
+  'weather_readings.json',
 ];
 
 type Row = Record<string, unknown>;
@@ -128,7 +140,7 @@ async function seedAccountData(ownerId: number, label: string) {
     'INSERT INTO amendment_log_beds (amendment_log_id, bed_id) VALUES ($1, $2)',
     [amendmentId, bedId],
   );
-  await insert(
+  const connectionId = await insert(
     `INSERT INTO weather_connections (account_id, provider, credentials, station_id)
      VALUES ($1, 'pws_tempest', $2, 'ST-1')`,
     [ownerId, JSON.stringify({ apiKey: `${label}-weather-secret` })],
@@ -150,7 +162,49 @@ async function seedAccountData(ownerId: number, label: string) {
     `INSERT INTO usage_events (user_id, session_id, event_key) VALUES ($1, 'sess', 'garden_opened')`,
     [ownerId],
   );
-  return { gardenId, bedId, seedId };
+  await insert(
+    `INSERT INTO oauth_identities (account_id, provider, provider_user_id, provider_email, access_token_encrypted)
+     VALUES ($1, 'google', $2, $3, $4)`,
+    [ownerId, `${label}-google-id`, `${label}@gmail.example.com`, Buffer.from(`${label}-oauth-token`)],
+  );
+  await insert(
+    `INSERT INTO notifications (account_id, type, payload) VALUES ($1, 'contribution_approved', $2)`,
+    [ownerId, JSON.stringify({ note: `${label} notification` })],
+  );
+  await insert(
+    `INSERT INTO moderation_items (type, cambium_seed_id, submitted_by, content, resolution_note)
+     VALUES ('correction', $1, $2, $3, $4)`,
+    [cambiumSeedId, ownerId, JSON.stringify({ field: `${label} correction` }), `${label} moderator note`],
+  );
+  await insert(
+    `INSERT INTO cambium.seed_ratings (seed_id, account_id, rating) VALUES ($1, $2, $3)`,
+    [cambiumSeedId, ownerId, label === 'Mine' ? 4 : 2],
+  );
+  // More readings than one cursor batch (500) for the test account.
+  await pool.query(
+    `INSERT INTO weather_readings (connection_id, reading_timestamp, temperature, wind_direction)
+     SELECT $1, '2026-06-01T00:00:00Z'::timestamptz + make_interval(mins => n), 20.5, $2
+     FROM generate_series(1, $3::int) AS n`,
+    [connectionId, `${label}-wind`, label === 'Mine' ? 1201 : 1],
+  );
+  return { gardenId, bedId, seedId, connectionId };
+}
+
+async function createJob(): Promise<number> {
+  return insert(`INSERT INTO data_export_jobs (account_id) VALUES ($1)`, [accountId]);
+}
+
+function json(name: string): unknown {
+  const text = entries.get(name);
+  if (text === undefined) throw new Error(`${name} was not exported`);
+  return JSON.parse(text);
+}
+
+// Runs a full export for the test account and leaves its files in `entries`.
+async function runExport(): Promise<number> {
+  const jobId = await createJob();
+  await processExportJob(jobId);
+  return jobId;
 }
 
 beforeAll(async () => {
@@ -173,22 +227,38 @@ afterAll(async () => {
   await pool.end();
 });
 
-describe('collectExportData', () => {
-  it('returns every export file with the account data', async () => {
-    const data = await collectExportData(accountId);
-    expect(Object.keys(data).sort()).toEqual([...EXPECTED_FILES].sort());
+beforeEach(() => {
+  entries.clear();
+  // Consume the archive stream so the upload "finishes", as lib-storage would.
+  uploadMock.mockReset().mockImplementation(async (_key, body) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for await (const _chunk of body) {
+      // drain
+    }
+  });
+  exportsBucketMock.mockReset().mockReturnValue('test-exports');
+});
 
-    const gardens = data['gardens.json'] as Row[];
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('export contents', () => {
+  it('writes every export file with the account data', async () => {
+    await runExport();
+    expect([...entries.keys()].sort()).toEqual([...EXPECTED_FILES, 'README.txt'].sort());
+
+    const gardens = json('gardens.json') as Row[];
     expect(gardens).toHaveLength(1);
     expect(gardens[0].name).toBe('Mine Garden');
     expect((gardens[0].beds as Row[])[0].label).toBe('Mine Bed');
 
-    const plantings = data['plantings.json'] as Row[];
+    const plantings = json('plantings.json') as Row[];
     expect(plantings).toHaveLength(1);
     expect(plantings[0].commonName).toBe('Export Test Basil');
     expect(plantings[0].plantingDate).toBe('2026-04-15');
 
-    const harvests = data['harvest_entries.json'] as Row[];
+    const harvests = json('harvest_entries.json') as Row[];
     expect(harvests).toHaveLength(1);
     expect(harvests[0]).toMatchObject({
       commonName: 'Mine Tomato',
@@ -199,85 +269,165 @@ describe('collectExportData', () => {
     expect(typeof harvests[0].harvestedAt).toBe('string');
     expect(new Date(harvests[0].harvestedAt as string).toISOString()).toBe(harvests[0].harvestedAt);
 
-    const sowing = data['sowing_events.json'] as Row[];
+    const sowing = json('sowing_events.json') as Row[];
     expect(sowing).toHaveLength(1);
     expect(sowing[0].commonName).toBe('Mine Tomato');
 
-    expect(data['soil_readings.json']).toHaveLength(1);
-    expect((data['seed_photos.json'] as Row[])[0].storageUrl).toBe('https://cdn.example.com/Mine.jpg');
-    expect((data['amendment_logs.json'] as Row[])[0].bedIds).toHaveLength(1);
-    expect(data['weather_connections.json']).toHaveLength(1);
+    expect(json('soil_readings.json')).toHaveLength(1);
+    expect((json('seed_photos.json') as Row[])[0].storageUrl).toBe('https://cdn.example.com/Mine.jpg');
+    expect((json('amendment_logs.json') as Row[])[0].bedIds).toHaveLength(1);
+    expect(json('weather_connections.json')).toHaveLength(1);
 
-    const feedback = data['feedback.json'] as { submissions: Row[]; microFeedback: Row[] };
+    const feedback = json('feedback.json') as { submissions: Row[]; microFeedback: Row[] };
     expect(feedback.submissions).toHaveLength(1);
     expect(feedback.microFeedback).toHaveLength(1);
-    expect(data['usage_events.json']).toEqual([
+    expect(json('usage_events.json')).toEqual([
       { eventKey: 'garden_opened', createdAt: expect.any(String) },
     ]);
   });
 
+  it('pretty-prints streamed files like JSON.stringify(rows, null, 2)', async () => {
+    await runExport();
+    for (const name of ['plantings.json', 'usage_events.json']) {
+      const text = entries.get(name)!;
+      expect(text).toBe(JSON.stringify(JSON.parse(text), null, 2));
+    }
+  });
+
   it('never exports password hashes, Stripe ids or weather credentials', async () => {
-    const data = await collectExportData(accountId);
-    const account = data['account.json'] as Row;
+    await runExport();
+    const account = json('account.json') as Row;
     expect(account.email).toBe('export-owner@example.com');
     expect(account).not.toHaveProperty('passwordHash');
     expect(account).not.toHaveProperty('stripeCustomerId');
     expect(account).not.toHaveProperty('stripeSubscriptionId');
     expect(typeof account.createdAt).toBe('string');
 
-    for (const conn of data['weather_connections.json'] as Row[]) {
+    for (const conn of json('weather_connections.json') as Row[]) {
       expect(conn).not.toHaveProperty('credentials');
     }
 
-    const serialized = JSON.stringify(data);
+    const serialized = [...entries.values()].join('\n');
     expect(serialized).not.toContain('secret-hash');
     expect(serialized).not.toContain('cus_');
     expect(serialized).not.toContain('weather-secret');
   });
 
   it("never includes another account's gardens, harvests or seeds", async () => {
-    const data = await collectExportData(accountId);
-    const serialized = JSON.stringify(data);
+    await runExport();
+    const serialized = [...entries.values()].join('\n');
     expect(serialized).not.toContain('Other Garden');
     expect(serialized).not.toContain('Other Tomato');
     expect(serialized).not.toContain('Other feedback');
     expect(serialized).not.toContain('export-other@example.com');
 
-    for (const h of data['harvest_entries.json'] as Row[]) {
+    for (const h of json('harvest_entries.json') as Row[]) {
       expect(h.gardenName).toBe('Mine Garden');
     }
-    for (const s of data['personal_seeds.json'] as Row[]) {
+    for (const s of json('personal_seeds.json') as Row[]) {
       expect(s.ownerId).toBe(accountId);
     }
   });
 });
 
-describe('processExportJob', () => {
-  async function createJob(): Promise<number> {
-    return insert(`INSERT INTO data_export_jobs (account_id) VALUES ($1)`, [accountId]);
-  }
-
-  beforeEach(() => {
-    appendedNames.length = 0;
-    uploadMock.mockReset().mockResolvedValue('https://cdn.example.com/export.zip');
-    presignMock.mockReset().mockResolvedValue('https://signed.example.com/export.zip');
-    exportsBucketMock.mockReset().mockReturnValue('test-exports');
+describe('export contents: sign-ins, notifications, contributions, ratings, weather', () => {
+  it('exports sign-in identities without tokens', async () => {
+    await runExport();
+    expect(json('oauth_identities.json')).toEqual([
+      {
+        provider: 'google',
+        providerUserId: 'Mine-google-id',
+        providerEmail: 'Mine@gmail.example.com',
+        createdAt: expect.any(String),
+      },
+    ]);
   });
 
-  it('builds the ZIP, uploads it and marks the job complete', async () => {
-    const jobId = await createJob();
-    await processExportJob(jobId);
+  it('exports notifications', async () => {
+    await runExport();
+    expect(json('notifications.json')).toEqual([
+      {
+        id: expect.any(Number),
+        type: 'contribution_approved',
+        payload: { note: 'Mine notification' },
+        readAt: null,
+        createdAt: expect.any(String),
+      },
+    ]);
+  });
 
-    expect(appendedNames.sort()).toEqual([...EXPECTED_FILES, 'README.txt'].sort());
+  it('exports contributions without the moderator note', async () => {
+    await runExport();
+    const contributions = json('contributions.json') as Row[];
+    expect(contributions).toEqual([
+      {
+        id: expect.any(Number),
+        type: 'correction',
+        seedId: null,
+        cambiumSeedId,
+        content: { field: 'Mine correction' },
+        status: 'new',
+        createdAt: expect.any(String),
+        resolvedAt: null,
+      },
+    ]);
+    expect(entries.get('contributions.json')).not.toContain('moderator note');
+  });
+
+  it('exports seed ratings with the seed name', async () => {
+    await runExport();
+    expect(json('seed_ratings.json')).toEqual([
+      { seedId: cambiumSeedId, commonName: 'Export Test Basil', rating: 4, createdAt: expect.any(String) },
+    ]);
+  });
+
+  it('exports every weather reading across cursor batches, in time order', async () => {
+    await runExport();
+    const readings = json('weather_readings.json') as Row[];
+    expect(readings).toHaveLength(1201);
+    expect(readings[0]).toEqual({
+      connectionId: expect.any(Number),
+      provider: 'pws_tempest',
+      readingTimestamp: '2026-06-01T00:01:00.000Z',
+      temperature: 20.5,
+      humidity: null,
+      windSpeed: null,
+      windDirection: 'Mine-wind',
+      precipitationToday: null,
+      uvIndex: null,
+      pressure: null,
+    });
+    const times = readings.map((r) => r.readingTimestamp as string);
+    expect([...times].sort()).toEqual(times);
+  });
+
+  it("never includes another account's rows in the new files", async () => {
+    await runExport();
+    const serialized = [...entries.values()].join('\n');
+    expect(serialized).not.toContain('Other-google-id');
+    expect(serialized).not.toContain('Other notification');
+    expect(serialized).not.toContain('Other correction');
+    expect(serialized).not.toContain('Other-wind');
+    expect(serialized).not.toContain('oauth-token');
+    expect((json('seed_ratings.json') as Row[]).map((r) => r.rating)).toEqual([4]);
+  });
+
+  it('lists every file in the README', async () => {
+    await runExport();
+    const readmeText = entries.get('README.txt')!;
+    expect(readmeText).toContain('Photos are listed by URL.');
+    for (const name of EXPECTED_FILES) expect(readmeText).toContain(name);
+  });
+});
+
+describe('processExportJob', () => {
+  it('uploads the archive stream and marks the job complete without storing a URL', async () => {
+    const jobId = await runExport();
+
     expect(uploadMock).toHaveBeenCalledWith(
       `exports/${accountId}/${jobId}.zip`,
-      expect.any(Buffer),
+      expect.objectContaining({ pipe: expect.any(Function) }),
       'application/zip',
-      'test-exports',
-    );
-    expect(presignMock).toHaveBeenCalledWith(
-      `exports/${accountId}/${jobId}.zip`,
-      604800,
       'test-exports',
     );
 
@@ -289,13 +439,48 @@ describe('processExportJob', () => {
       [jobId],
     );
     expect(rows[0].status).toBe('complete');
-    expect(rows[0].download_url).toBe('https://signed.example.com/export.zip');
+    expect(rows[0].download_url).toBeNull();
     expect(rows[0].completed_at).not.toBeNull();
     expect(rows[0].expires_in_week).toBe(true);
   });
 
+  it('reads everything on one client in one read-only snapshot', async () => {
+    const queries: string[] = [];
+    const realConnect = jobDb.connect.bind(jobDb) as () => Promise<PoolClient>;
+    // Pool.query also calls connect (with a callback); only count direct checkouts.
+    const connectSpy = vi.spyOn(jobDb, 'connect').mockImplementation(((...args: unknown[]) => {
+      if (args.length > 0) return (realConnect as (...a: unknown[]) => unknown)(...args);
+      return realConnect().then((client) => {
+        const realQuery = client.query.bind(client) as (...a: unknown[]) => unknown;
+        const realRelease = client.release.bind(client);
+        // Record only while the worker holds the client: once released, the
+        // pool hands the same client to later db.query calls.
+        let checkedOut = true;
+        vi.spyOn(client, 'query').mockImplementation(((...a: unknown[]) => {
+          const first = a[0];
+          if (checkedOut) {
+            queries.push(typeof first === 'string' ? first : (first as { text?: string }).text ?? 'cursor');
+          }
+          return realQuery(...a);
+        }) as never);
+        vi.spyOn(client, 'release').mockImplementation(((err?: Error | boolean) => {
+          checkedOut = false;
+          return realRelease(err);
+        }) as never);
+        return client;
+      });
+    }) as never);
+
+    await runExport();
+
+    const checkouts = connectSpy.mock.calls.filter((c) => (c as unknown[]).length === 0);
+    expect(checkouts).toHaveLength(1);
+    expect(queries[0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    expect(queries[queries.length - 1]).toBe('COMMIT');
+  });
+
   it('marks the job failed and resolves when the upload throws', async () => {
-    uploadMock.mockRejectedValueOnce(new Error('R2 unavailable'));
+    uploadMock.mockReset().mockRejectedValueOnce(new Error('R2 unavailable'));
     const jobId = await createJob();
 
     await expect(processExportJob(jobId)).resolves.toBeUndefined();
@@ -305,6 +490,17 @@ describe('processExportJob', () => {
       [jobId],
     );
     expect(rows[0]).toEqual({ status: 'failed', download_url: null });
+    // The failed job's connection went back (or was discarded): the pool still serves a full export.
+    entries.clear();
+    uploadMock.mockReset().mockImplementation(async (_key, body) => {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _chunk of body) {
+        // drain
+      }
+    });
+    await runExport();
+    expect(entries.has('README.txt')).toBe(true);
+    expect(jobDb.waitingCount).toBe(0);
   });
 
   it('marks the job failed without uploading when the exports bucket is not configured', async () => {
