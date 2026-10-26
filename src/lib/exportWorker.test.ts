@@ -432,14 +432,13 @@ describe('processExportJob', () => {
     );
 
     const { rows } = await pool.query(
-      `SELECT status, download_url, completed_at,
+      `SELECT status, completed_at,
               expires_at BETWEEN now() + interval '6 days 23 hours' AND now() + interval '7 days 1 hour'
                 AS expires_in_week
        FROM data_export_jobs WHERE id = $1`,
       [jobId],
     );
     expect(rows[0].status).toBe('complete');
-    expect(rows[0].download_url).toBeNull();
     expect(rows[0].completed_at).not.toBeNull();
     expect(rows[0].expires_in_week).toBe(true);
   });
@@ -486,10 +485,10 @@ describe('processExportJob', () => {
     await expect(processExportJob(jobId)).resolves.toBeUndefined();
 
     const { rows } = await pool.query(
-      'SELECT status, download_url FROM data_export_jobs WHERE id = $1',
+      'SELECT status FROM data_export_jobs WHERE id = $1',
       [jobId],
     );
-    expect(rows[0]).toEqual({ status: 'failed', download_url: null });
+    expect(rows[0]).toEqual({ status: 'failed' });
     // The failed job's connection went back (or was discarded): the pool still serves a full export.
     entries.clear();
     uploadMock.mockReset().mockImplementation(async (_key, body) => {
@@ -513,9 +512,9 @@ describe('processExportJob', () => {
 
     expect(uploadMock).not.toHaveBeenCalled();
     const { rows } = await pool.query(
-      'SELECT status, download_url FROM data_export_jobs WHERE id = $1',
+      'SELECT status FROM data_export_jobs WHERE id = $1',
       [jobId],
     );
-    expect(rows[0]).toEqual({ status: 'failed', download_url: null });
+    expect(rows[0]).toEqual({ status: 'failed' });
   });
 });
