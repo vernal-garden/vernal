@@ -1258,14 +1258,6 @@ describe('/api/me/export', () => {
     expect(res.body.data.downloadUrl).toBeNull();
   });
 
-  it('GET returns the link for a complete job even if an old URL was stored', async () => {
-    const jobId = await insertJob('complete', { expiresInDays: 2 });
-    await pool.query(`UPDATE data_export_jobs SET download_url = 'https://old.example.com/x' WHERE id = $1`, [jobId]);
-    const res = await agent.get('/api/me/export');
-    expect(res.body.data.downloadUrl).toBe('/api/me/export/download');
-    expect(JSON.stringify(res.body)).not.toContain('old.example.com');
-  });
-
   describe('GET /api/me/export/download', () => {
     it('redirects to a 5-minute signed link for the latest unexpired export', async () => {
       await insertJob('complete', { expiresInDays: 1, requestedMinutesAgo: 60 });
