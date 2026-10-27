@@ -1,5 +1,7 @@
 import type { CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
+import WeatherCredit from '../components/weather/WeatherCredit';
+import { secondaryTextStyle } from '../components/metrics/styles';
 
 const REPO_URL = 'https://github.com/vernal-garden/vernal';
 
@@ -75,6 +77,14 @@ export default function AboutPage() {
           <Link to="/terms" data-testid="about-terms-link" style={linkStyle}>
             Terms
           </Link>
+        </section>
+
+        <section style={sectionStyle} aria-label="Credits">
+          <p style={bodyStyle}>Weather and location data:</p>
+          <WeatherCredit />
+          <p style={{ ...bodyStyle, ...secondaryTextStyle }}>
+            Weather forecasts and history come from outside services and can be wrong or out of date. Use them for planning, and check official forecasts and warnings before anything that matters.
+          </p>
         </section>
 
         <section style={sectionStyle} aria-label="Feedback">
