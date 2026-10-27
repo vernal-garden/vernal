@@ -45,12 +45,12 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.0.0",
-    "express": "^5.0.0",
-    "express-rate-limit": "^8.5.2",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
     "helmet": "^8.0.0",
     "lru-cache": "^11.5.2",
     "node-cron": "^4.6.0",
-    "nodemailer": "^8.0.10",
+    "nodemailer": "10.1.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "pg": "^8.21.0",
@@ -58,6 +58,11 @@
     "sharp": "0.35.5",
     "stripe": "^22.3.2",
     "uuid": "^14.0.0"
+  },
+  "overrides": {
+    "body-parser": "2.3.0",
+    "qs": "6.16.0",
+    "ip-address": "10.7.4"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
@@ -68,7 +73,6 @@
     "@types/express": "^5.0.0",
     "@types/node": "^24.0.0",
     "@types/node-cron": "^3.0.11",
-    "@types/nodemailer": "^8.0.0",
     "@types/passport": "^1.0.17",
     "@types/passport-google-oauth20": "^2.0.17",
     "@types/pg": "^8.20.0",
