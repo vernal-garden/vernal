@@ -5,6 +5,7 @@ import type { Profile } from 'passport-google-oauth20';
 import type { OAuthUser } from './providers/google';
 import { resolveOAuthAccount, OAuthUnverifiedEmailError, OAuthLinkRequiresPasswordError } from './resolveAccount';
 import { db } from '../db';
+import { TERMS_VERSION } from '../legal';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -98,6 +99,28 @@ describe('resolveOAuthAccount', () => {
       [result.accountId],
     );
     expect(rows[0]).toEqual({ email: 'new.person@example.com', email_verified: true });
+  });
+
+  it('records the accepted Terms version and time on a new account', async () => {
+    const result = await resolveOAuthAccount(googleUser('g-6', 'terms@example.com'));
+    const { rows } = await pool.query<{ terms_version: string | null; recent: boolean }>(
+      `SELECT terms_version, terms_accepted_at > NOW() - INTERVAL '1 minute' AS recent
+         FROM accounts WHERE id = $1`,
+      [result.accountId],
+    );
+    expect(rows[0].terms_version).toBe(TERMS_VERSION);
+    expect(rows[0].recent).toBe(true);
+  });
+
+  it('leaves the Terms fields NULL when linking Google to an existing account', async () => {
+    const id = await passwordAccount('terms-linked@example.com', true);
+    await resolveOAuthAccount(googleUser('g-7', 'terms-linked@example.com', true, 'example.com'));
+    const { rows } = await pool.query<{ terms_version: string | null; terms_accepted_at: Date | null }>(
+      'SELECT terms_version, terms_accepted_at FROM accounts WHERE id = $1',
+      [id],
+    );
+    expect(rows[0].terms_version).toBeNull();
+    expect(rows[0].terms_accepted_at).toBeNull();
   });
 
   it('returns the existing account for a known Google identity', async () => {

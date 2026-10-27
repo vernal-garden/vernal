@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { get, post, del, ApiError, apiUrl } from '../../lib/api';
 import { useSignOut } from '../../hooks/useSignOut';
 import { useAuth } from '../../context/AuthContext';
@@ -289,6 +290,11 @@ export default function DataPrivacySettings({ account, onUpdate }: Props) {
       <h2 style={{ margin: '0 0 var(--sp-4)', fontFamily: 'var(--font-display)', fontSize: 20, color: 'var(--c-text)' }}>
         Data & Privacy
       </h2>
+
+      <p style={{ ...bodyTextSt, margin: '0 0 var(--sp-4)' }}>
+        How Vernal handles your data:{' '}
+        <Link to="/privacy" style={{ color: 'var(--c-primary)' }}>Privacy policy</Link>.
+      </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
         <ExportDataCard />

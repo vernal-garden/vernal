@@ -1,4 +1,5 @@
 import { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 const GoogleG = () => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -61,6 +62,22 @@ export default function AuthFormLayout({ title, returnTo = '/', children }: Prop
           <GoogleG />
           Continue with Google
         </a>
+
+        <p
+          data-testid="auth-legal-notice"
+          style={{
+            margin: '0.75rem 0 0',
+            fontSize: '0.75rem',
+            lineHeight: 1.5,
+            color: '#9ca3af',
+            textAlign: 'center',
+          }}
+        >
+          By creating an account or continuing with Google, you agree to the{' '}
+          <Link to="/terms" style={{ color: '#4f7c3f', fontWeight: 500 }}>Terms</Link>
+          {' '}and acknowledge the{' '}
+          <Link to="/privacy" style={{ color: '#4f7c3f', fontWeight: 500 }}>Privacy Policy</Link>.
+        </p>
 
         <div style={{
           display: 'flex',

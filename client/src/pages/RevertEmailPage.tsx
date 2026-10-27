@@ -60,7 +60,7 @@ export default function RevertEmailPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
-  // Read once, then drop it from the address bar (history, Sentry, replays).
+  // Read once, then drop it from the address bar (history, Sentry).
   const [token] = useState(() => getUrlToken(location.pathname) ?? searchParams.get('token'));
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
 

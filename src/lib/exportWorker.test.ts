@@ -295,6 +295,10 @@ describe('export contents', () => {
   });
 
   it('never exports password hashes, Stripe ids or weather credentials', async () => {
+    await pool.query(
+      `UPDATE accounts SET terms_version = '2026-10-26', terms_accepted_at = NOW() WHERE id = $1`,
+      [accountId],
+    );
     await runExport();
     const account = json('account.json') as Row;
     expect(account.email).toBe('export-owner@example.com');
@@ -302,6 +306,8 @@ describe('export contents', () => {
     expect(account).not.toHaveProperty('stripeCustomerId');
     expect(account).not.toHaveProperty('stripeSubscriptionId');
     expect(typeof account.createdAt).toBe('string');
+    expect(account.termsVersion).toBe('2026-10-26');
+    expect(typeof account.termsAcceptedAt).toBe('string');
 
     for (const conn of json('weather_connections.json') as Row[]) {
       expect(conn).not.toHaveProperty('credentials');

@@ -14,6 +14,7 @@ import {
 } from '../lib/sessions';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
+import { TERMS_VERSION } from '../lib/legal';
 import { hashToken } from '../lib/tokens';
 import { issuePasswordResetToken, sendPasswordResetEmail, sendPasswordChangedNotice } from '../lib/accountSecurity';
 import { sendVerificationEmail, consumeVerificationToken } from '../lib/emailVerification';
@@ -230,10 +231,10 @@ authRouter.post('/register', registerLimiter, async (req: Request, res: Response
     await client.query('BEGIN');
 
     const { rows } = await client.query<{ id: number }>(
-      `INSERT INTO accounts (email, password_hash, zone, zone_location_label)
-       VALUES ($1, $2, 'unknown', $3)
+      `INSERT INTO accounts (email, password_hash, zone, zone_location_label, terms_version, terms_accepted_at)
+       VALUES ($1, $2, 'unknown', $3, $4, NOW())
        RETURNING id`,
-      [email.toLowerCase(), passwordHash, LOCATION_NOT_SET],
+      [email.toLowerCase(), passwordHash, LOCATION_NOT_SET, TERMS_VERSION],
     );
     const accountId = rows[0].id;
 
