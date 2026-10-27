@@ -30,4 +30,18 @@ test('about page shows the version and the external links', async ({ page }) => 
     await expect(link).toHaveAttribute('rel', /noopener/);
     await expect(link).toHaveAttribute('rel', /noreferrer/);
   }
+
+  const credit = page.getByTestId('weather-credit');
+  await expect(credit).toBeVisible();
+  const creditLinks = [
+    'https://open-meteo.com/',
+    'https://www.openstreetmap.org/copyright',
+  ];
+  for (const href of creditLinks) {
+    const link = credit.locator(`a[href="${href}"]`);
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute('target', '_blank');
+    await expect(link).toHaveAttribute('rel', /noopener/);
+    await expect(link).toHaveAttribute('rel', /noreferrer/);
+  }
 });

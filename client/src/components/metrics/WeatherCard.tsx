@@ -3,6 +3,7 @@ import type { PaidMetrics } from '../../types/metrics';
 import type { WeatherInsight } from '../../types/weather';
 import { formatInsight } from '../../lib/weatherInsights';
 import { formatPrecip, formatTemp, precipRoundsToZero } from '../../lib/units';
+import WeatherCredit from '../weather/WeatherCredit';
 import { bodyTextStyle, cardStyle, cardTitleStyle, linkStyle, listStyle, secondaryTextStyle } from './styles';
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -100,6 +101,7 @@ export default function WeatherCard({
           Set your location to see local weather.
         </Link>
       )}
+      {(week || insights.length > 0) && <WeatherCredit />}
       <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: 'var(--sp-4)', marginTop: 'auto' }}>
         {/* ED: replace with final copy */}
         <Link to="/weather" style={linkStyle}>View weather</Link>

@@ -6,6 +6,7 @@ import UpgradePrompt from '../components/UpgradePrompt';
 import { useWeather } from '../hooks/useWeather';
 import CurrentConditions from '../components/weather/CurrentConditions';
 import HistoryChart from '../components/weather/HistoryChart';
+import WeatherCredit from '../components/weather/WeatherCredit';
 import GrowingInsights from '../components/weather/GrowingInsights';
 import WeatherSetupCard from '../components/weather/WeatherSetupCard';
 import WeatherStationSection from '../components/weather/WeatherStationSection';
@@ -187,7 +188,9 @@ export default function WeatherPage() {
       {!showSetup && current && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}>
           <CurrentConditions reading={current} units={units} onRefresh={handleRefresh} refreshing={refreshing} />
+          {current.source === 'public_weather' && history.length === 0 && <WeatherCredit />}
           <HistoryChart history={history} units={units} />
+          {history.length > 0 && <WeatherCredit />}
           <GrowingInsights insights={insights} units={units} />
         </div>
       )}
