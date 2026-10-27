@@ -38,6 +38,9 @@ export default defineConfig({
     sentryVitePlugin({
       org: 'vernal',
       project: 'vernal-web',
+      // SENTRY_UPLOAD=off turns the plugin off for local builds (no source map
+      // upload, no release). The deploy script never sets it.
+      disable: process.env.SENTRY_UPLOAD === 'off',
       sourcemaps: {
         filesToDeleteAfterUpload: ['./dist/**/*.map'],
       },

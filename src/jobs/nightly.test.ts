@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { Pool } from 'pg';
 import type { PoolClient } from 'pg';
 import { EventEmitter } from 'node:events';
@@ -590,19 +590,12 @@ describe('refreshGardenBadges', () => {
 });
 
 describe('purgeExpiredGuests', () => {
+  // Old rows stored full URLs under this base; kept as fixtures only.
   const BASE = 'https://cdn.example.com';
-  let savedBaseUrl: string | undefined;
 
   beforeEach(async () => {
     await resetDb();
     deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
-    savedBaseUrl = process.env.R2_PUBLIC_BASE_URL;
-    process.env.R2_PUBLIC_BASE_URL = BASE;
-  });
-
-  afterEach(() => {
-    if (savedBaseUrl === undefined) delete process.env.R2_PUBLIC_BASE_URL;
-    else process.env.R2_PUBLIC_BASE_URL = savedBaseUrl;
   });
 
   async function createGuestWithThumbnail(
@@ -795,33 +788,25 @@ describe('purgeExpiredGuests — empty guests and batching', () => {
   });
 
   it('works through more expired guests than one batch', async () => {
-    const BASE = 'https://cdn.example.com';
-    const saved = process.env.R2_PUBLIC_BASE_URL;
-    process.env.R2_PUBLIC_BASE_URL = BASE;
-    try {
-      const ids: string[] = [];
-      for (let i = 0; i < 3; i++) {
-        const id = await insertGuest('1 hour', { expired: true });
-        const { rows } = await pool.query<{ id: number }>(
-          `INSERT INTO gardens (guest_session_id, name, style, zone) VALUES ($1, 'G', 'grid', '7a') RETURNING id`,
-          [id],
-        );
-        await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [
-          `${BASE}/garden-thumbnails/${rows[0].id}/x.png`,
-          rows[0].id,
-        ]);
-        ids.push(id);
-      }
-
-      const { affected } = await purgeExpiredGuests({ batchSize: 1 });
-
-      expect(affected).toBe(3);
-      expect(await existingIds()).toHaveLength(0);
-      expect(await queued()).toHaveLength(3);
-    } finally {
-      if (saved === undefined) delete process.env.R2_PUBLIC_BASE_URL;
-      else process.env.R2_PUBLIC_BASE_URL = saved;
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = await insertGuest('1 hour', { expired: true });
+      const { rows } = await pool.query<{ id: number }>(
+        `INSERT INTO gardens (guest_session_id, name, style, zone) VALUES ($1, 'G', 'grid', '7a') RETURNING id`,
+        [id],
+      );
+      await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [
+        `https://cdn.example.com/garden-thumbnails/${rows[0].id}/x.png`,
+        rows[0].id,
+      ]);
+      ids.push(id);
     }
+
+    const { affected } = await purgeExpiredGuests({ batchSize: 1 });
+
+    expect(affected).toBe(3);
+    expect(await existingIds()).toHaveLength(0);
+    expect(await queued()).toHaveLength(3);
   });
 
   it('drops email-change tokens older than 30 days and keeps newer ones', async () => {
@@ -929,21 +914,14 @@ describe('purgeReadNotifications', () => {
 });
 
 describe('purgeScheduledAccounts', () => {
+  // Old rows stored full URLs under this base; kept as fixtures only.
   const BASE = 'https://cdn.example.com';
-  let savedBaseUrl: string | undefined;
 
   beforeEach(async () => {
     await resetDb();
     deleteFromR2Mock.mockReset().mockResolvedValue(undefined);
     exportsBucketMock.mockReset().mockReturnValue('test-exports');
     teardownCustomerMock.mockReset().mockResolvedValue(undefined);
-    savedBaseUrl = process.env.R2_PUBLIC_BASE_URL;
-    process.env.R2_PUBLIC_BASE_URL = BASE;
-  });
-
-  afterEach(() => {
-    if (savedBaseUrl === undefined) delete process.env.R2_PUBLIC_BASE_URL;
-    else process.env.R2_PUBLIC_BASE_URL = savedBaseUrl;
   });
 
   it('tears down the Stripe customer before deleting the account', async () => {

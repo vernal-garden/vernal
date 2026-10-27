@@ -6,6 +6,7 @@ import { requireSupporter } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
 import { isR2ConfigError, uploadToR2 } from '../lib/r2';
+import { mediaUrl } from '../lib/media';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { ImageBusyError, ImageRejectedError, processPhoto } from '../lib/imageProcessing';
 
@@ -27,21 +28,18 @@ const photoBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'],
 
 interface PhotoRow {
   id: string;
-  storage_url: string;
   r2_key: string;
   notes: string | null;
   created_at: string;
 }
 
-const PHOTO_SELECT = 'id::text, storage_url, r2_key, notes, created_at';
+const PHOTO_SELECT = 'id::text, r2_key, notes, created_at';
 
-// The url is built from the key at read time so a change of public base URL
-// never strands old rows; storage_url is only the fallback when it's unset.
+// The url is built from the key; storage_url is never sent to the client.
 function formatPhoto(row: PhotoRow) {
-  const base = publicBaseUrl();
   return {
     id: row.id,
-    url: base ? `${base}/${row.r2_key}` : row.storage_url,
+    url: mediaUrl(row.r2_key),
     notes: row.notes,
     createdAt: row.created_at,
   };
@@ -58,11 +56,6 @@ function parseNotes(v: unknown): { notes: string | null } | { error: string } {
     return { error: `Notes must be ${MAX_NOTES_LENGTH} characters or fewer.` };
   }
   return { notes: trimmed || null };
-}
-
-function publicBaseUrl(): string | null {
-  const u = process.env.R2_PUBLIC_BASE_URL;
-  return u ? u.replace(/\/$/, '') : null;
 }
 
 async function ownsSeed(seedId: string, accountId: number): Promise<boolean> {
@@ -157,9 +150,6 @@ router.post('/', requireSupporter, writeLimiter, photoBody, async (req, res) => 
     if ((await photoCount(seedId)) >= MAX_PHOTOS_PER_SEED) {
       return res.status(409).json({ error: `Up to ${MAX_PHOTOS_PER_SEED} photos per seed.` });
     }
-    const base = publicBaseUrl();
-    if (!base) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
-
     let photo: Buffer;
     try {
       photo = await processPhoto(input);
@@ -207,7 +197,7 @@ router.post('/', requireSupporter, writeLimiter, photoBody, async (req, res) => 
         `INSERT INTO seed_photos (seed_id, storage_url, r2_key, notes)
          VALUES ($1, $2, $3, $4)
          RETURNING ${PHOTO_SELECT}`,
-        [seedId, `${base}/${key}`, key, notesResult.notes],
+        [seedId, key, key, notesResult.notes],
       );
 
       // Cleared before COMMIT: if COMMIT errors the row may still have been

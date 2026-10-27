@@ -11,6 +11,7 @@ import { seasonOf } from '../lib/season';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { recomputeHarvestableCount } from '../lib/gardenBadges';
 import { harvestPhotoFolder, uploadToR2 } from '../lib/r2';
+import { mediaUrl } from '../lib/media';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { ImageBusyError, ImageRejectedError, processPhoto } from '../lib/imageProcessing';
 import { logger } from '../lib/logger';
@@ -56,7 +57,8 @@ type SeedKey = { kind: 'seed'; id: number } | { kind: 'cambium'; id: number };
 
 interface Photo {
   key: string;
-  url: string;
+  // url is only present on rows written before photos went private; it is ignored.
+  url?: string;
 }
 
 interface EntryRow {
@@ -122,7 +124,7 @@ function formatEntry(row: EntryRow) {
     unit: row.unit,
     qualityRating: row.quality_rating,
     notes: row.notes,
-    photos: row.photos.map((p) => ({ key: p.key, url: p.url })),
+    photos: row.photos.map((p) => ({ key: p.key, url: mediaUrl(p.key) })),
     sowingEventId: row.sowing_event_id,
     createdAt: row.created_at,
   };
@@ -163,11 +165,6 @@ function isR2ConfigError(err: unknown): boolean {
     err instanceof Error &&
     (err.message.startsWith('R2 not configured') || err.message.endsWith('is not set.'))
   );
-}
-
-function publicBaseUrl(): string | null {
-  const u = process.env.R2_PUBLIC_BASE_URL;
-  return u ? u.replace(/\/$/, '') : null;
 }
 
 async function rollback(client: PoolClient): Promise<void> {
@@ -1040,9 +1037,6 @@ router.post('/:id/photos', ...photoGuards, photoBody, async (req: Request, res: 
     if (current.photos.length >= MAX_PHOTOS) {
       return res.status(409).json({ error: TOO_MANY_PHOTOS });
     }
-    const base = publicBaseUrl();
-    if (!base) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
-
     let photo: Buffer;
     try {
       photo = await processPhoto(input);
@@ -1080,7 +1074,7 @@ router.post('/:id/photos', ...photoGuards, photoBody, async (req: Request, res: 
 
       await client.query(
         `UPDATE harvest_entries SET photos = photos || jsonb_build_array($2::jsonb) WHERE id = $1`,
-        [id, JSON.stringify({ key, url: `${base}/${key}` })],
+        [id, JSON.stringify({ key })],
       );
 
       const entry = await fetchEntry(client, id, session);

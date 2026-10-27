@@ -51,7 +51,7 @@ const BUCKET = () => {
 
 /**
  * The private bucket that holds data export ZIPs. Exports must never land in
- * R2_BUCKET_NAME: that bucket has public access, which covers every object.
+ * R2_BUCKET_NAME: that bucket holds user photos and is served only through /api/media.
  */
 export function exportsBucket(): string {
   const b = process.env.R2_EXPORTS_BUCKET_NAME;
@@ -62,17 +62,8 @@ export function exportsBucket(): string {
   return b;
 }
 
-const PUBLIC_BASE = () => {
-  const u = process.env.R2_PUBLIC_BASE_URL;
-  if (!u) throw new Error('R2_PUBLIC_BASE_URL is not set.');
-  return u.replace(/\/$/, '');
-};
-
 /**
  * Upload a file to R2 from the server side.
- * Returns the public URL (R2_PUBLIC_BASE_URL/{key}). That URL is only
- * meaningful for the public bucket — it does not resolve for an object
- * uploaded to a private bucket via the `bucket` argument.
  * bucket defaults to R2_BUCKET_NAME.
  */
 export async function uploadToR2(
@@ -80,7 +71,7 @@ export async function uploadToR2(
   body: Buffer | Uint8Array,
   contentType: string,
   bucket?: string,
-): Promise<string> {
+): Promise<void> {
   const client = getClient();
   await client.send(
     new PutObjectCommand({
@@ -90,7 +81,6 @@ export async function uploadToR2(
       ContentType: contentType,
     }),
   );
-  return `${PUBLIC_BASE()}/${key}`;
 }
 
 /**
@@ -136,6 +126,34 @@ export async function getPresignedDownloadUrl(
     new GetObjectCommand({ Bucket: bucket ?? BUCKET(), Key: key }),
     { expiresIn },
   );
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Signed GET for a photo or thumbnail, served by GET /api/media/*. Signed as of
+ * the start of the current hour and valid for two, so every request in one
+ * hour gets the same URL (the browser can cache it) and a cached redirect
+ * always has at least an hour of validity left.
+ */
+export async function getMediaRedirectUrl(key: string, now = new Date()): Promise<string> {
+  const signingDate = new Date(Math.floor(now.getTime() / HOUR_MS) * HOUR_MS);
+  return getSignedUrl(
+    getClient(),
+    new GetObjectCommand({ Bucket: BUCKET(), Key: key, ResponseCacheControl: 'private, max-age=3600' }),
+    { expiresIn: 7200, signingDate },
+  );
+}
+
+/** A photo's bytes as a stream, or null when the object does not exist. */
+export async function getMediaObject(key: string): Promise<Readable | null> {
+  try {
+    const res = await getClient().send(new GetObjectCommand({ Bucket: BUCKET(), Key: key }));
+    return res.Body as Readable;
+  } catch (err) {
+    if (err instanceof Error && err.name === 'NoSuchKey') return null;
+    throw err;
+  }
 }
 
 /**
@@ -235,13 +253,4 @@ export function isR2ConfigError(err: unknown): boolean {
     err instanceof Error &&
     (err.message.startsWith('R2 not configured') || err.message.endsWith('is not set.'))
   );
-}
-
-// The R2 key of a thumbnail this garden owns, or null for any other URL
-// (including one stored under another garden's prefix).
-export function ownedThumbnailKey(url: string | null, gardenId: string): string | null {
-  const base = process.env.R2_PUBLIC_BASE_URL?.replace(/\/$/, '');
-  if (!url || !base) return null;
-  const prefix = `${base}/garden-thumbnails/${gardenId}/`;
-  return url.startsWith(prefix) ? url.slice(base.length + 1) : null;
 }

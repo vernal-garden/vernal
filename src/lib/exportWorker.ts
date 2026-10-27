@@ -5,7 +5,8 @@ import Cursor from 'pg-cursor';
 import { types as pgTypes, CustomTypesConfig, PoolClient } from 'pg';
 import { jobDb as db } from './db'; // long-running work: job pool, 5-min statement cap
 import { logger } from './logger';
-import { uploadStreamToR2, exportsBucket, exportFolder } from './r2';
+import { uploadStreamToR2, exportsBucket, exportFolder, getMediaObject } from './r2';
+import { exportPhotoPath } from './media';
 
 export function exportKey(accountId: number, jobId: number): string {
   return `${exportFolder(accountId)}${jobId}.zip`;
@@ -61,9 +62,30 @@ const COMMON_NAME_JOINS = `
   LEFT JOIN seeds s ON s.id = t.seed_id
   LEFT JOIN cambium.seeds cs ON cs.id = t.cambium_seed_id`;
 
+// A photo's path inside the ZIP, or null if it was not included.
+function photoFile(key: string | undefined, missing: ReadonlySet<string>): string | null {
+  if (!key || missing.has(key)) return null;
+  return exportPhotoPath(key);
+}
+
+// Every photo the account owns, read in the snapshot before anything is
+// appended. Harvest photos stored without a key (legacy URL strings) are skipped.
+const PHOTO_KEYS = `
+  SELECT sp.r2_key AS key FROM seed_photos sp
+    JOIN seeds s ON s.id = sp.seed_id
+   WHERE s.owner_id = $1
+  UNION ALL
+  SELECT p->>'key' FROM harvest_entries h
+    JOIN gardens g ON g.id = h.garden_id
+    CROSS JOIN LATERAL jsonb_array_elements(h.photos) p
+   WHERE g.owner_id = $1 AND p->>'key' IS NOT NULL`;
+
+type RowTransform = (row: Row, missing: ReadonlySet<string>) => Row;
+
 // Files that are a JSON array of rows, streamed from a cursor. Each query
-// takes the account id as $1.
-const STREAMED_FILES: { name: string; text: string }[] = [
+// takes the account id as $1. A transform, if any, rewrites each raw row
+// before formatting.
+const STREAMED_FILES: { name: string; text: string; transform?: RowTransform }[] = [
   {
     name: 'plantings.json',
     text: `SELECT t.*, COALESCE(s.common_name, cs.common_name) AS common_name
@@ -74,11 +96,16 @@ const STREAMED_FILES: { name: string; text: string }[] = [
   { name: 'personal_seeds.json', text: 'SELECT * FROM seeds WHERE owner_id = $1 ORDER BY id' },
   {
     name: 'seed_photos.json',
-    text: `SELECT sp.id, sp.seed_id, sp.storage_url, sp.taken_at, sp.notes, sp.created_at
+    text: `SELECT sp.id, sp.seed_id, sp.r2_key, sp.taken_at, sp.notes, sp.created_at
            FROM seed_photos sp
            JOIN seeds s ON s.id = sp.seed_id
            WHERE s.owner_id = $1
            ORDER BY sp.id`,
+    // The photo's file in this ZIP replaces its storage key.
+    transform: ({ r2_key, ...row }, missing) => ({
+      ...row,
+      file: photoFile(r2_key as string, missing),
+    }),
   },
   // harvest_entries has no bed_id column, so no bed label is exported.
   {
@@ -89,6 +116,13 @@ const STREAMED_FILES: { name: string; text: string }[] = [
            JOIN gardens g ON g.id = t.garden_id ${COMMON_NAME_JOINS}
            WHERE g.owner_id = $1
            ORDER BY t.id`,
+    // Each photo's file in this ZIP replaces its storage key and URL.
+    transform: (row, missing) => ({
+      ...row,
+      photos: (row.photos as unknown[]).map((p) => ({
+        file: photoFile((p as { key?: string } | null)?.key, missing),
+      })),
+    }),
   },
   {
     name: 'sowing_events.json',
@@ -199,9 +233,16 @@ async function collectSmallFiles(client: PoolClient, accountId: number): Promise
 
   const accountJson = accountRows[0]?.account as Row | undefined;
 
+  // The thumbnail is a storage reference to a file the export does not include.
+  const gardenRow = (g: Row): Row => {
+    const row = { ...g };
+    delete row.thumbnail_url;
+    return formatRow(row);
+  };
+
   return {
     'account.json': accountJson ? formatRow(accountJson) : null,
-    'gardens.json': gardens.map((g) => ({ ...formatRow(g), beds: bedsByGarden.get(g.id) ?? [] })),
+    'gardens.json': gardens.map((g) => ({ ...gardenRow(g), beds: bedsByGarden.get(g.id) ?? [] })),
     'feedback.json': {
       submissions: feedbackSubmissions.map(formatRow),
       microFeedback: microFeedback.map(formatRow),
@@ -216,6 +257,8 @@ async function* jsonArrayFromCursor(
   client: PoolClient,
   text: string,
   accountId: number,
+  transform: RowTransform | undefined,
+  missing: ReadonlySet<string>,
 ): AsyncGenerator<string> {
   const cursor = client.query(new Cursor<Row>(text, [accountId], { types: exportTypes }));
   try {
@@ -226,7 +269,7 @@ async function* jsonArrayFromCursor(
       if (rows.length === 0) break;
       let chunk = '';
       for (const row of rows) {
-        const element = JSON.stringify(formatRow(row), null, 2).replace(/\n/g, '\n  ');
+        const element = JSON.stringify(formatRow(transform ? transform(row, missing) : row), null, 2).replace(/\n/g, '\n  ');
         chunk += `${count === 0 ? '\n' : ',\n'}  ${element}`;
         count++;
       }
@@ -239,6 +282,7 @@ async function* jsonArrayFromCursor(
 }
 
 const README_FILES: [string, string][] = [
+  ['photos/', 'your seed and harvest photos'],
   ['account.json', 'your account and settings'],
   ['gardens.json', 'your gardens, each with its beds'],
   ['plantings.json', 'what is planted in your gardens'],
@@ -265,7 +309,10 @@ function readme(): string {
     dateStyle: 'long',
   });
   const list = README_FILES.map(([name, what]) => `${name} - ${what}`).join('\n');
-  return `Your Vernal data, exported ${exportedOn}. Photos are listed by URL.\n\n${list}\n`;
+  return (
+    `Your Vernal data, exported ${exportedOn}. Photos are in the photos folder; ` +
+    `seed_photos.json and harvest_entries.json give each one's file.\n\n${list}\n`
+  );
 }
 
 // Streams the whole archive into R2. Entries are appended one at a time, the
@@ -300,19 +347,50 @@ async function streamExport(
   uploaded.catch(fail);
 
   let source: Readable | null = null;
-  const append = async (name: string, data: string | Readable) => {
+  const append = async (name: string, data: string | Readable, opts: { store?: boolean } = {}) => {
     const entered = once(archive, 'entry');
-    archive.append(data, { name });
+    archive.append(data, { name, ...opts });
     await step(entered);
   };
 
   try {
+    // Photos first, so the JSON written after them can mark any missing file.
+    const missing = new Set<string>();
+    const photoKeys = (await query(client, PHOTO_KEYS, accountId)).map((r) => r.key as string);
+    for (const key of photoKeys) {
+      const name = exportPhotoPath(key);
+      if (!name) {
+        logger.warn('Export skipped a photo with an unexpected key', { key });
+        missing.add(key);
+        continue;
+      }
+      const fetched = getMediaObject(key);
+      const body = await step(fetched).catch((err: unknown) => {
+        // A body that arrives after the export has failed is closed, not left open.
+        fetched.then((late) => late?.destroy(), () => undefined);
+        throw err;
+      });
+      if (!body) {
+        logger.warn('Export skipped a missing photo', { key });
+        missing.add(key);
+        continue;
+      }
+      source = body;
+      source.on('error', fail);
+      // JPEGs are already compressed: store them as they are.
+      await append(name, source, { store: true });
+      source = null;
+    }
+
     for (const [name, data] of Object.entries(small)) {
       await append(name, JSON.stringify(data, null, 2));
     }
     for (const file of STREAMED_FILES) {
       // objectMode off: archiver reads bytes, not a stream of string objects.
-      source = Readable.from(jsonArrayFromCursor(client, file.text, accountId), { objectMode: false });
+      source = Readable.from(
+        jsonArrayFromCursor(client, file.text, accountId, file.transform, missing),
+        { objectMode: false },
+      );
       source.on('error', fail);
       await append(file.name, source);
       source = null;

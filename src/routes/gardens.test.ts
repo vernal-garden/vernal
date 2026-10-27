@@ -6,7 +6,7 @@ import sharp from 'sharp';
 
 vi.mock('../lib/r2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/r2')>()),
-  uploadToR2: vi.fn(async (key: string) => `${process.env.R2_PUBLIC_BASE_URL}/${key}`),
+  uploadToR2: vi.fn(async () => undefined),
   deleteFromR2: vi.fn(async () => {}),
 }));
 
@@ -408,15 +408,21 @@ describe('Id validation', () => {
 // ── Thumbnails ────────────────────────────────────────────────────────────────
 
 describe('Garden thumbnails', () => {
-  const BASE_URL = 'https://cdn.test.example';
+  const MEDIA = '/api/media/';
+  const OLD_BASE_URL = 'https://pub-x.r2.dev';
   const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   let realPng: Buffer;
   const png = () => realPng;
   const KEY_RE = (gardenId: string) =>
     new RegExp(`^garden-thumbnails/${gardenId}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.png$`);
 
+  const MEDIA_URL_RE = (gardenId: string) =>
+    new RegExp(`^/api/media/garden-thumbnails/${gardenId}/[0-9a-f-]{36}\\.png$`);
+  const newKey = (gardenId: string) => `garden-thumbnails/${gardenId}/${crypto.randomUUID()}.png`;
+  // The bare R2 key behind a /api/media/ thumbnail URL.
+  const keyOf = (thumbnailUrl: string) => thumbnailUrl.slice(MEDIA.length);
+
   let agent: ReturnType<typeof request.agent>;
-  let prevBaseUrl: string | undefined;
 
   async function createGarden(a: ReturnType<typeof request.agent>): Promise<string> {
     const res = await a.post('/api/gardens').send(BASE_GARDEN);
@@ -436,18 +442,11 @@ describe('Garden thumbnails', () => {
     a.post(`/api/gardens/${gardenId}/thumbnail`).set('Content-Type', 'image/png').send(body);
 
   beforeAll(async () => {
-    prevBaseUrl = process.env.R2_PUBLIC_BASE_URL;
-    process.env.R2_PUBLIC_BASE_URL = BASE_URL;
     realPng = await sharp({ create: { width: 32, height: 24, channels: 3, background: '#4a7' } })
       .png()
       .toBuffer();
     await createUser('thumb-user@example.com');
     agent = await loginAgent('thumb-user@example.com');
-  });
-
-  afterAll(() => {
-    if (prevBaseUrl === undefined) delete process.env.R2_PUBLIC_BASE_URL;
-    else process.env.R2_PUBLIC_BASE_URL = prevBaseUrl;
   });
 
   beforeEach(async () => {
@@ -457,14 +456,14 @@ describe('Garden thumbnails', () => {
     await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
   });
 
-  it('account uploads to its garden → 200 and stores the URL', async () => {
+  it('account uploads to its garden → 200, returns a media URL and stores the bare key', async () => {
     const gardenId = await createGarden(agent);
     const res = await upload(agent, gardenId);
     expect(res.status).toBe(200);
-    expect(res.body.thumbnailUrl.startsWith(`${BASE_URL}/`)).toBe(true);
-    const key = res.body.thumbnailUrl.slice(BASE_URL.length + 1);
+    expect(res.body.thumbnailUrl).toMatch(MEDIA_URL_RE(gardenId));
+    const key = keyOf(res.body.thumbnailUrl);
     expect(key).toMatch(KEY_RE(gardenId));
-    expect(await thumbnailUrl(gardenId)).toBe(res.body.thumbnailUrl);
+    expect(await thumbnailUrl(gardenId)).toBe(key);
     expect(uploadToR2).toHaveBeenCalledWith(key, expect.any(Buffer), 'image/png');
   });
 
@@ -474,7 +473,7 @@ describe('Garden thumbnails', () => {
     const gardenId = await createGarden(guest);
     const res = await upload(guest, gardenId);
     expect(res.status).toBe(200);
-    expect(await thumbnailUrl(gardenId)).toBe(res.body.thumbnailUrl);
+    expect(await thumbnailUrl(gardenId)).toBe(keyOf(res.body.thumbnailUrl));
   });
 
   it("another session's garden → 404", async () => {
@@ -546,10 +545,23 @@ describe('Garden thumbnails', () => {
     const second = await upload(agent, gardenId);
     expect(second.status).toBe(200);
     expect(await queued()).toEqual([
-      { bucket: 'public', path: first.body.thumbnailUrl.slice(BASE_URL.length + 1), is_prefix: false },
+      { bucket: 'public', path: keyOf(first.body.thumbnailUrl), is_prefix: false },
     ]);
     expect(drainSoon).toHaveBeenCalled();
-    expect(await thumbnailUrl(gardenId)).toBe(second.body.thumbnailUrl);
+    expect(await thumbnailUrl(gardenId)).toBe(keyOf(second.body.thumbnailUrl));
+  });
+
+  it('replacing a thumbnail stored as an old public URL queues its key', async () => {
+    const gardenId = await createGarden(agent);
+    const oldKey = newKey(gardenId);
+    await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [
+      `${OLD_BASE_URL}/${oldKey}`,
+      gardenId,
+    ]);
+    const res = await upload(agent, gardenId);
+    expect(res.status).toBe(200);
+    expect(await queued()).toEqual([{ bucket: 'public', path: oldKey, is_prefix: false }]);
+    expect(await thumbnailUrl(gardenId)).toBe(keyOf(res.body.thumbnailUrl));
   });
 
   it('queues the thumbnail that is current at commit, not the one read before the upload', async () => {
@@ -559,24 +571,27 @@ describe('Garden thumbnails', () => {
     await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
 
     // A concurrent upload replaces the thumbnail while this one is uploading.
-    const racedKey = `garden-thumbnails/${gardenId}/raced.png`;
-    vi.mocked(uploadToR2).mockImplementationOnce(async (key: string) => {
-      await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [`${BASE_URL}/${racedKey}`, gardenId]);
-      return `${BASE_URL}/${key}`;
+    const racedKey = newKey(gardenId);
+    vi.mocked(uploadToR2).mockImplementationOnce(async () => {
+      await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [racedKey, gardenId]);
     });
     const second = await upload(agent, gardenId);
     expect(second.status).toBe(200);
 
     expect(await queued()).toEqual([{ bucket: 'public', path: racedKey, is_prefix: false }]);
-    expect(await thumbnailUrl(gardenId)).toBe(second.body.thumbnailUrl);
+    expect(await thumbnailUrl(gardenId)).toBe(keyOf(second.body.thumbnailUrl));
   });
 
   it('an old thumbnail_url without this garden\'s prefix is left alone', async () => {
     const gardenId = await createGarden(agent);
-    const otherGardenUrl = `${BASE_URL}/garden-thumbnails/999999/old.png`;
+    const otherGardenUrl = `${OLD_BASE_URL}/${newKey('999999')}`;
     await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [otherGardenUrl, gardenId]);
     const res = await upload(agent, gardenId);
     expect(res.status).toBe(200);
+
+    await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [newKey('999999'), gardenId]);
+    const resBare = await upload(agent, gardenId);
+    expect(resBare.status).toBe(200);
 
     await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', ['https://elsewhere.example/x.png', gardenId]);
     const res2 = await upload(agent, gardenId);
@@ -596,7 +611,41 @@ describe('Garden thumbnails', () => {
     const res = await upload(agent, gardenId);
     expect(res.status).toBe(503);
     expect(res.body.error).toBe('Photo storage is not configured.');
-    expect(await thumbnailUrl(gardenId)).toBe(ok.body.thumbnailUrl);
+    expect(await thumbnailUrl(gardenId)).toBe(keyOf(ok.body.thumbnailUrl));
+  });
+
+  it('GET list and GET one map stored thumbnails to media URLs owned by the garden', async () => {
+    const oldUrlGarden = await createGarden(agent);
+    const otherKeyGarden = await createGarden(agent);
+    const noThumbGarden = await createGarden(agent);
+    const oldKey = newKey(oldUrlGarden);
+    await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [
+      `${OLD_BASE_URL}/${oldKey}`,
+      oldUrlGarden,
+    ]);
+    await pool.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [
+      newKey(oldUrlGarden),
+      otherKeyGarden,
+    ]);
+
+    const expected: Record<string, string | null> = {
+      [oldUrlGarden]: `${MEDIA}${oldKey}`,
+      [otherKeyGarden]: null,
+      [noThumbGarden]: null,
+    };
+
+    const list = await agent.get('/api/gardens');
+    expect(list.status).toBe(200);
+    for (const [id, thumb] of Object.entries(expected)) {
+      const g = (list.body.data as { id: string; thumbnailUrl: string | null }[]).find((x) => x.id === id);
+      expect(g?.thumbnailUrl).toBe(thumb);
+    }
+
+    for (const [id, thumb] of Object.entries(expected)) {
+      const one = await agent.get(`/api/gardens/${id}`);
+      expect(one.status).toBe(200);
+      expect(one.body.thumbnailUrl).toBe(thumb);
+    }
   });
 
   it('does not change updated_at', async () => {
