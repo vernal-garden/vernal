@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import app from '../index';
 import { logger } from '../lib/logger';
+import { TERMS_VERSION } from '../lib/legal';
 
 const pool = new Pool({
   connectionString: process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL,
@@ -97,6 +98,21 @@ describe('POST /api/auth/register', () => {
     expect(res.status).toBe(201);
     expect(res.body.data.authenticated).toBe(true);
     expect(res.body.data.account.email).toBe('register-ok@example.com');
+  });
+
+  it('records the accepted Terms version and time', async () => {
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'register-terms@example.com', password: 'Password123!' });
+    expect(res.status).toBe(201);
+
+    const { rows } = await pool.query<{ terms_version: string | null; recent: boolean }>(
+      `SELECT terms_version, terms_accepted_at > NOW() - INTERVAL '1 minute' AS recent
+         FROM accounts WHERE email = $1`,
+      ['register-terms@example.com'],
+    );
+    expect(rows[0].terms_version).toBe(TERMS_VERSION);
+    expect(rows[0].recent).toBe(true);
   });
 
   it('returns 409 for a duplicate email', async () => {

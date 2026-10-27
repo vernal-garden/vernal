@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import { Link } from 'react-router-dom';
 
 const REPO_URL = 'https://github.com/vernal-garden/vernal';
 
@@ -68,6 +69,12 @@ export default function AboutPage() {
           <ExternalLink href="/third-party-notices.txt" testId="about-notices-link">
             Third-party notices
           </ExternalLink>
+          <Link to="/privacy" data-testid="about-privacy-link" style={linkStyle}>
+            Privacy policy
+          </Link>
+          <Link to="/terms" data-testid="about-terms-link" style={linkStyle}>
+            Terms
+          </Link>
         </section>
 
         <section style={sectionStyle} aria-label="Feedback">

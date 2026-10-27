@@ -27,6 +27,8 @@ import EmailConfirmPage from './pages/EmailConfirmPage';
 import VerifyEmailPage from './pages/VerifyEmailPage';
 import RevertEmailPage from './pages/RevertEmailPage';
 import AboutPage from './pages/AboutPage';
+import PrivacyPage from './pages/PrivacyPage';
+import TermsPage from './pages/TermsPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminRoute from './components/admin/AdminRoute';
 import AdminShell from './components/admin/AdminShell';
@@ -221,6 +223,14 @@ const routes: RouteObject[] = [
   {
     path: '/reset-password',
     element: <ResetPasswordPage />,
+  },
+  {
+    path: '/privacy',
+    element: <PrivacyPage />,
+  },
+  {
+    path: '/terms',
+    element: <TermsPage />,
   },
   {
     path: '/verify-email',

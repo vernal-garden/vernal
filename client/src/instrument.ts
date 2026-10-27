@@ -5,17 +5,6 @@ function stripTokens(value: unknown): unknown {
   return typeof value === 'string' ? value.replace(/([?&])token=[^&#]*/g, '$1token=[REDACTED]') : value;
 }
 
-// Recursively redact string fields in place (depth-limited).
-function scrubDeep(obj: unknown, depth = 0): void {
-  if (!obj || typeof obj !== 'object' || depth > 6) return;
-  const rec = obj as Record<string, unknown>;
-  for (const key of Object.keys(rec)) {
-    const v = rec[key];
-    if (typeof v === 'string') rec[key] = stripTokens(v);
-    else if (v && typeof v === 'object') scrubDeep(v, depth + 1);
-  }
-}
-
 function scrubData(data: Record<string, unknown> | undefined): void {
   if (!data) return;
   for (const key of ['url', 'from', 'to']) {
@@ -32,8 +21,8 @@ function scrubSpanData(data: Record<string, unknown> | undefined): void {
   }
 }
 
-// Capture the one-time token before Sentry.init (replay records location.href
-// at init), then remove it from the address bar straight away.
+// Capture the one-time token before Sentry.init so it never reaches error or
+// performance reports, then remove it from the address bar straight away.
 let urlToken: { token: string; pathname: string } | null = null;
 try {
   const url = new URL(window.location.href);
@@ -74,21 +63,7 @@ Sentry.init({
   },
   integrations: [
     Sentry.browserTracingIntegration(),
-    Sentry.replayIntegration({
-      maskAllText: true,
-      blockAllMedia: true,
-      beforeAddRecordingEvent(event) {
-        const data = (event as { data?: Record<string, unknown> }).data;
-        if (data) {
-          if (typeof data.href === 'string') data.href = stripTokens(data.href);
-          scrubDeep(data.payload);
-        }
-        return event;
-      },
-    }),
   ],
-  replaysSessionSampleRate: 0,
-  replaysOnErrorSampleRate: 1.0,
   beforeSend(event) {
     if (event.request?.url) event.request.url = stripTokens(event.request.url) as string;
     event.breadcrumbs?.forEach((crumb) => scrubData(crumb.data));

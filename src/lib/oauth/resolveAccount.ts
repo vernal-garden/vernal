@@ -4,6 +4,7 @@ import { encryptToBuffer } from '../crypto';
 import { logger } from '../logger';
 import { migrateGuestData, revokeAccountSessions } from '../sessions';
 import { LOCATION_NOT_SET } from '../constants';
+import { TERMS_VERSION } from '../legal';
 import type { OAuthUser } from './providers/google';
 
 export class OAuthUnverifiedEmailError extends Error {
@@ -116,9 +117,9 @@ export async function resolveOAuthAccount(
       }
     } else {
       const newAccount = await client.query<{ id: string }>(
-        `INSERT INTO accounts (email, display_name, email_verified, zone, zone_location_label)
-         VALUES ($1, $2, true, 'unknown', $3) RETURNING id`,
-        [email, displayName, LOCATION_NOT_SET],
+        `INSERT INTO accounts (email, display_name, email_verified, zone, zone_location_label, terms_version, terms_accepted_at)
+         VALUES ($1, $2, true, 'unknown', $3, $4, NOW()) RETURNING id`,
+        [email, displayName, LOCATION_NOT_SET, TERMS_VERSION],
       );
       accountId = Number(newAccount.rows[0].id);
       isNew = true;
