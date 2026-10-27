@@ -225,8 +225,7 @@ function HarvestPrint() {
             {entries.map((e) => (
               <tr key={e.id}>
                 <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{longDate(e.harvestDate)}</td>
-                {/* ED: replace with final copy */}
-                <td style={tdStyle}>{e.commonName ?? 'Unknown plant'}</td>
+                <td style={tdStyle}>{e.commonName ?? 'Seed no longer in catalogue'}</td>
                 <td style={tdStyle}>{e.bedLabel ? `${e.gardenName} / ${e.bedLabel}` : e.gardenName}</td>
                 <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{formatQuantity(e.quantity, e.unit) ?? ''}</td>
                 <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>{e.qualityRating !== null ? `${e.qualityRating}/5` : ''}</td>
@@ -237,8 +236,7 @@ function HarvestPrint() {
         </table>
         {truncated && (
           <p style={{ margin: 'var(--sp-4) 0 0', fontSize: 13, color: 'var(--c-text-2)' }}>
-            {/* ED: replace with final copy */}
-            This list was cut at 2,000 harvests. Narrow the dates or filters to print the rest.
+            This list stops at 2,000 harvests. Narrow the dates or filters to print the rest.
           </p>
         )}
       </>

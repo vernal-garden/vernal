@@ -17,8 +17,7 @@ import {
 const HARVEST_STATUS_LABEL: Record<TimingStatus, string> = {
   // ED: replace with final copy
   early: 'Earlier than expected',
-  // ED: replace with final copy
-  on_time: 'Within the expected range',
+  on_time: 'Right on schedule',
   // ED: replace with final copy
   late: 'Later than expected',
 };
@@ -102,8 +101,7 @@ export default function AdvancedPanel({ advanced, isMobile }: Props) {
                 <li key={`${f.commonName}-${i}`} style={{ ...rowStyle, flexDirection: 'column', alignItems: 'flex-start', gap: 0 }}>
                   <span style={{ overflowWrap: 'anywhere' }}>{plantName(f.commonName)}</span>
                   <span style={secondaryTextStyle}>
-                    {/* ED: replace with final copy */}
-                    Every {f.avgDaysBetween} {f.avgDaysBetween === 1 ? 'day' : 'days'} on average · {plural(f.entryCount, 'harvest', 'harvests')}
+                    About every {f.avgDaysBetween} {f.avgDaysBetween === 1 ? 'day' : 'days'} ·{plural(f.entryCount, 'harvest', 'harvests')}
                   </span>
                 </li>
               ))}
@@ -116,8 +114,7 @@ export default function AdvancedPanel({ advanced, isMobile }: Props) {
           <h3 style={subheadingStyle}>Days to harvest</h3>
           {daysToHarvest.length === 0 ? (
             <p style={bodyTextStyle}>
-              {/* ED: replace with final copy */}
-              When a sown plant with a known maturity range is harvested, you&rsquo;ll see how it compared.
+              Harvest something you sowed in the planting guide to see how long it really took.
             </p>
           ) : (
             <ul style={listStyle}>

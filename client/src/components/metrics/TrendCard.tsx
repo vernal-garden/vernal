@@ -37,8 +37,7 @@ export default function TrendCard({ trend }: { trend: Trend }) {
           )}
           {trend.plants.length === 0 ? (
             <p style={bodyTextStyle}>
-              {/* ED: replace with final copy */}
-              None of this season&rsquo;s plants have totals in the same unit as {trend.comparedSeason ?? 'last season'} yet.
+              No plants to compare with {trend.comparedSeason ?? 'last season'} yet. A plant needs totals in the same unit both seasons.
             </p>
           ) : (
             <ul style={{ ...listStyle, gap: 'var(--sp-2)' }}>

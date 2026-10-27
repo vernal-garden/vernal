@@ -21,10 +21,12 @@ const STATUS: Record<SoilStatus, { label: string; color: string }> = {
 interface Props {
   soil: SoilRow[];
   gardens: MetricsGarden[];
+  isPastSeason: boolean;
+  season: number;
 }
 
 // The latest soil reading this season for each bed that has one.
-export default function SoilSummaryCard({ soil, gardens }: Props) {
+export default function SoilSummaryCard({ soil, gardens, isPastSeason, season }: Props) {
   const showGarden = gardens.length > 1;
   const firstGarden = gardens[0];
   return (
@@ -33,10 +35,10 @@ export default function SoilSummaryCard({ soil, gardens }: Props) {
       <h2 id="metrics-soil-title" style={cardTitleStyle}>Soil</h2>
       {soil.length === 0 ? (
         <>
-          {/* ED: replace with final copy */}
-          <p style={bodyTextStyle}>No soil readings this season yet.</p>
-          {firstGarden && (
-            // ED: replace with final copy
+          <p style={bodyTextStyle}>
+            {isPastSeason ? `No soil readings were logged in ${season}.` : 'No soil readings this season yet.'}
+          </p>
+          {firstGarden && !isPastSeason && (
             <Link to={`/garden/${firstGarden.id}/soil`} style={{ ...linkStyle, alignSelf: 'flex-start' }}>Add a soil reading</Link>
           )}
         </>

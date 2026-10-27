@@ -35,7 +35,7 @@ function describe(n: NotificationItem): string | null {
     case 'contribution_rejected':
       return `Your submission of ${name} wasn't approved. You can edit it and try again.`;
     case 'contribution_approved':
-      return `${name} is now in the community catalogue. Thanks for contributing.`; // ED: confirm copy
+      return `Your ${name} is now in Cambium™ for other gardeners to find. Thanks for sharing it.`;
     default:
       return null;
   }

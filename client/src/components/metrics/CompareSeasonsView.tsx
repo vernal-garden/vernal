@@ -280,8 +280,7 @@ export default function CompareSeasonsView({ data, isMobile, refreshing }: Props
               })()}
             </div>
             {open.entries.length === 0 ? (
-              // ED: replace with final copy
-              <p style={bodyTextStyle}>No harvests logged this season with these filters.</p>
+              <p style={bodyTextStyle}>No {open.season} harvests match these filters.</p>
             ) : (
               <ul style={listStyle}>
                 {open.entries.map((e) => {

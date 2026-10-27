@@ -74,7 +74,7 @@ export default function UpgradeCard({ gateKey, style }: Props) {
       </p>
       <p style={{ margin: 0, fontSize: 13, color: 'var(--c-text-3)' }}>
         {/* ED: replace with final copy */}
-        Available with <strong style={{ color: 'var(--c-primary)' }}>Supporter</strong>.
+        Available with <strong style={{ color: 'var(--c-primary)' }}>Vernal&trade; Supporter</strong>.
       </p>
       <Link to="/account" style={buttonStyle}>
         Learn more &amp; upgrade

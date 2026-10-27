@@ -341,8 +341,7 @@ export default function ComparePage() {
               style={{ ...textButtonStyle, justifyContent: 'space-between', width: '100%', border: 'none', padding: '0 var(--sp-2)' }}
             >
               <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {/* ED: replace with final copy */}
-                {controlsOpen ? 'Hide options' : chosenName ? `${chosenName} — change options` : 'Choose a plant'}
+                {controlsOpen ? 'Hide options' : chosenName ? `${chosenName} · Change options` : 'Choose a plant'}
               </span>
               <span aria-hidden="true">{controlsOpen ? '▴' : '▾'}</span>
             </button>

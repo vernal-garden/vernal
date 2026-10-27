@@ -82,6 +82,7 @@ export default function DataMetricsPage() {
   const showSpinner = loading && (data === null || seasonMismatch);
   const seasonFailed = !loading && error !== null && (data === null || seasonMismatch);
   const showData = data !== null && !seasonMismatch;
+  const isPastSeason = data !== null && data.season < data.currentSeason;
 
   let errorText: string | null = null;
   if (seasonFailed) {
@@ -115,11 +116,11 @@ export default function DataMetricsPage() {
         )}
         {data && requestedSeason !== null && (
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--sp-3)' }}>
-            <SeasonSelector currentSeason={data.currentSeason} season={requestedSeason} onChange={changeSeason} />
+            <SeasonSelector currentSeason={data.currentSeason} season={requestedSeason} onChange={changeSeason} includeNext={false} />
             {requestedSeason < data.currentSeason && <span style={tagStyle}>Past season</span>}
           </div>
         )}
-        {showData && !data.empty && <SummaryStrip summary={data.summary} />}
+        {showData && !data.empty && <SummaryStrip summary={data.summary} isPastSeason={isPastSeason} season={data.season} />}
         {errorText && (
           <p
             role="alert"
@@ -157,7 +158,7 @@ export default function DataMetricsPage() {
       )}
 
       {showData && !showSpinner && (data.empty ? (
-        <MetricsEmptyState />
+        <MetricsEmptyState isPastSeason={isPastSeason} season={data.season} />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)' }}>
           <div style={twoCol}>
@@ -168,6 +169,7 @@ export default function DataMetricsPage() {
               gardenId={gardenId}
               onGardenChange={changeGarden}
               refreshing={loading}
+              isPastSeason={isPastSeason}
             />
             <RecentActivityCard recent={data.recent} />
           </div>
@@ -183,8 +185,8 @@ export default function DataMetricsPage() {
           <div style={twoCol}>
             {data.isSupporter && data.paid ? (
               <>
-                <SoilSummaryCard soil={data.paid.soil} gardens={data.gardens} />
-                <AmendmentSummaryCard amendments={data.paid.amendments} gardens={data.gardens} />
+                <SoilSummaryCard soil={data.paid.soil} gardens={data.gardens} isPastSeason={isPastSeason} season={data.season} />
+                <AmendmentSummaryCard amendments={data.paid.amendments} gardens={data.gardens} isPastSeason={isPastSeason} season={data.season} />
                 <WeatherCard weather={data.paid.weather} isCurrentSeason={data.season === data.currentSeason} />
                 <div style={fullWidth}>
                   <AdvancedPanel advanced={data.paid.advanced} isMobile={isMobile} />
