@@ -38,7 +38,6 @@ const pool = new Pool({ connectionString: url });
 
 type Agent = ReturnType<typeof request.agent>;
 
-const PUBLIC_BASE = 'https://photos.test';
 const SEASON = currentSeason(new Date());
 const TODAY = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'America/Los_Angeles',
@@ -173,12 +172,9 @@ async function createEntry(agent: Agent, body: Record<string, unknown>) {
 
 let peaId: number;
 let tomatoId: number;
-let originalBase: string | undefined;
 let jpeg: Buffer;
 
 beforeAll(async () => {
-  originalBase = process.env.R2_PUBLIC_BASE_URL;
-  process.env.R2_PUBLIC_BASE_URL = `${PUBLIC_BASE}/`;
   jpeg = await sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a7' } })
     .jpeg()
     .toBuffer();
@@ -192,14 +188,12 @@ beforeEach(async () => {
   vi.mocked(drainSoon).mockClear();
   vi.mocked(processPhoto).mockClear();
   uploadToR2Mock.mockReset();
-  uploadToR2Mock.mockImplementation(async (key: string) => `${PUBLIC_BASE}/${key}`);
+  uploadToR2Mock.mockResolvedValue(undefined);
   deleteFromR2Mock.mockReset();
   deleteFromR2Mock.mockResolvedValue(undefined);
 });
 
 afterAll(async () => {
-  if (originalBase === undefined) delete process.env.R2_PUBLIC_BASE_URL;
-  else process.env.R2_PUBLIC_BASE_URL = originalBase;
   await pool.end();
 });
 
@@ -754,10 +748,7 @@ describe('Photos', () => {
   // An entry of the supporter's own with `count` photos already attached.
   async function entryWithPhotos(count: number): Promise<string> {
     const id = (await createEntry(supporter, { gardenId, cambiumSeedId: peaId })).id;
-    const photos = Array.from({ length: count }, (_, i) => ({
-      key: keyFor(id, i + 1),
-      url: `${PUBLIC_BASE}/${keyFor(id, i + 1)}`,
-    }));
+    const photos = Array.from({ length: count }, (_, i) => ({ key: keyFor(id, i + 1) }));
     await pool.query('UPDATE harvest_entries SET photos = $2::jsonb WHERE id = $1', [
       id,
       JSON.stringify(photos),
@@ -807,27 +798,13 @@ describe('Photos', () => {
     expect(await queued()).toEqual([]);
   });
 
-  it('503 when R2_PUBLIC_BASE_URL is unset, nothing uploaded', async () => {
-    const saved = process.env.R2_PUBLIC_BASE_URL;
-    delete process.env.R2_PUBLIC_BASE_URL;
-    try {
-      const res = await postPhoto(supporter, entryId);
-      expect(res.status).toBe(503);
-      expect(res.body).toEqual({ error: 'Photo storage is not configured.' });
-      expect(uploadToR2Mock).not.toHaveBeenCalled();
-    } finally {
-      process.env.R2_PUBLIC_BASE_URL = saved;
-    }
-  });
-
   it('the limit is reached while uploading → 409 and the upload is queued for deletion', async () => {
     const id = await entryWithPhotos(2);
-    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+    uploadToR2Mock.mockImplementationOnce(async () => {
       await pool.query(
         `UPDATE harvest_entries SET photos = photos || jsonb_build_array($2::jsonb) WHERE id = $1`,
-        [id, JSON.stringify({ key: keyFor(id, 3), url: `${PUBLIC_BASE}/${keyFor(id, 3)}` })],
+        [id, JSON.stringify({ key: keyFor(id, 3) })],
       );
-      return `${PUBLIC_BASE}/${key}`;
     });
     const res = await postPhoto(supporter, id);
     expect(res.status).toBe(409);
@@ -840,9 +817,8 @@ describe('Photos', () => {
 
   it('the entry is deleted while uploading → 404 and the upload is queued for deletion', async () => {
     const id = await entryWithPhotos(0);
-    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+    uploadToR2Mock.mockImplementationOnce(async () => {
       await pool.query('DELETE FROM harvest_entries WHERE id = $1', [id]);
-      return `${PUBLIC_BASE}/${key}`;
     });
     const res = await postPhoto(supporter, id);
     expect(res.status).toBe(404);
@@ -870,10 +846,13 @@ describe('Photos', () => {
       expect(key).toMatch(new RegExp(`^harvest-photos/${entryId}/[0-9a-f-]{36}\\.jpg$`));
       expect([...(body as Buffer).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
       expect(contentType).toBe('image/jpeg');
-      expect(res.body.photos[n - 1]).toEqual({ key, url: `${PUBLIC_BASE}/${key}` });
+      expect(res.body.photos[n - 1]).toEqual({ key, url: `/api/media/${key}` });
       keys.push(key);
     }
     expect(await queued()).toEqual([]);
+    // Only the key is stored; the client URL is built on the way out.
+    const stored = await pool.query('SELECT photos FROM harvest_entries WHERE id = $1', [entryId]);
+    expect(stored.rows[0].photos).toEqual(keys.map((key) => ({ key })));
 
     const fourth = await postPhoto(supporter, entryId);
     expect(fourth.status).toBe(409);
@@ -902,10 +881,7 @@ describe('Photos', () => {
     const gardenId = await createGarden(lapsed);
     const ownId = (await createEntry(lapsed, { gardenId, cambiumSeedId: peaId })).id;
     // Photos added while the account was a Supporter.
-    const photos = [5, 6].map((n) => ({
-      key: keyFor(ownId, n),
-      url: `${PUBLIC_BASE}/${keyFor(ownId, n)}`,
-    }));
+    const photos = [5, 6].map((n) => ({ key: keyFor(ownId, n) }));
     await pool.query('UPDATE harvest_entries SET photos = $2::jsonb WHERE id = $1', [
       ownId,
       JSON.stringify(photos),
@@ -924,6 +900,18 @@ describe('Photos', () => {
     expect(attach.status).toBe(402);
     expect(attach.body.upgrade_required).toBe(true);
     expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('a photo stored with an old public url is returned with its media url', async () => {
+    const id = await entryWithPhotos(0);
+    const key = keyFor(id, 7);
+    await pool.query('UPDATE harvest_entries SET photos = $2::jsonb WHERE id = $1', [
+      id,
+      JSON.stringify([{ key, url: 'https://old.r2.dev/' + key }]),
+    ]);
+    const res = await supporter.get(`/api/harvests/${id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.photos).toEqual([{ key, url: '/api/media/' + key }]);
   });
 
   it("DELETE of another user's harvest → 404 and queues nothing", async () => {

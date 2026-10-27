@@ -1,18 +1,25 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { randomUUID } from 'crypto';
 import { Pool, PoolClient } from 'pg';
-import type { Readable } from 'stream';
+import { Readable } from 'stream';
 
-const { entries } = vi.hoisted(() => ({ entries: new Map<string, string>() }));
+const { entries, appendOrder, appendOpts } = vi.hoisted(() => ({
+  entries: new Map<string, string>(),
+  appendOrder: [] as string[],
+  appendOpts: new Map<string, Record<string, unknown>>(),
+}));
 
 vi.mock('./r2', () => ({
   uploadStreamToR2: vi.fn(),
   exportsBucket: vi.fn(() => 'test-exports'),
   exportFolder: (id: number) => `exports/${id}/`,
+  getMediaObject: vi.fn(),
 }));
 
-// Stand-in for archiver's ZipArchive: reads each entry to the end, records its
-// text by name, then emits 'entry' like the real one. finalize() ends the
-// piped stream with a placeholder payload.
+// Stand-in for archiver's ZipArchive: records each entry's name and options in
+// append order, reads it to the end, records its text by name, then emits
+// 'entry' like the real one. finalize() ends the piped stream with a
+// placeholder payload.
 vi.mock('archiver', async () => {
   const { EventEmitter } = await import('events');
   class ZipArchive extends EventEmitter {
@@ -21,11 +28,13 @@ vi.mock('archiver', async () => {
       this.dest = dest;
       return dest;
     }
-    append(source: string | Buffer | Readable, opts: { name: string }) {
+    append(source: string | Buffer | Readable, opts: { name: string } & Record<string, unknown>) {
+      appendOrder.push(opts.name);
+      appendOpts.set(opts.name, opts);
       void (async () => {
         let text = '';
         if (typeof source === 'string' || Buffer.isBuffer(source)) text = source.toString();
-        else for await (const chunk of source) text += chunk.toString();
+        else for await (const chunk of source) text += (chunk as Buffer | string).toString();
         entries.set(opts.name, text);
         this.emit('entry', { name: opts.name });
       })().catch(() => undefined); // a failing source reports through its own 'error' event
@@ -41,12 +50,15 @@ vi.mock('archiver', async () => {
   return { ZipArchive };
 });
 
-import { uploadStreamToR2, exportsBucket } from './r2';
+import { uploadStreamToR2, exportsBucket, getMediaObject } from './r2';
 import { jobDb } from './db';
 import { processExportJob } from './exportWorker';
 
 const uploadMock = vi.mocked(uploadStreamToR2);
 const exportsBucketMock = vi.mocked(exportsBucket);
+const getObjectMock = vi.mocked(getMediaObject);
+
+const photoBytes = (key: string) => `bytes:${key}`;
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -79,6 +91,8 @@ type Row = Record<string, unknown>;
 let accountId: number;
 let otherAccountId: number;
 let cambiumSeedId: number;
+let mine: AccountFixture;
+let other: AccountFixture;
 
 async function insert(sql: string, params: unknown[]): Promise<number> {
   const { rows } = await pool.query<{ id: number }>(`${sql} RETURNING id`, params);
@@ -108,9 +122,10 @@ async function seedAccountData(ownerId: number, label: string) {
     `INSERT INTO seeds (owner_id, common_name, origin) VALUES ($1, $2, 'user_created')`,
     [ownerId, `${label} Tomato`],
   );
+  const seedPhotoKey = `seed-photos/${seedId}/${randomUUID()}.jpg`;
   await insert(
-    `INSERT INTO seed_photos (seed_id, storage_url, r2_key, taken_at) VALUES ($1, $2, $3, '2026-05-01')`,
-    [seedId, `https://cdn.example.com/${label}.jpg`, `seed-photos/${seedId}/${label}.jpg`],
+    `INSERT INTO seed_photos (seed_id, storage_url, r2_key, taken_at) VALUES ($1, $2, $2, '2026-05-01')`,
+    [seedId, seedPhotoKey],
   );
   const plantingId = await insert(
     `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, cell_x, cell_y, planting_date)
@@ -121,11 +136,17 @@ async function seedAccountData(ownerId: number, label: string) {
     `INSERT INTO sowing_events (planting_id, garden_id, seed_id, season) VALUES ($1, $2, $3, 2026)`,
     [plantingId, gardenId, seedId],
   );
-  await insert(
-    `INSERT INTO harvest_entries (sowing_event_id, garden_id, seed_id, quantity, unit, photos)
-     VALUES ($1, $2, $3, 1.5, 'kg', $4)`,
-    [sowingId, gardenId, seedId, JSON.stringify([`https://cdn.example.com/${label}-harvest.jpg`])],
+  const harvestId = await insert(
+    `INSERT INTO harvest_entries (sowing_event_id, garden_id, seed_id, quantity, unit)
+     VALUES ($1, $2, $3, 1.5, 'kg')`,
+    [sowingId, gardenId, seedId],
   );
+  // The key names the entry, so the photo is added once the entry exists.
+  const harvestPhotoKey = `harvest-photos/${harvestId}/${randomUUID()}.jpg`;
+  await pool.query('UPDATE harvest_entries SET photos = $2 WHERE id = $1', [
+    harvestId,
+    JSON.stringify([{ key: harvestPhotoKey, url: `https://old.r2.dev/${harvestPhotoKey}` }]),
+  ]);
   await insert(
     `INSERT INTO soil_readings (user_id, garden_id, bed_id, test_date, ph)
      VALUES ($1, $2, $3, '2026-03-01', 6.5)`,
@@ -187,8 +208,19 @@ async function seedAccountData(ownerId: number, label: string) {
      FROM generate_series(1, $3::int) AS n`,
     [connectionId, `${label}-wind`, label === 'Mine' ? 1201 : 1],
   );
-  return { gardenId, bedId, seedId, connectionId };
+  await pool.query(
+    `UPDATE gardens SET thumbnail_url = $2 WHERE id = $1`,
+    [gardenId, `garden-thumbnails/${gardenId}/${randomUUID()}.png`],
+  );
+  return { gardenId, bedId, seedId, connectionId, harvestId, seedPhotoKey, harvestPhotoKey };
 }
+
+type AccountFixture = Awaited<ReturnType<typeof seedAccountData>>;
+
+const seedPhotoPath = (f: AccountFixture) =>
+  `photos/seeds/${f.seedId}/${f.seedPhotoKey.slice(f.seedPhotoKey.lastIndexOf('/') + 1)}`;
+const harvestPhotoPath = (f: AccountFixture) =>
+  `photos/harvests/${f.harvestId}/${f.harvestPhotoKey.slice(f.harvestPhotoKey.lastIndexOf('/') + 1)}`;
 
 async function createJob(): Promise<number> {
   return insert(`INSERT INTO data_export_jobs (account_id) VALUES ($1)`, [accountId]);
@@ -218,8 +250,8 @@ beforeAll(async () => {
   );
   accountId = await createAccount('export-owner@example.com');
   otherAccountId = await createAccount('export-other@example.com');
-  await seedAccountData(accountId, 'Mine');
-  await seedAccountData(otherAccountId, 'Other');
+  mine = await seedAccountData(accountId, 'Mine');
+  other = await seedAccountData(otherAccountId, 'Other');
 });
 
 afterAll(async () => {
@@ -229,6 +261,11 @@ afterAll(async () => {
 
 beforeEach(() => {
   entries.clear();
+  appendOrder.length = 0;
+  appendOpts.clear();
+  getObjectMock
+    .mockReset()
+    .mockImplementation(async (key: string) => Readable.from([Buffer.from(photoBytes(key))]));
   // Consume the archive stream so the upload "finishes", as lib-storage would.
   uploadMock.mockReset().mockImplementation(async (_key, body) => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -246,7 +283,9 @@ afterEach(() => {
 describe('export contents', () => {
   it('writes every export file with the account data', async () => {
     await runExport();
-    expect([...entries.keys()].sort()).toEqual([...EXPECTED_FILES, 'README.txt'].sort());
+    expect([...entries.keys()].sort()).toEqual(
+      [...EXPECTED_FILES, 'README.txt', seedPhotoPath(mine), harvestPhotoPath(mine)].sort(),
+    );
 
     const gardens = json('gardens.json') as Row[];
     expect(gardens).toHaveLength(1);
@@ -264,7 +303,7 @@ describe('export contents', () => {
       commonName: 'Mine Tomato',
       gardenName: 'Mine Garden',
       quantity: 1.5,
-      photos: ['https://cdn.example.com/Mine-harvest.jpg'],
+      photos: [{ file: harvestPhotoPath(mine) }],
     });
     expect(typeof harvests[0].harvestedAt).toBe('string');
     expect(new Date(harvests[0].harvestedAt as string).toISOString()).toBe(harvests[0].harvestedAt);
@@ -274,7 +313,6 @@ describe('export contents', () => {
     expect(sowing[0].commonName).toBe('Mine Tomato');
 
     expect(json('soil_readings.json')).toHaveLength(1);
-    expect((json('seed_photos.json') as Row[])[0].storageUrl).toBe('https://cdn.example.com/Mine.jpg');
     expect((json('amendment_logs.json') as Row[])[0].bedIds).toHaveLength(1);
     expect(json('weather_connections.json')).toHaveLength(1);
 
@@ -421,8 +459,85 @@ describe('export contents: sign-ins, notifications, contributions, ratings, weat
   it('lists every file in the README', async () => {
     await runExport();
     const readmeText = entries.get('README.txt')!;
-    expect(readmeText).toContain('Photos are listed by URL.');
-    for (const name of EXPECTED_FILES) expect(readmeText).toContain(name);
+    expect(readmeText).not.toContain('Photos are listed by URL.');
+    expect(readmeText).toContain('Photos are in the photos folder');
+    for (const name of [...EXPECTED_FILES, 'photos/']) expect(readmeText).toContain(name);
+  });
+});
+
+describe('export contents: photo files', () => {
+  it('includes each photo file and names it in the JSON', async () => {
+    await runExport();
+    expect(entries.get(seedPhotoPath(mine))).toBe(photoBytes(mine.seedPhotoKey));
+    expect(entries.get(harvestPhotoPath(mine))).toBe(photoBytes(mine.harvestPhotoKey));
+    expect(appendOpts.get(seedPhotoPath(mine))).toMatchObject({ store: true });
+    expect(appendOpts.get(harvestPhotoPath(mine))).toMatchObject({ store: true });
+
+    const seedPhotos = json('seed_photos.json') as Row[];
+    expect(seedPhotos).toHaveLength(1);
+    expect(seedPhotos[0].file).toBe(seedPhotoPath(mine));
+    expect(seedPhotos[0]).not.toHaveProperty('storageUrl');
+    expect(seedPhotos[0]).not.toHaveProperty('r2Key');
+
+    const harvests = json('harvest_entries.json') as Row[];
+    expect(harvests[0].photos).toEqual([{ file: harvestPhotoPath(mine) }]);
+    expect(entries.get('harvest_entries.json')).not.toContain('r2.dev');
+  });
+
+  it('appends photo files before any JSON file', async () => {
+    await runExport();
+    const firstJson = appendOrder.indexOf('account.json');
+    expect(firstJson).toBeGreaterThan(-1);
+    expect(appendOrder.indexOf(seedPhotoPath(mine))).toBeGreaterThan(-1);
+    expect(appendOrder.indexOf(seedPhotoPath(mine))).toBeLessThan(firstJson);
+    expect(appendOrder.indexOf(harvestPhotoPath(mine))).toBeGreaterThan(-1);
+    expect(appendOrder.indexOf(harvestPhotoPath(mine))).toBeLessThan(firstJson);
+    expect(appendOrder.slice(0, firstJson).every((name) => name.startsWith('photos/'))).toBe(true);
+  });
+
+  it('skips a missing photo, marks its file null and still completes', async () => {
+    getObjectMock.mockImplementation(async (key: string) =>
+      key === mine.seedPhotoKey ? null : Readable.from([Buffer.from(photoBytes(key))]),
+    );
+    const jobId = await runExport();
+
+    expect(entries.has(seedPhotoPath(mine))).toBe(false);
+    expect(entries.get(harvestPhotoPath(mine))).toBe(photoBytes(mine.harvestPhotoKey));
+    expect((json('seed_photos.json') as Row[])[0].file).toBeNull();
+    expect((json('harvest_entries.json') as Row[])[0].photos).toEqual([
+      { file: harvestPhotoPath(mine) },
+    ]);
+
+    const { rows } = await pool.query('SELECT status FROM data_export_jobs WHERE id = $1', [jobId]);
+    expect(rows[0]).toEqual({ status: 'complete' });
+  });
+
+  it('marks the job failed when a photo cannot be read', async () => {
+    getObjectMock.mockRejectedValue(Object.assign(new Error('R2 unavailable'), { name: 'InternalError' }));
+    const jobId = await runExport();
+
+    const { rows } = await pool.query('SELECT status FROM data_export_jobs WHERE id = $1', [jobId]);
+    expect(rows[0]).toEqual({ status: 'failed' });
+    expect(entries.has('account.json')).toBe(false);
+  });
+
+  it('drops the thumbnail reference from gardens.json', async () => {
+    await runExport();
+    for (const g of json('gardens.json') as Row[]) {
+      expect(g).not.toHaveProperty('thumbnailUrl');
+    }
+    expect(entries.get('gardens.json')).not.toContain('garden-thumbnails/');
+  });
+
+  it("never fetches another account's photos", async () => {
+    await runExport();
+    const fetched = getObjectMock.mock.calls.map(([key]) => key).sort();
+    expect(fetched).toEqual([mine.seedPhotoKey, mine.harvestPhotoKey].sort());
+    expect(fetched).not.toContain(other.seedPhotoKey);
+    expect(fetched).not.toContain(other.harvestPhotoKey);
+    const serialized = [...entries.values()].join('\n');
+    expect(serialized).not.toContain(other.seedPhotoKey);
+    expect(serialized).not.toContain(other.harvestPhotoKey);
   });
 });
 

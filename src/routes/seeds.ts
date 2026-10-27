@@ -976,8 +976,8 @@ router.post('/:id/contribute', writeLimiter, async (req, res) => {
 
       const wantsPhotos = (req.body as Record<string, unknown> | undefined)?.includePhotos === true;
       const photos = wantsPhotos
-        ? (await client.query<{ id: string; url: string }>(
-            `SELECT id::text, storage_url AS url FROM seed_photos
+        ? (await client.query<{ id: string; key: string }>(
+            `SELECT id::text, r2_key AS key FROM seed_photos
              WHERE seed_id = $1
              ORDER BY created_at ASC, id ASC`,
             [seedId],

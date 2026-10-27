@@ -46,16 +46,16 @@ async function createUser(email: string, password = 'Password123!'): Promise<num
   return rows[0].id;
 }
 
-async function insertPhoto(seedId: string, n: number): Promise<{ id: string; key: string; url: string }> {
+// storage_url holds an old-style public URL so the snapshot is shown to use r2_key.
+async function insertPhoto(seedId: string, n: number): Promise<{ id: string; key: string }> {
   const key = `seed-photos/${seedId}/0000000${n}-0000-4000-8000-000000000000.jpg`;
-  const url = `https://photos.test/${key}`;
   const { rows } = await pool.query<{ id: string }>(
     `INSERT INTO seed_photos (seed_id, storage_url, r2_key, created_at)
      VALUES ($1, $2, $3, now() + make_interval(secs => $4))
      RETURNING id::text`,
-    [seedId, url, key, n],
+    [seedId, `https://old.r2.dev/${key}`, key, n],
   );
-  return { id: rows[0].id, key, url };
+  return { id: rows[0].id, key };
 }
 
 async function loginAgent(email: string, password = 'Password123!') {
@@ -538,7 +538,8 @@ describe('POST /api/seeds/:id/contribute', () => {
   it('includePhotos true with two photos → both photos in the snapshot, oldest first', async () => {
     const { content, photos } = await contributedContent(true, 2);
     expect(content.includePhotos).toBe(true);
-    expect(content.photos).toEqual(photos.map((p) => ({ id: p.id, url: p.url })));
+    expect(content.photos).toEqual(photos.map((p) => ({ id: p.id, key: p.key })));
+    for (const p of content.photos as Record<string, unknown>[]) expect(p).not.toHaveProperty('url');
   });
 
   it('includePhotos true with no photos → includePhotos false, no photos key', async () => {

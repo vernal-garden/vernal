@@ -34,7 +34,6 @@ if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
 
 const pool = new Pool({ connectionString: url });
 
-const PUBLIC_BASE = 'https://photos.test';
 const UUID_A = '11111111-1111-4111-8111-111111111111';
 const UUID_B = '22222222-2222-4222-8222-222222222222';
 const UUID_C = '33333333-3333-4333-8333-333333333333';
@@ -83,7 +82,7 @@ async function insertPhoto(seedId: string, uuid: string, notes: string | null = 
     `INSERT INTO seed_photos (seed_id, storage_url, r2_key, notes, created_at)
      VALUES ($1, $2, $3, $4, COALESCE($5::timestamptz, now()))
      RETURNING id::text`,
-    [seedId, `${PUBLIC_BASE}/${key}`, key, notes, createdAt ?? null],
+    [seedId, key, key, notes, createdAt ?? null],
   );
   return { id: rows[0].id, key };
 }
@@ -101,12 +100,8 @@ function uploadedKey(): string {
 let supporter: ReturnType<typeof request.agent>;
 let freeUser: ReturnType<typeof request.agent>;
 let otherSupporter: ReturnType<typeof request.agent>;
-let originalBase: string | undefined;
 
 beforeAll(async () => {
-  originalBase = process.env.R2_PUBLIC_BASE_URL;
-  process.env.R2_PUBLIC_BASE_URL = `${PUBLIC_BASE}/`; // trailing slash is stripped
-
   jpeg = await sharp({ create: { width: 64, height: 48, channels: 3, background: '#4a7' } })
     .jpeg()
     .toBuffer();
@@ -130,14 +125,12 @@ beforeEach(async () => {
   vi.mocked(drainSoon).mockClear();
   vi.mocked(processPhoto).mockClear();
   uploadToR2Mock.mockReset();
-  uploadToR2Mock.mockImplementation(async (key: string) => `${PUBLIC_BASE}/${key}`);
+  uploadToR2Mock.mockResolvedValue(undefined);
   deleteFromR2Mock.mockReset();
   deleteFromR2Mock.mockResolvedValue(undefined);
 });
 
 afterAll(async () => {
-  if (originalBase === undefined) delete process.env.R2_PUBLIC_BASE_URL;
-  else process.env.R2_PUBLIC_BASE_URL = originalBase;
   await pool.end();
 });
 
@@ -261,13 +254,14 @@ describe('POST photo', () => {
     expect(Buffer.isBuffer(body)).toBe(true);
     expect([...(body as Buffer).subarray(0, 3)]).toEqual([0xff, 0xd8, 0xff]);
     expect(contentType).toBe('image/jpeg');
-    expect(res.body.url).toBe(`${PUBLIC_BASE}/${key}`);
+    expect(res.body.url).toBe(`/api/media/${key}`);
 
+    // storage_url holds the bare key; no public URL is stored.
     const { rows } = await pool.query<{ storage_url: string; r2_key: string }>(
       'SELECT storage_url, r2_key FROM seed_photos WHERE id = $1',
       [res.body.id],
     );
-    expect(rows[0]).toEqual({ storage_url: `${PUBLIC_BASE}/${key}`, r2_key: key });
+    expect(rows[0]).toEqual({ storage_url: key, r2_key: key });
     expect(await queued()).toEqual([]);
   });
 
@@ -338,20 +332,6 @@ describe('POST photo', () => {
     expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 
-  it('R2_PUBLIC_BASE_URL unset → 503, nothing uploaded', async () => {
-    const seedId = await createSeed(supporter, 'No Base Seed');
-    const saved = process.env.R2_PUBLIC_BASE_URL;
-    delete process.env.R2_PUBLIC_BASE_URL;
-    try {
-      const res = await postPhoto(supporter, seedId);
-      expect(res.status).toBe(503);
-      expect(res.body.error).toBe('Photo storage is not configured.');
-      expect(uploadToR2Mock).not.toHaveBeenCalled();
-    } finally {
-      process.env.R2_PUBLIC_BASE_URL = saved;
-    }
-  });
-
   it('R2 not configured → 503, nothing queued', async () => {
     const seedId = await createSeed(supporter, 'No R2 Seed');
     uploadToR2Mock.mockRejectedValueOnce(new Error('R2 not configured: R2_ACCOUNT_ID ...'));
@@ -372,9 +352,8 @@ describe('POST photo', () => {
     const seedId = await createSeed(supporter, 'Race Seed');
     await insertPhoto(seedId, UUID_A);
     await insertPhoto(seedId, UUID_B);
-    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+    uploadToR2Mock.mockImplementationOnce(async () => {
       await insertPhoto(seedId, UUID_C);
-      return `${PUBLIC_BASE}/${key}`;
     });
     const res = await postPhoto(supporter, seedId);
     expect(res.status).toBe(409);
@@ -388,9 +367,8 @@ describe('POST photo', () => {
 
   it('the seed is deleted while uploading → 404 and the upload is queued for deletion', async () => {
     const seedId = await createSeed(supporter, 'Vanishing Seed');
-    uploadToR2Mock.mockImplementationOnce(async (key: string) => {
+    uploadToR2Mock.mockImplementationOnce(async () => {
       await pool.query('DELETE FROM seeds WHERE id = $1', [seedId]);
-      return `${PUBLIC_BASE}/${key}`;
     });
     const res = await postPhoto(supporter, seedId);
     expect(res.status).toBe(404);
@@ -406,9 +384,8 @@ describe('POST photo', () => {
     uploadToR2Mock.mockImplementationOnce(async (key: string) => {
       await pool.query(
         'INSERT INTO seed_photos (seed_id, storage_url, r2_key) VALUES ($1, $2, $3)',
-        [otherSeedId, `${PUBLIC_BASE}/${key}`, key],
+        [otherSeedId, key, key],
       );
-      return `${PUBLIC_BASE}/${key}`;
     });
     const res = await postPhoto(supporter, seedId);
     expect(res.status).toBe(500);
@@ -467,19 +444,19 @@ describe('GET photos', () => {
     expect(Object.keys(photo).sort()).toEqual(['createdAt', 'id', 'notes', 'url']);
     expect(typeof photo.id).toBe('string');
     expect(photo.notes).toBe('old');
-    expect(photo.url).toBe(`${PUBLIC_BASE}/seed-photos/${seedId}/${UUID_A}.jpg`);
+    expect(photo.url).toBe(`/api/media/seed-photos/${seedId}/${UUID_A}.jpg`);
   });
 
-  it('builds url from R2_PUBLIC_BASE_URL and r2_key, not an outdated storage_url', async () => {
+  it('builds url as /api/media/<r2_key>, ignoring an old public storage_url', async () => {
     const sid = await createSeed(supporter, 'Outdated Url Seed');
     const key = `seed-photos/${sid}/${UUID_C}.jpg`;
     await pool.query(
       `INSERT INTO seed_photos (seed_id, storage_url, r2_key) VALUES ($1, $2, $3)`,
-      [sid, `https://old-cdn.example.com/${key}`, key],
+      [sid, `https://old.r2.dev/${key}`, key],
     );
     const res = await supporter.get(`/api/seeds/${sid}/photos`);
     expect(res.status).toBe(200);
-    expect(res.body.photos[0].url).toBe(`${PUBLIC_BASE}/${key}`);
+    expect(res.body.photos[0].url).toBe(`/api/media/${key}`);
   });
 });
 

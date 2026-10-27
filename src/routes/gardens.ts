@@ -7,7 +7,8 @@ import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId, textField } from '../lib/validation';
 import { LIMITS, withinCap } from '../lib/limits';
 import { currentSeason } from '../lib/season';
-import { uploadToR2, isR2ConfigError, ownedThumbnailKey } from '../lib/r2';
+import { uploadToR2, isR2ConfigError } from '../lib/r2';
+import { mediaUrl, thumbnailKey } from '../lib/media';
 import { queueR2Deletions, queueDeletedGardens, drainSoon } from '../lib/r2Cleanup';
 import { processThumbnail, ImageRejectedError, ImageBusyError } from '../lib/imageProcessing';
 
@@ -69,6 +70,7 @@ const BED_SELECT = `
 `;
 
 function formatGarden(row: GardenRow) {
+  const thumbnail = thumbnailKey(row.thumbnail_url, String(row.id));
   return {
     id: row.id,
     name: row.name,
@@ -77,7 +79,7 @@ function formatGarden(row: GardenRow) {
     description: row.description,
     zone: row.zone,
     zoneLocationLabel: row.zone_location_label,
-    thumbnailUrl: row.thumbnail_url,
+    thumbnailUrl: thumbnail ? mediaUrl(thumbnail) : null,
     lastAccessedAt: row.last_accessed_at,
     harvestableCount: row.harvestable_count,
     hasCompanionWarnings: row.has_companion_warnings,
@@ -594,9 +596,8 @@ router.post(
       }
 
       const key = `garden-thumbnails/${gardenId}/${crypto.randomUUID()}.png`;
-      let url: string;
       try {
-        url = await uploadToR2(key, png, 'image/png');
+        await uploadToR2(key, png, 'image/png');
       } catch (err) {
         if (isR2ConfigError(err)) {
           return res.status(503).json({ error: 'Photo storage is not configured.' });
@@ -619,8 +620,8 @@ router.post(
           await client.query('ROLLBACK');
           return res.status(404).json({ error: 'Garden not found' });
         }
-        const oldKey = ownedThumbnailKey(current.rows[0].thumbnail_url, gardenId);
-        await client.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [url, gardenId]);
+        const oldKey = thumbnailKey(current.rows[0].thumbnail_url, gardenId);
+        await client.query('UPDATE gardens SET thumbnail_url = $1 WHERE id = $2', [key, gardenId]);
         if (oldKey) queuedIds = await queueR2Deletions(client, [{ bucket: 'public', path: oldKey, isPrefix: false }]);
         await client.query('COMMIT');
       } catch (err) {
@@ -631,7 +632,7 @@ router.post(
       }
       drainSoon(queuedIds);
 
-      res.json({ thumbnailUrl: url });
+      res.json({ thumbnailUrl: mediaUrl(key) });
     } catch (err) {
       logger.error('POST /gardens/:id/thumbnail failed', err);
       res.status(500).json({ error: 'Internal server error' });

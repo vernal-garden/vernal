@@ -59,6 +59,8 @@ import {
   harvestPhotoFolder,
   gardenThumbnailFolder,
   exportFolder,
+  getMediaRedirectUrl,
+  getMediaObject,
 } from './r2';
 
 const R2_ENV = {
@@ -66,7 +68,6 @@ const R2_ENV = {
   R2_ACCESS_KEY_ID: 'test-key-id',
   R2_SECRET_ACCESS_KEY: 'test-secret',
   R2_BUCKET_NAME: 'test-bucket',
-  R2_PUBLIC_BASE_URL: 'https://cdn.example.com/',
   R2_EXPORTS_BUCKET_NAME: 'test-exports',
 };
 
@@ -86,8 +87,8 @@ describe('r2', () => {
     for (const key of Object.keys(R2_ENV)) delete process.env[key];
   });
 
-  it('uploadToR2 sends PutObjectCommand and returns the public URL', async () => {
-    const url = await uploadToR2('photos/a.png', Buffer.from('x'), 'image/png');
+  it('uploadToR2 sends PutObjectCommand', async () => {
+    await uploadToR2('photos/a.png', Buffer.from('x'), 'image/png');
 
     expect(sendMock).toHaveBeenCalledTimes(1);
     const cmd = sendMock.mock.calls[0][0];
@@ -97,7 +98,6 @@ describe('r2', () => {
       Key: 'photos/a.png',
       ContentType: 'image/png',
     });
-    expect(url).toBe('https://cdn.example.com/photos/a.png');
   });
 
   describe('uploadStreamToR2', () => {
@@ -212,6 +212,53 @@ describe('r2', () => {
     const cmd = sendMock.mock.calls[0][0];
     expect(cmd).toBeInstanceOf(DeleteObjectCommand);
     expect(cmd.input).toEqual({ Bucket: 'test-exports', Key: 'exports/1/2.zip' });
+  });
+
+  describe('getMediaRedirectUrl', () => {
+    it('signs a 2-hour GET on the photo bucket with private caching', async () => {
+      await getMediaRedirectUrl('seed-photos/1/a.jpg', new Date('2026-10-27T15:42:10Z'));
+
+      const [, cmd, opts] = getSignedUrlMock.mock.calls[0];
+      expect(cmd).toBeInstanceOf(GetObjectCommand);
+      expect(cmd.input).toEqual({
+        Bucket: 'test-bucket',
+        Key: 'seed-photos/1/a.jpg',
+        ResponseCacheControl: 'private, max-age=3600',
+      });
+      expect(opts).toEqual({ expiresIn: 7200, signingDate: new Date('2026-10-27T15:00:00Z') });
+    });
+
+    it('returns the same URL within an hour and a new one the next hour', async () => {
+      getSignedUrlMock.mockImplementation(
+        async (_c: unknown, _cmd: unknown, o: { signingDate: Date }) => `https://signed/${o.signingDate.toISOString()}`,
+      );
+      const a = await getMediaRedirectUrl('k', new Date('2026-10-27T15:01:00Z'));
+      const b = await getMediaRedirectUrl('k', new Date('2026-10-27T15:59:59Z'));
+      const c = await getMediaRedirectUrl('k', new Date('2026-10-27T16:00:00Z'));
+      expect(a).toBe(b);
+      expect(c).not.toBe(a);
+    });
+  });
+
+  describe('getMediaObject', () => {
+    it('returns the body stream from the photo bucket', async () => {
+      const body = new PassThrough();
+      sendMock.mockResolvedValueOnce({ Body: body });
+      await expect(getMediaObject('seed-photos/1/a.jpg')).resolves.toBe(body);
+      const cmd = sendMock.mock.calls[0][0];
+      expect(cmd).toBeInstanceOf(GetObjectCommand);
+      expect(cmd.input).toEqual({ Bucket: 'test-bucket', Key: 'seed-photos/1/a.jpg' });
+    });
+
+    it('returns null when the object does not exist', async () => {
+      sendMock.mockRejectedValueOnce(Object.assign(new Error('missing'), { name: 'NoSuchKey' }));
+      await expect(getMediaObject('seed-photos/1/a.jpg')).resolves.toBeNull();
+    });
+
+    it('rethrows any other error', async () => {
+      sendMock.mockRejectedValueOnce(Object.assign(new Error('denied'), { name: 'AccessDenied' }));
+      await expect(getMediaObject('seed-photos/1/a.jpg')).rejects.toThrow('denied');
+    });
   });
 
   describe('folders', () => {
