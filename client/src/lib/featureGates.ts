@@ -29,10 +29,9 @@ export const FEATURE_GATES: Record<string, FeatureGate> = {
     featureName: 'Weather station integration',
     description: 'Connect a local weather station to see how your conditions affected your plants this season.',
   },
-  // ED: replace with final copy
   advancedAnalytics: {
     featureName: 'Advanced analytics',
-    description: 'Yield per square foot, harvest frequency, and days to harvest against the expected range.',
+    description: 'See yield per square foot, how often you pick each plant, and how long each one really takes.',
   },
   // ED: replace with final copy
   crossSeason: {

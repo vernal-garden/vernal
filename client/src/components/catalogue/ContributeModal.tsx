@@ -72,14 +72,14 @@ export default function ContributeModal({ seed, photoCount, onClose, onContribut
         }}
         role="dialog"
         aria-modal="true"
-        aria-label="Contribute to Cambium"
+        aria-label="Contribute to Cambium™"
         onClick={e => e.stopPropagation()}
       >
         <h2 style={{ margin: '0 0 var(--sp-2)', fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, color: 'var(--c-text)' }}>
-          Contribute to Cambium
+          Contribute to Cambium™
         </h2>
         <p style={{ margin: '0 0 var(--sp-4)', fontSize: 14, color: 'var(--c-text-2)' }}>
-          The following data will be shared with the Cambium community. It will be reviewed before being published.
+          What you share below goes into Cambium™ for other gardeners to find, after a quick review.
         </p>
 
         {/* Data preview */}

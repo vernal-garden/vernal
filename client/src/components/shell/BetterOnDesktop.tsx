@@ -4,7 +4,7 @@ import { MonitorIcon } from './icons';
 export const DESKTOP_MESSAGES = {
   canvasEditing: 'Editing your garden works best on a bigger screen. Open Vernal on your computer to add beds and place plants.',
   admin: 'The admin dashboard is desktop-only. Open Vernal on your computer to manage seeds and feedback.',
-  contribute: 'Adding new seeds to the community catalogue works best on desktop. Open Vernal on your computer to contribute.',
+  contribute: 'Adding seeds to Cambium™ works best on desktop. Open Vernal™ on your computer to contribute.',
   generic: 'This page works best on a bigger screen. Open Vernal on your computer to continue.',
 };
 

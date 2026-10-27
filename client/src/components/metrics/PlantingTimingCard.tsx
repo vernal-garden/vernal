@@ -62,8 +62,7 @@ export default function PlantingTimingCard({ timing, gardens }: Props) {
                   {timingLabel(t)}
                 </span>
                 <span style={secondaryTextStyle}>
-                  {/* ED: replace with final copy */}
-                  Sowed {shortDate(t.sowDate)} · {WINDOW_LABEL[t.window.name]} {formatRange(t.window.start, t.window.end)}
+                  Sowed {shortDate(t.sowDate)} · Guide: {WINDOW_LABEL[t.window.name]}, {formatRange(t.window.start, t.window.end)}
                 </span>
                 {t.sowDateSource === 'marked_done' && (
                   <span style={{ ...secondaryTextStyle, fontStyle: 'italic' }}>based on when you marked it done</span>

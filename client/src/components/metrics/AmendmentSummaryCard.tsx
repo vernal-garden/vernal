@@ -30,10 +30,12 @@ function joinAnd(names: string[]): string {
 interface Props {
   amendments: PaidMetrics['amendments'];
   gardens: MetricsGarden[];
+  isPastSeason: boolean;
+  season: number;
 }
 
 // Amendment applications this season.
-export default function AmendmentSummaryCard({ amendments, gardens }: Props) {
+export default function AmendmentSummaryCard({ amendments, gardens, isPastSeason, season }: Props) {
   const firstGarden = gardens[0];
   const multiGarden = gardens.length >= 2;
   const { applicationCount, bedCount, seasonBedCount, latest, byType, unamendedBeds } = amendments;
@@ -105,9 +107,10 @@ export default function AmendmentSummaryCard({ amendments, gardens }: Props) {
       <h2 id="metrics-amendments-title" style={cardTitleStyle}>Amendments</h2>
       {applicationCount === 0 ? (
         <>
-          {/* ED: replace with final copy */}
-          <p style={bodyTextStyle}>No amendments logged this season.</p>
-          {firstGarden && (
+          <p style={bodyTextStyle}>
+            {isPastSeason ? `No amendments were logged in ${season}.` : 'No amendments logged this season.'}
+          </p>
+          {firstGarden && !isPastSeason && (
             <Link to={`/garden/${firstGarden.id}/amendments`} style={{ ...linkStyle, alignSelf: 'flex-start', marginTop: 'auto' }}>
               {/* ED: replace with final copy */}
               Log an amendment

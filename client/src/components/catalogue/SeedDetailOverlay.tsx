@@ -19,6 +19,7 @@ import CorrectionModal from './CorrectionModal';
 import ContributeModal from './ContributeModal';
 import SeedPhotos from './SeedPhotos';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import { DESKTOP_MESSAGES } from '../shell/BetterOnDesktop';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -417,7 +418,7 @@ function CommunityDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigat
             </span>
           </>
         ) : (
-          <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>No community ratings yet</span>
+          <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>No one has rated this seed yet.</span>
         )}
       </div>
 
@@ -599,9 +600,9 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
     detail.origin === 'user_created' &&
     (contributionStatus === 'private' || contributionStatus === 'rejected');
   const contributionStatusLabel: Partial<Record<ContributionStatus, string>> = {
-    pending: 'Contribution pending review',
-    approved: 'Contributed to Cambium',
-    rejected: 'Contribution returned',
+    pending: 'Submitted, under review',
+    approved: 'Published to Cambium™',
+    rejected: 'Returned, not published',
   };
 
   return (
@@ -775,7 +776,11 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
               Delete
             </button>
           </div>
-          {detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (
+          {canContribute ? (
+            <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>
+              {DESKTOP_MESSAGES.contribute}
+            </span>
+          ) : detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (
             <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>
               {contributionStatusLabel[contributionStatus]}
             </span>
@@ -804,7 +809,7 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
               setContributeOpen(true);
             }}
           >
-            Contribute
+            Contribute to Cambium™
           </button>
         )}
         {!canContribute && detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (

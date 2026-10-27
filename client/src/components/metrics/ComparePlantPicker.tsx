@@ -170,8 +170,7 @@ export default function ComparePlantPicker({ plants, value, fallbackName, onChan
               >
                 <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--c-text)' }}>
                   {plantName(p.commonName)}
-                  {/* ED: replace with final copy */}
-                  {key === value && <span style={{ fontWeight: 400, color: 'var(--c-text-3)' }}> (chosen)</span>}
+                  {key === value && <span style={{ fontWeight: 400, color: 'var(--c-text-3)' }}> (selected)</span>}
                 </span>
                 {p.scientificName && (
                   <span style={{ fontSize: 12, fontStyle: 'italic', color: 'var(--c-text-3)' }}>{p.scientificName}</span>

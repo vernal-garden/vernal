@@ -51,9 +51,10 @@ interface Props {
   onGardenChange: (gardenId: string | null) => void;
   // A garden toggle is loading: the old totals stay on screen, dimmed.
   refreshing: boolean;
+  isPastSeason: boolean;
 }
 
-export default function HarvestTotalsCard({ totals, season, gardens, gardenId, onGardenChange, refreshing }: Props) {
+export default function HarvestTotalsCard({ totals, season, gardens, gardenId, onGardenChange, refreshing, isPastSeason }: Props) {
   const [view, setView] = useState<TotalsView>(readView);
 
   function changeView(next: TotalsView) {
@@ -139,11 +140,16 @@ export default function HarvestTotalsCard({ totals, season, gardens, gardenId, o
           <>
             <p style={bodyTextStyle}>
               {gardenName
-                // ED: replace with final copy
-                ? `No harvests logged in ${gardenName} this season.`
-                : 'No harvests logged yet this season. When you log your first harvest, your totals will appear here.'}
+                ? isPastSeason
+                  ? `${gardenName} had no harvests logged in ${season}.`
+                  : `No harvests logged in ${gardenName} this season.`
+                : isPastSeason
+                  ? `No harvests were logged in ${season}.`
+                  : 'No harvests logged yet this season. When you log your first harvest, your totals will appear here.'}
             </p>
-            <Link to="/harvest?log=new" style={{ ...linkStyle, alignSelf: 'flex-start' }}>Log a harvest</Link>
+            {!isPastSeason && (
+              <Link to="/harvest?log=new" style={{ ...linkStyle, alignSelf: 'flex-start' }}>Log a harvest</Link>
+            )}
           </>
         ) : view === 'list' ? (
           <ul style={listStyle}>
@@ -189,8 +195,7 @@ export default function HarvestTotalsCard({ totals, season, gardens, gardenId, o
             })}
           </ul>
         ) : chartRows.length === 0 ? (
-          // ED: replace with final copy
-          <p style={bodyTextStyle}>No quantities recorded yet. Add amounts when you log a harvest to see them charted.</p>
+          <p style={bodyTextStyle}>Nothing to chart yet. Fill in Quantity when you log a harvest and it&rsquo;ll show up here.</p>
         ) : (
           <figure style={{ margin: 0 }}>
             <ResponsiveContainer width="100%" height={chartRows.length * 40 + 24}>
