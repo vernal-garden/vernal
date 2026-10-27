@@ -435,12 +435,12 @@ function CommunityDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigat
               <span key={c.seed.id} style={{
                 fontSize: 13, color: 'var(--c-text-2)',
                 background: c.relationship === 'beneficial'
-                  ? 'rgba(83,160,68,0.10)'
+                  ? 'var(--c-companion-good-bg)'
                   : c.relationship === 'antagonistic'
                     ? 'var(--c-companion-warn-bg)'
                     : 'var(--c-surface-inset)',
                 borderRadius: 'var(--r-full)', padding: '3px 10px',
-                border: `1px solid ${c.relationship === 'beneficial' ? 'rgba(83,160,68,0.3)' : c.relationship === 'antagonistic' ? 'var(--c-companion-warn)' : 'var(--c-border)'}`,
+                border: `1px solid ${c.relationship === 'beneficial' ? 'var(--c-companion-good-border)' : c.relationship === 'antagonistic' ? 'var(--c-companion-warn)' : 'var(--c-border)'}`,
               }}>
                 {c.seed.commonName}
               </span>

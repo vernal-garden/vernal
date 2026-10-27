@@ -25,7 +25,7 @@
   /* Text */
   --c-text:           #2A2318;
   --c-text-2:         #584F42;
-  --c-text-3:         #8A8078;
+  --c-text-3:         #70675F;
   --c-text-on-primary:#F5F1EB;
 
   /* Semantic */
@@ -37,6 +37,8 @@
   /* Companion signals */
   --c-companion-warn:  #C88A2A;  --c-companion-warn-bg:  rgba(200,138,42,0.12);
   --c-companion-alert: #B03A3A;  --c-companion-alert-bg: rgba(176,58,58,0.10);
+  --c-companion-good-bg:     rgba(83,160,68,0.10);
+  --c-companion-good-border: rgba(83,160,68,0.30);
 
   /* Type */
   --font-display: 'Lora', Georgia, serif;
