@@ -2,8 +2,8 @@ import type React from 'react';
 import { secondaryTextStyle } from '../metrics/styles';
 
 export const WEATHER_PROVIDER_CREDIT = {
-  text: 'Weather data by Open-Meteo.com',
-  href: 'https://open-meteo.com/',
+  text: 'Weather data provided by Visual Crossing Weather',
+  href: 'https://www.visualcrossing.com/',
 } as const;
 
 export const LOCATION_CREDIT = {

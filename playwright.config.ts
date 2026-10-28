@@ -55,7 +55,8 @@ export default defineConfig({
       // timeout); the browser-side stubs supply what the pages render.
       // Merged over process.env, so CI's env still reaches the server.
       env: {
-        OPEN_METEO_BASE_URL: 'http://127.0.0.1:9',
+        VISUAL_CROSSING_BASE_URL: 'http://127.0.0.1:9',
+        VISUAL_CROSSING_API_KEY: 'e2e-dummy',
         NOMINATIM_BASE_URL: 'http://127.0.0.1:9',
       },
     },

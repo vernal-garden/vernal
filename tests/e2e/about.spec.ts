@@ -34,7 +34,7 @@ test('about page shows the version and the external links', async ({ page }) => 
   const credit = page.getByTestId('weather-credit');
   await expect(credit).toBeVisible();
   const creditLinks = [
-    'https://open-meteo.com/',
+    'https://www.visualcrossing.com/',
     'https://www.openstreetmap.org/copyright',
   ];
   for (const href of creditLinks) {

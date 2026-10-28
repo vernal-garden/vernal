@@ -8,7 +8,8 @@ import { getAccountLocation } from '../lib/weather/location';
 import { buildInsights } from '../lib/weather/insights';
 import { getTtlMs } from '../lib/weather/ttl';
 import { fetchTempestCurrent } from '../lib/weather/providers/tempest';
-import { geocode, fetchOpenMeteoCurrent, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
+import { geocode } from '../lib/weather/geocode';
+import { fetchCurrent, fetchHistory } from '../lib/weather/providers/visualCrossing';
 import type { NormalizedReading } from '../lib/weather/types';
 import { logWeatherFailure } from '../lib/weather/upstream';
 import { isNumericId } from '../lib/validation';
@@ -316,7 +317,7 @@ weatherRouter.get('/current', requireSupporter, async (req: Request, res: Respon
       return;
     }
 
-    const reading = await fetchOpenMeteoCurrent(geo.lat, geo.lon);
+    const reading = await fetchCurrent(geo.lat, geo.lon);
     publicCurrentCache.set(cacheKey, reading);
     res.json({ ...reading, source: 'public_weather', cached: false });
   } catch (err) {
@@ -338,7 +339,7 @@ weatherRouter.get('/history', requireSupporter, async (req: Request, res: Respon
     }
 
     const geo = await geocode(location);
-    const data = await fetchOpenMeteoHistory(geo.lat, geo.lon);
+    const data = await fetchHistory(geo.lat, geo.lon);
     res.json({ data, insights: buildInsights(data) });
   } catch (err) {
     logWeatherFailure('GET /weather/history failed', err);

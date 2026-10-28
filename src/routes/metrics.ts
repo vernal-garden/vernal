@@ -21,7 +21,8 @@ import {
   type WeatherInsight,
   type WeekSummary,
 } from '../lib/weather/insights';
-import { geocode, fetchOpenMeteoHistory } from '../lib/weather/providers/openMeteo';
+import { geocode } from '../lib/weather/geocode';
+import { fetchHistory } from '../lib/weather/providers/visualCrossing';
 import { UpstreamError, logWeatherFailure } from '../lib/weather/upstream';
 import type { SessionData } from '../types';
 
@@ -746,7 +747,7 @@ async function buildWeather(accountId: number, isCurrentSeason: boolean) {
       const history = await withTimeout(
         (async () => {
           const { lat, lon } = await geocode(locationLabel);
-          return fetchOpenMeteoHistory(lat, lon);
+          return fetchHistory(lat, lon);
         })(),
         WEATHER_TIMEOUT_MS,
       );
