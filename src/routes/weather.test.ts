@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
 import { LOCATION_NOT_SET } from '../lib/constants';
 import { decryptFromBuffer } from '../lib/crypto';
+import { clearHistoryCache } from '../lib/weather/providers/visualCrossing';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -65,35 +66,30 @@ function geocodeFetchResponse(lat = '45.5', lon = '-122.6') {
   return { ok: true, json: async () => [{ lat, lon }] };
 }
 
-function openMeteoCurrentResponse() {
+function visualCrossingCurrentResponse() {
   return {
     ok: true,
     json: async () => ({
-      current: {
-        time: '2026-07-11T12:00',
-        temperature_2m: 22.1,
-        relative_humidity_2m: 55,
-        precipitation: 0.2,
-        surface_pressure: 1005.3,
-        wind_speed_10m: 4.1,
-        wind_direction_10m: 180,
-        uv_index: 6,
+      currentConditions: {
+        datetimeEpoch: 1_783_771_200,
+        temp: 22.1,
+        humidity: 55,
+        precip: 0.2,
+        pressure: 1005.3,
+        windspeed: 14.76, // km/h, = 4.1 m/s
+        winddir: 180,
+        uvindex: 6,
       },
     }),
   };
 }
 
-function openMeteoHistoryResponse() {
-  const time = ['1', '2', '3', '4', '5', '6', '7'].map((d) => `2026-07-0${d}`);
+function visualCrossingHistoryResponse() {
+  const dates = ['1', '2', '3', '4', '5', '6', '7'].map((d) => `2026-07-0${d}`);
   return {
     ok: true,
     json: async () => ({
-      daily: {
-        time,
-        temperature_2m_max: time.map(() => 25),
-        temperature_2m_min: time.map(() => 14),
-        precipitation_sum: time.map(() => 0),
-      },
+      days: dates.map((datetime) => ({ datetime, tempmax: 25, tempmin: 14, precip: 0 })),
     }),
   };
 }
@@ -102,8 +98,8 @@ function openMeteoHistoryResponse() {
 function routedFetchMock(opts: {
   tempest?: ReturnType<typeof tempestFetchResponse> | (() => ReturnType<typeof tempestFetchResponse>);
   geocode?: ReturnType<typeof geocodeFetchResponse>;
-  openMeteoCurrent?: ReturnType<typeof openMeteoCurrentResponse>;
-  openMeteoHistory?: ReturnType<typeof openMeteoHistoryResponse>;
+  visualCrossingCurrent?: ReturnType<typeof visualCrossingCurrentResponse>;
+  visualCrossingHistory?: ReturnType<typeof visualCrossingHistoryResponse>;
 }) {
   return vi.fn(async (input: string) => {
     const urlStr = String(input);
@@ -116,16 +112,24 @@ function routedFetchMock(opts: {
     if (urlStr.includes('nominatim.openstreetmap.org')) {
       return opts.geocode ?? geocodeFetchResponse();
     }
-    if (urlStr.includes('api.open-meteo.com')) {
-      if (urlStr.includes('daily=')) return opts.openMeteoHistory ?? openMeteoHistoryResponse();
-      return opts.openMeteoCurrent ?? openMeteoCurrentResponse();
+    if (urlStr.includes('weather.visualcrossing.com')) {
+      if (urlStr.includes('/last7days')) return opts.visualCrossingHistory ?? visualCrossingHistoryResponse();
+      return opts.visualCrossingCurrent ?? visualCrossingCurrentResponse();
     }
     throw new Error(`unexpected fetch: ${urlStr}`);
   });
 }
 
+const originalVcKey = process.env.VISUAL_CROSSING_API_KEY;
+
+beforeEach(() => {
+  process.env.VISUAL_CROSSING_API_KEY = 'test-key';
+  clearHistoryCache();
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  clearHistoryCache();
 });
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -155,7 +159,11 @@ beforeAll(async () => {
   unreachableAgent = await loginAgent('weather-unreachable@example.com');
 });
 
-afterAll(() => pool.end());
+afterAll(async () => {
+  if (originalVcKey === undefined) delete process.env.VISUAL_CROSSING_API_KEY;
+  else process.env.VISUAL_CROSSING_API_KEY = originalVcKey;
+  await pool.end();
+});
 
 // ── requireSupporter gating ──────────────────────────────────────────────────
 
@@ -479,11 +487,17 @@ describe('GET /api/weather/current', () => {
 
   it('falls back to public_weather when the account has no PWS connection', async () => {
     vi.stubGlobal('fetch', routedFetchMock({}));
+    const before = await pool.query('SELECT count(*)::int AS n FROM weather_readings');
 
     const res = await otherAgent.get('/api/weather/current');
     expect(res.status).toBe(200);
     expect(res.body.source).toBe('public_weather');
     expect(res.body.temperature).toBe(22.1);
+    expect(res.body.windSpeed).toBeCloseTo(4.1, 5);
+    expect(res.body.readingTimestamp).toBe(new Date(1_783_771_200 * 1000).toISOString());
+
+    const after = await pool.query('SELECT count(*)::int AS n FROM weather_readings');
+    expect(after.rows[0].n).toBe(before.rows[0].n);
   });
 
   it('422 location_not_set when the account location is unset', async () => {
@@ -506,13 +520,17 @@ describe('GET /api/weather/current', () => {
 // ── GET /history ──────────────────────────────────────────────────────────────
 
 describe('GET /api/weather/history', () => {
-  it('returns 7 days of Open-Meteo history', async () => {
+  it('returns 7 days of Visual Crossing history', async () => {
     vi.stubGlobal('fetch', routedFetchMock({}));
+    const before = await pool.query('SELECT count(*)::int AS n FROM weather_readings');
     const res = await supporterAgent.get('/api/weather/history');
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(7);
     expect(Array.isArray(res.body.insights)).toBe(true);
     expect(res.body.insights.length).toBeLessThanOrEqual(3);
+
+    const after = await pool.query('SELECT count(*)::int AS n FROM weather_readings');
+    expect(after.rows[0].n).toBe(before.rows[0].n);
   });
 
   it('422 location_not_set when the account location is unset', async () => {

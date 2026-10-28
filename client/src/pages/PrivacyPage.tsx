@@ -108,7 +108,7 @@ export default function PrivacyPage() {
             so we can find its coordinates.
           </li>
           <li>
-            <strong>Open-Meteo</strong> receives those coordinates so we can fetch weather for them. Neither service
+            <strong>Visual Crossing</strong> receives those coordinates so we can fetch weather for them. Neither service
             receives your name or email.
           </li>
           <li>

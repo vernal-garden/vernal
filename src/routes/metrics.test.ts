@@ -7,15 +7,18 @@ import { LOCATION_NOT_SET } from '../lib/constants';
 import { buildInsights } from '../lib/weather/insights';
 import { currentSeason } from '../lib/plantingSchedule';
 import type { DailyHistoryPoint } from '../lib/weather/types';
-import * as openMeteo from '../lib/weather/providers/openMeteo';
+import * as visualCrossing from '../lib/weather/providers/visualCrossing';
+import * as geocoder from '../lib/weather/geocode';
 import app from '../index';
 
 // The dashboard's weather block geocodes the account location and fetches
-// Open-Meteo history; never hit the network from tests.
-vi.mock('../lib/weather/providers/openMeteo', () => ({
+// Visual Crossing history; never hit the network from tests.
+vi.mock('../lib/weather/geocode', () => ({
   geocode: vi.fn(),
-  fetchOpenMeteoCurrent: vi.fn(),
-  fetchOpenMeteoHistory: vi.fn(),
+}));
+vi.mock('../lib/weather/providers/visualCrossing', () => ({
+  fetchCurrent: vi.fn(),
+  fetchHistory: vi.fn(),
 }));
 
 // A short weather timeout keeps the hanging-fetch test fast.
@@ -220,8 +223,8 @@ beforeAll(async () => {
 
 beforeEach(() => {
   clearMetricsCache();
-  vi.mocked(openMeteo.geocode).mockReset().mockResolvedValue({ lat: 45.5, lon: -122.7 });
-  vi.mocked(openMeteo.fetchOpenMeteoHistory).mockReset().mockResolvedValue(HISTORY);
+  vi.mocked(geocoder.geocode).mockReset().mockResolvedValue({ lat: 45.5, lon: -122.7 });
+  vi.mocked(visualCrossing.fetchHistory).mockReset().mockResolvedValue(HISTORY);
 });
 
 afterAll(async () => {
@@ -770,7 +773,7 @@ describe('paid', () => {
       insights: [],
       historyUnavailable: false,
     });
-    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
+    expect(visualCrossing.fetchHistory).not.toHaveBeenCalled();
 
     const adv = body.paid.advanced;
     // 480 g over a 4x8 bed.
@@ -829,8 +832,8 @@ describe('paid', () => {
       historyUnavailable: false,
     });
     expect(body.paid.weather.insights.length).toBeGreaterThan(0);
-    expect(openMeteo.geocode).toHaveBeenCalledWith('Test City');
-    expect(openMeteo.fetchOpenMeteoHistory).toHaveBeenCalledWith(45.5, -122.7);
+    expect(geocoder.geocode).toHaveBeenCalledWith('Test City');
+    expect(visualCrossing.fetchHistory).toHaveBeenCalledWith(45.5, -122.7);
   });
 
   it('weather with no station still summarizes the location history', async () => {
@@ -850,8 +853,8 @@ describe('paid', () => {
       insights: [],
       historyUnavailable: false,
     });
-    expect(openMeteo.geocode).not.toHaveBeenCalled();
-    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
+    expect(geocoder.geocode).not.toHaveBeenCalled();
+    expect(visualCrossing.fetchHistory).not.toHaveBeenCalled();
   });
 
   it('weather with no location skips the history fetch', async () => {
@@ -869,13 +872,13 @@ describe('paid', () => {
       insights: [],
       historyUnavailable: false,
     });
-    expect(openMeteo.geocode).not.toHaveBeenCalled();
-    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
+    expect(geocoder.geocode).not.toHaveBeenCalled();
+    expect(visualCrossing.fetchHistory).not.toHaveBeenCalled();
   });
 
-  it('a failed Open-Meteo fetch marks history unavailable without failing the dashboard', async () => {
+  it('a failed Visual Crossing fetch marks history unavailable without failing the dashboard', async () => {
     const { agent } = await account('paid-weather-fail@example.com', 'supporter');
-    vi.mocked(openMeteo.fetchOpenMeteoHistory).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(visualCrossing.fetchHistory).mockRejectedValueOnce(new Error('boom'));
     const body = await dashboard(agent, { season: NOW });
     expect(body.paid.weather).toMatchObject({
       locationLabel: 'Test City',
@@ -887,22 +890,22 @@ describe('paid', () => {
 
   it('a failed geocode marks history unavailable without failing the dashboard', async () => {
     const { agent } = await account('paid-weather-geofail@example.com', 'supporter');
-    vi.mocked(openMeteo.geocode).mockRejectedValueOnce(new Error('no results'));
+    vi.mocked(geocoder.geocode).mockRejectedValueOnce(new Error('no results'));
     const body = await dashboard(agent, { season: NOW });
     expect(body.paid.weather).toMatchObject({ week: null, insights: [], historyUnavailable: true });
-    expect(openMeteo.fetchOpenMeteoHistory).not.toHaveBeenCalled();
+    expect(visualCrossing.fetchHistory).not.toHaveBeenCalled();
   });
 
-  it('a hanging Open-Meteo fetch times out without hanging the dashboard', async () => {
+  it('a hanging Visual Crossing fetch times out without hanging the dashboard', async () => {
     const { agent } = await account('paid-weather-hang@example.com', 'supporter');
-    vi.mocked(openMeteo.fetchOpenMeteoHistory).mockReturnValueOnce(new Promise(() => {}));
+    vi.mocked(visualCrossing.fetchHistory).mockReturnValueOnce(new Promise(() => {}));
     const body = await dashboard(agent, { season: NOW });
     expect(body.paid.weather).toMatchObject({ week: null, insights: [], historyUnavailable: true });
   });
 
   it('a response with weather history unavailable is not cached', async () => {
     const { agent } = await account('paid-weather-nocache@example.com', 'supporter');
-    vi.mocked(openMeteo.fetchOpenMeteoHistory).mockRejectedValueOnce(new Error('outage'));
+    vi.mocked(visualCrossing.fetchHistory).mockRejectedValueOnce(new Error('outage'));
     const first = await dashboard(agent, { season: NOW });
     expect(first.paid.weather.historyUnavailable).toBe(true);
     // No cache clear: the next read rebuilds and picks up the recovered fetch.

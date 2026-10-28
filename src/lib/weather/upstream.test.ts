@@ -11,19 +11,19 @@ afterEach(() => {
 describe('fetchProviderJson', () => {
   it('turns a network failure into UpstreamError', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
-    await expect(fetchProviderJson('Open-Meteo', 'https://x')).rejects.toThrow(UpstreamError);
+    await expect(fetchProviderJson('Visual Crossing', 'https://x')).rejects.toThrow(UpstreamError);
   });
 
   it('turns a non-OK response into UpstreamError', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 502 })));
-    await expect(fetchProviderJson('Open-Meteo', 'https://x')).rejects.toThrow(
-      'Open-Meteo request failed with status 502',
+    await expect(fetchProviderJson('Visual Crossing', 'https://x')).rejects.toThrow(
+      'Visual Crossing request failed with status 502',
     );
   });
 
   it('turns an unreadable body into UpstreamError', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>', { status: 200 })));
-    await expect(fetchProviderJson('Open-Meteo', 'https://x')).rejects.toThrow(UpstreamError);
+    await expect(fetchProviderJson('Visual Crossing', 'https://x')).rejects.toThrow(UpstreamError);
   });
 
   // A fetch that never answers; it rejects only when its signal aborts.
@@ -40,8 +40,8 @@ describe('fetchProviderJson', () => {
     vi.useFakeTimers();
     vi.stubGlobal('fetch', hangingFetch());
 
-    const result = fetchProviderJson('Open-Meteo', 'https://x');
-    const assertion = expect(result).rejects.toThrow('Open-Meteo timed out');
+    const result = fetchProviderJson('Visual Crossing', 'https://x');
+    const assertion = expect(result).rejects.toThrow('Visual Crossing timed out');
     await vi.advanceTimersByTimeAsync(UPSTREAM_TIMEOUT_MS);
     await assertion;
   });
@@ -52,7 +52,7 @@ describe('fetchProviderJson', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     let settled = false;
-    fetchProviderJson('Open-Meteo', 'https://x').catch(() => {}).finally(() => (settled = true));
+    fetchProviderJson('Visual Crossing', 'https://x').catch(() => {}).finally(() => (settled = true));
     await vi.advanceTimersByTimeAsync(UPSTREAM_TIMEOUT_MS - 1);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
@@ -73,8 +73,8 @@ describe('fetchProviderJson', () => {
       })),
     );
 
-    const result = fetchProviderJson('Open-Meteo', 'https://x');
-    const assertion = expect(result).rejects.toThrow('Open-Meteo timed out');
+    const result = fetchProviderJson('Visual Crossing', 'https://x');
+    const assertion = expect(result).rejects.toThrow('Visual Crossing timed out');
     await vi.advanceTimersByTimeAsync(UPSTREAM_TIMEOUT_MS);
     await assertion;
   });
@@ -83,9 +83,9 @@ describe('fetchProviderJson', () => {
     vi.stubGlobal('fetch', hangingFetch());
     const controller = new AbortController();
 
-    const result = fetchProviderJson('Open-Meteo', 'https://x', { signal: controller.signal });
+    const result = fetchProviderJson('Visual Crossing', 'https://x', { signal: controller.signal });
     controller.abort();
-    await expect(result).rejects.toThrow('Open-Meteo unreachable');
+    await expect(result).rejects.toThrow('Visual Crossing unreachable');
   });
 
   it('passes the caller init through alongside the signal', async () => {

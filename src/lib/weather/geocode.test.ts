@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { geocode, fetchOpenMeteoCurrent, fetchOpenMeteoHistory, resetGeocoder } from './openMeteo';
+import { geocode, resetGeocoder } from './geocode';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -133,92 +133,12 @@ describe('geocode caching and rate limiting', () => {
   });
 });
 
-describe('fetchOpenMeteoCurrent', () => {
-  it('maps Open-Meteo current conditions onto NormalizedReading', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          current: {
-            time: '2026-07-11T12:00',
-            temperature_2m: 22.1,
-            relative_humidity_2m: 55,
-            precipitation: 0.2,
-            surface_pressure: 1005.3,
-            wind_speed_10m: 4.1,
-            wind_direction_10m: 180,
-            uv_index: 6,
-          },
-        }),
-      }),
-    );
-
-    const reading = await fetchOpenMeteoCurrent(45.5, -122.6);
-
-    expect(reading).toEqual({
-      readingTimestamp: '2026-07-11T12:00',
-      temperature: 22.1,
-      humidity: 55,
-      windSpeed: 4.1,
-      windDirection: 'S',
-      precipitationToday: 0.2,
-      uvIndex: 6,
-      pressure: 1005.3,
-    });
-  });
-});
-
-describe('fetchOpenMeteoHistory', () => {
-  it('zips daily arrays into DailyHistoryPoint[]', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          daily: {
-            time: ['2026-07-04', '2026-07-05'],
-            temperature_2m_max: [25.0, 26.5],
-            temperature_2m_min: [14.0, 15.0],
-            precipitation_sum: [0, 3.2],
-          },
-        }),
-      }),
-    );
-
-    const history = await fetchOpenMeteoHistory(45.5, -122.6);
-
-    expect(history).toEqual([
-      { date: '2026-07-04', tempMaxC: 25.0, tempMinC: 14.0, precipMm: 0 },
-      { date: '2026-07-05', tempMaxC: 26.5, tempMinC: 15.0, precipMm: 3.2 },
-    ]);
-  });
-});
-
-describe('configurable origins', () => {
-  const currentQuery =
-    '/v1/forecast?latitude=45.5&longitude=-122.6' +
-    '&current=temperature_2m,relative_humidity_2m,precipitation,surface_pressure,wind_speed_10m,wind_direction_10m,uv_index' +
-    '&temperature_unit=celsius&wind_speed_unit=ms&precipitation_unit=mm';
-  const historyQuery =
-    '/v1/forecast?latitude=45.5&longitude=-122.6' +
-    '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum' +
-    '&past_days=7&forecast_days=1&temperature_unit=celsius&precipitation_unit=mm';
-
+describe('configurable origin', () => {
   function stubFetch(body: unknown) {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => body });
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   }
-  const currentBody = {
-    current: {
-      time: '2026-07-11T12:00', temperature_2m: 20, relative_humidity_2m: 50, precipitation: 0,
-      surface_pressure: 1000, wind_speed_10m: 1, wind_direction_10m: 0, uv_index: 1,
-    },
-  };
-  const historyBody = {
-    daily: { time: [], temperature_2m_max: [], temperature_2m_min: [], precipitation_sum: [] },
-  };
 
   it('geocode uses NOMINATIM_BASE_URL', async () => {
     process.env.NOMINATIM_BASE_URL = 'http://example.test';
@@ -238,53 +158,5 @@ describe('configurable origins', () => {
     await geocode('Origin City — nominatim-slash-test');
 
     expect(fetchMock.mock.calls[0][0]).toMatch(/^http:\/\/example\.test\/search\?q=/);
-  });
-
-  it('fetchOpenMeteoCurrent uses OPEN_METEO_BASE_URL', async () => {
-    process.env.OPEN_METEO_BASE_URL = 'http://example.test';
-    const fetchMock = stubFetch(currentBody);
-
-    await fetchOpenMeteoCurrent(45.5, -122.6);
-
-    expect(fetchMock.mock.calls[0][0]).toBe(`http://example.test${currentQuery}`);
-  });
-
-  it('fetchOpenMeteoCurrent strips a trailing slash from OPEN_METEO_BASE_URL', async () => {
-    process.env.OPEN_METEO_BASE_URL = 'http://example.test/';
-    const fetchMock = stubFetch(currentBody);
-
-    await fetchOpenMeteoCurrent(45.5, -122.6);
-
-    expect(fetchMock.mock.calls[0][0]).toBe(`http://example.test${currentQuery}`);
-  });
-
-  it('fetchOpenMeteoHistory uses OPEN_METEO_BASE_URL', async () => {
-    process.env.OPEN_METEO_BASE_URL = 'http://example.test';
-    const fetchMock = stubFetch(historyBody);
-
-    await fetchOpenMeteoHistory(45.5, -122.6);
-
-    expect(fetchMock.mock.calls[0][0]).toBe(`http://example.test${historyQuery}`);
-  });
-
-  it('fetchOpenMeteoHistory strips a trailing slash from OPEN_METEO_BASE_URL', async () => {
-    process.env.OPEN_METEO_BASE_URL = 'http://example.test/';
-    const fetchMock = stubFetch(historyBody);
-
-    await fetchOpenMeteoHistory(45.5, -122.6);
-
-    expect(fetchMock.mock.calls[0][0]).toBe(`http://example.test${historyQuery}`);
-  });
-
-  it('defaults to the public origins when neither variable is set', async () => {
-    delete process.env.OPEN_METEO_BASE_URL;
-    delete process.env.NOMINATIM_BASE_URL;
-    const fetchMock = stubFetch(currentBody);
-    await fetchOpenMeteoCurrent(45.5, -122.6);
-    expect(fetchMock.mock.calls[0][0]).toBe(`https://api.open-meteo.com${currentQuery}`);
-
-    const historyMock = stubFetch(historyBody);
-    await fetchOpenMeteoHistory(45.5, -122.6);
-    expect(historyMock.mock.calls[0][0]).toBe(`https://api.open-meteo.com${historyQuery}`);
   });
 });

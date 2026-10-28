@@ -53,7 +53,7 @@ export async function createMetricsFixture(
   try {
     expect((await api.post('/api/auth/login', { data: { email, password } })).ok()).toBe(true);
     // 'Not set' is the server's LOCATION_NOT_SET sentinel: with no location the
-    // dashboard's Weather card never calls the live geocoder or Open-Meteo.
+    // dashboard's Weather card never calls the live geocoder or Visual Crossing.
     expect((await api.patch('/api/me', {
       data: { lastSpringFrostDate: `${thisYear}-04-15`, zoneLocationLabel: 'Not set' },
     })).ok()).toBe(true);
