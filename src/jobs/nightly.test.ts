@@ -3,8 +3,8 @@ import { Pool } from 'pg';
 import type { PoolClient } from 'pg';
 import { EventEmitter } from 'node:events';
 
-vi.mock('../lib/r2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/r2')>()),
+vi.mock('../lib/storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/storage/s3')>()),
   uploadToR2: vi.fn(),
   getPresignedDownloadUrl: vi.fn(),
   deleteFromR2: vi.fn(),
@@ -19,9 +19,10 @@ vi.mock('../lib/billing', () => ({
 }));
 
 import { db as webDb, jobDb } from '../lib/db';
-import { deleteFromR2, exportsBucket } from '../lib/r2';
+import { deleteFromR2, exportsBucket } from '../lib/storage/s3';
 import { teardownCustomer } from '../lib/billing';
 import { currentSeason } from '../lib/season';
+import { getServerConfig, setServerConfigForTests } from '../lib/serverConfig';
 import {
   deriveGrowth,
   refreshGardenBadges,
@@ -1179,6 +1180,24 @@ describe('purgeScheduledAccounts', () => {
 
 describe('checkSubscriptionDowngrades', () => {
   beforeEach(resetDb);
+
+  it('skips the task when billing is off', async () => {
+    const original = getServerConfig();
+    const id = await createAccount({
+      subscriptionTier: 'supporter',
+      stripeSubscriptionId: 'sub_off_test',
+      subscriptionInterval: 'monthly',
+      subscriptionPeriodEndDaysAgo: 1,
+    });
+    setServerConfigForTests({ ...original, billing: 'off' });
+    try {
+      expect(await checkSubscriptionDowngrades()).toEqual({ affected: 0 });
+    } finally {
+      setServerConfigForTests(original);
+    }
+    const { rows } = await pool.query('SELECT subscription_tier FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].subscription_tier).toBe('supporter');
+  });
 
   it('downgrades expired monthly supporters but leaves lifetime accounts untouched', async () => {
     const monthlyId = await createAccount({

@@ -18,6 +18,10 @@ import { writeLimiter, weatherTestLimiter } from '../middleware/rateLimiters';
 import { recordUsageEvent } from '../lib/usageEvents';
 import { invalidateMetrics } from '../lib/metricsCache';
 
+import { getServerConfig } from '../lib/serverConfig';
+
+const WEATHER_OFF_MESSAGE = "Weather isn't set up on this server.";
+
 const weatherRouter = Router();
 weatherRouter.use(requireAuth);
 
@@ -302,6 +306,12 @@ weatherRouter.get('/current', requireSupporter, async (req: Request, res: Respon
       return;
     }
 
+    // No station connection: the rest is the public (Visual Crossing) fallback.
+    if (!getServerConfig().weather) {
+      res.status(503).json({ error: WEATHER_OFF_MESSAGE });
+      return;
+    }
+
     const location = await getAccountLocation(accountId);
     if (location === null) {
       res.status(422).json({ error: 'Location not set', code: 'location_not_set' });
@@ -330,6 +340,11 @@ weatherRouter.get('/current', requireSupporter, async (req: Request, res: Respon
 
 weatherRouter.get('/history', requireSupporter, async (req: Request, res: Response): Promise<void> => {
   const accountId = req.session!.account!.id;
+
+  if (!getServerConfig().weather) {
+    res.status(503).json({ error: WEATHER_OFF_MESSAGE });
+    return;
+  }
 
   try {
     const location = await getAccountLocation(accountId);

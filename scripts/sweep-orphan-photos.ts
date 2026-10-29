@@ -1,12 +1,23 @@
 import dotenv from 'dotenv';
 import { Pool } from 'pg';
-import { listObjects } from '../src/lib/r2';
+import { ConfigError, loadServerConfig } from '../src/lib/serverConfig';
+import { storage } from '../src/lib/storage';
 import { findOrphans } from '../src/lib/orphanPhotos';
 import { queueR2Deletions } from '../src/lib/r2Cleanup';
 
 dotenv.config();
 
-// Finds seed and harvest photo objects in R2 that no seed_photos row or
+try {
+  loadServerConfig();
+} catch (err) {
+  if (err instanceof ConfigError) {
+    console.error(err.message);
+    process.exit(1);
+  }
+  throw err;
+}
+
+// Finds seed and harvest photo objects in storage that no seed_photos row or
 // harvest_entries.photos element points at (and that are over 24 h old), and
 // with --apply queues them in r2_deletions for the nightly job to remove.
 // Dry run by default. Safe to re-run.
@@ -26,8 +37,8 @@ const pool = new Pool({
 
 async function main(): Promise<void> {
   const listed = [
-    ...(await listObjects('seed-photos/')),
-    ...(await listObjects('harvest-photos/')),
+    ...(await storage().listObjects('media', 'seed-photos/')),
+    ...(await storage().listObjects('media', 'harvest-photos/')),
   ];
 
   const referenced = new Set<string>();

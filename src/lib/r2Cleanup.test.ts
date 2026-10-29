@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { Pool } from 'pg';
 
-vi.mock('./r2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./r2')>()),
+vi.mock('./storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./storage/s3')>()),
   deleteFromR2: vi.fn(),
   deletePrefixFromR2: vi.fn(),
   exportsBucket: vi.fn(() => 'test-exports'),
@@ -12,7 +12,7 @@ vi.mock('./logger', () => ({
   logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
-import { deleteFromR2, deletePrefixFromR2 } from './r2';
+import { deleteFromR2, deletePrefixFromR2 } from './storage/s3';
 import { logger } from './logger';
 import { queueR2Deletions, gardenFiles, drainR2Deletions, queueDeletedGardens } from './r2Cleanup';
 
@@ -169,7 +169,7 @@ describe('drainR2Deletions', () => {
   });
 
   it('a misconfigured exports bucket fails only that row', async () => {
-    const { exportsBucket } = await import('./r2');
+    const { exportsBucket } = await import('./storage/s3');
     vi.mocked(exportsBucket).mockImplementationOnce(() => {
       throw new Error('R2_EXPORTS_BUCKET_NAME is not set.');
     });

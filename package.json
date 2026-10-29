@@ -18,6 +18,7 @@
     "lint:fix": "eslint src --fix",
     "type-check": "tsc --noEmit",
     "migrate": "tsx scripts/migrate.ts",
+    "account": "tsx scripts/account.ts",
     "seed:cambium": "tsx scripts/seed-cambium.ts",
     "clean:test-seeds": "tsx scripts/clean-test-seeds.ts",
     "backfill:lifetime-pi": "tsx scripts/backfill-lifetime-payment-intents.ts",

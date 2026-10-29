@@ -3,6 +3,7 @@ import { db } from './db';
 import type { Pool, PoolClient } from 'pg';
 import type { SessionData, SessionAccount } from '../types';
 import { hashToken } from './tokens';
+import { effectiveTier } from './tier';
 
 const SESSION_DAYS = parseInt(process.env.SESSION_DAYS ?? '7', 10);
 const GUEST_SESSION_DAYS = parseInt(process.env.GUEST_SESSION_DAYS ?? '30', 10);
@@ -257,7 +258,7 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
         id: row.account_id,
         email: row.email!,
         role: (row.role as 'user' | 'admin'),
-        subscriptionTier: (row.subscription_tier as 'free' | 'supporter'),
+        subscriptionTier: effectiveTier(row.subscription_tier as 'free' | 'supporter'),
         deletionScheduledAt: row.deletion_scheduled_at,
       }
     : null;

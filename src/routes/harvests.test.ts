@@ -4,8 +4,8 @@ import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import sharp from 'sharp';
 
-vi.mock('../lib/r2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/r2')>()),
+vi.mock('../lib/storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/storage/s3')>()),
   uploadToR2: vi.fn(),
   deleteFromR2: vi.fn(),
 }));
@@ -21,7 +21,7 @@ vi.mock('../lib/imageProcessing', async (importOriginal) => {
   return { ...actual, processPhoto: vi.fn(actual.processPhoto) };
 });
 
-import { uploadToR2, deleteFromR2 } from '../lib/r2';
+import { uploadToR2, deleteFromR2 } from '../lib/storage/s3';
 import { drainSoon } from '../lib/r2Cleanup';
 import { ImageBusyError, processPhoto } from '../lib/imageProcessing';
 import { refreshGardenBadges } from '../jobs/nightly';

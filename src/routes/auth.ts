@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcrypt';
+import { effectiveTier } from '../lib/tier';
 import crypto from 'crypto';
 import {
   createGuestSession,
@@ -21,6 +22,8 @@ import { sendVerificationEmail, consumeVerificationToken } from '../lib/emailVer
 import { passport } from '../lib/oauth/index';
 import type { OAuthUser } from '../lib/oauth/providers/google';
 import { requireAuth } from '../middleware/auth';
+import { requireMail } from '../middleware/requireMail';
+import { isMailEnabled } from '../lib/serverConfig';
 import {
   loginLimiters,
   registerLimiter,
@@ -35,6 +38,7 @@ import { LOCATION_NOT_SET } from '../lib/constants';
 import { isValidEmail } from '../lib/validation';
 import { OAUTH_NONCE_COOKIE, OAUTH_NONCE_COOKIE_OPTIONS, buildOAuthState, verifyOAuthState } from '../lib/oauth/state';
 import { resolveOAuthAccount, OAuthUnverifiedEmailError, OAuthLinkRequiresPasswordError } from '../lib/oauth/resolveAccount';
+import { requireGoogleSignIn } from '../middleware/requireGoogleSignIn';
 import { queueDeletedGardens, queueSessionGardens, drainSoon } from '../lib/r2Cleanup';
 
 export const authRouter = Router();
@@ -247,9 +251,12 @@ authRouter.post('/register', registerLimiter, async (req: Request, res: Response
     await client.query('COMMIT');
 
     // Soft verification: nothing is gated, so a mail failure must not fail signup.
-    sendVerificationEmail(accountId, email.toLowerCase()).catch((err: unknown) =>
-      logger.error('Failed to send verification email', err, { accountId }),
-    );
+    // With mail off there is nothing to send, so no token is created either.
+    if (isMailEnabled()) {
+      sendVerificationEmail(accountId, email.toLowerCase()).catch((err: unknown) =>
+        logger.error('Failed to send verification email', err, { accountId }),
+      );
+    }
 
     makeSessionCookie(signedToken, expiresAt, res);
     res.status(201).json({
@@ -352,14 +359,14 @@ authRouter.post('/login', ...loginLimiters.handlers, async (req: Request, res: R
         id: account.id,
         email: account.email,
         role: account.role,
-        subscriptionTier: account.subscription_tier,
+        subscriptionTier: effectiveTier(account.subscription_tier as 'free' | 'supporter'),
       },
     },
   });
 });
 
 // POST /api/auth/forgot-password
-authRouter.post('/forgot-password', forgotPasswordLimiter, async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/forgot-password', requireMail, forgotPasswordLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email } = req.body as { email?: unknown };
 
   if (typeof email !== 'string' || !email) {
@@ -596,7 +603,7 @@ authRouter.post('/verify-email', verifyEmailLimiter, async (req: Request, res: R
 });
 
 // GET /api/auth/oauth/:provider — initiate OAuth flow
-authRouter.get('/oauth/:provider', (req: Request, res: Response, next) => {
+authRouter.get('/oauth/:provider', requireGoogleSignIn, (req: Request, res: Response, next) => {
   const provider = req.params.provider as string;
   if (!SUPPORTED_PROVIDERS.has(provider)) {
     return res.status(400).json({ error: 'Unknown OAuth provider' });
@@ -620,6 +627,7 @@ authRouter.get('/oauth/:provider', (req: Request, res: Response, next) => {
 // GET /api/auth/oauth/google/callback — handles return from Google
 authRouter.get(
   '/oauth/google/callback',
+  requireGoogleSignIn,
   verifyOAuthState,
   passport.authenticate('google', {
     session: false,

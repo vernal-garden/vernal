@@ -5,7 +5,7 @@ import { logger } from '../lib/logger';
 import { requireSupporter } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
-import { isR2ConfigError, uploadToR2 } from '../lib/r2';
+import { storage, isStorageConfigError } from '../lib/storage';
 import { mediaUrl } from '../lib/media';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { ImageBusyError, ImageRejectedError, processPhoto } from '../lib/imageProcessing';
@@ -161,9 +161,9 @@ router.post('/', requireSupporter, writeLimiter, photoBody, async (req, res) => 
 
     const key = `seed-photos/${seedId}/${crypto.randomUUID()}.jpg`;
     try {
-      await uploadToR2(key, photo, 'image/jpeg');
+      await storage().put('media', key, photo, 'image/jpeg');
     } catch (err) {
-      if (isR2ConfigError(err)) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
+      if (isStorageConfigError(err)) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
       throw err;
     }
     uploadedKey = key;

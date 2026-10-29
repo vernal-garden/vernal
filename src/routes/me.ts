@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { db } from '../lib/db';
+import { effectiveTier } from '../lib/tier';
 import { requireAuth } from '../middleware/auth';
+import { requireMail } from '../middleware/requireMail';
 import { clearSessionCookie, makeSessionCookie, revokeAccountSessions, rotateLiveSessionToken } from '../lib/sessions';
 import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
@@ -12,7 +14,7 @@ import { logger } from '../lib/logger';
 import { isValidEmail, textField } from '../lib/validation';
 import { stopRenewal, resumeRenewal } from '../lib/billing';
 import { processExportJob, exportKey } from '../lib/exportWorker';
-import { getPresignedDownloadUrl, exportsBucket, isR2ConfigError } from '../lib/r2';
+import { storage, isStorageConfigError } from '../lib/storage';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { queueSessionGardens, drainSoon } from '../lib/r2Cleanup';
 
@@ -65,7 +67,7 @@ function formatAccount(row: AccountRow) {
     lastSpringFrostDate: row.last_spring_frost_date,
     firstFallFrostDate: row.first_fall_frost_date,
     role: row.role,
-    subscriptionTier: row.subscription_tier,
+    subscriptionTier: effectiveTier(row.subscription_tier as 'free' | 'supporter'),
     preferences: row.preferences ?? {},
     deletionScheduledAt: row.deletion_scheduled_at,
     supporterPromptShown: row.supporter_prompt_shown,
@@ -342,7 +344,7 @@ router.patch('/password', passwordChangeLimiter, async (req, res) => {
 // Starts an email change: stores a hashed confirmation token and emails the
 // raw token to the new address. The account's email column is untouched
 // until GET /email/confirm succeeds. Requires the current password.
-router.patch('/email', emailChangeLimiter, async (req, res) => {
+router.patch('/email', requireMail, emailChangeLimiter, async (req, res) => {
   const { newEmail, currentPassword } = req.body as { newEmail?: unknown; currentPassword?: unknown };
   const accountId = req.session!.account!.id;
 
@@ -470,7 +472,7 @@ router.delete('/email', writeLimiter, async (req, res) => {
 
 // POST /api/me/verify-email/resend
 // Sends a fresh verification link. No-op once verified.
-router.post('/verify-email/resend', verificationResendLimiter, async (req, res) => {
+router.post('/verify-email/resend', requireMail, verificationResendLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
@@ -710,10 +712,22 @@ router.post('/supporter-prompt/shown', writeLimiter, async (req, res) => {
 // mid-job, or a crash before processExportJob ran) and is marked failed.
 const EXPORT_STALE_MINUTES = 15;
 
-// Where the client downloads a finished export. The route signs a fresh R2
-// link on each request; no working link is ever stored or returned.
+// Where the client downloads a finished export. With S3 storage the route
+// signs a fresh link on each request; no working link is ever stored or returned.
 const EXPORT_DOWNLOAD_PATH = '/api/me/export/download';
 const EXPORT_LINK_TTL_SECONDS = 300;
+
+// 'YYYY-MM-DD' in Pacific time, for the download's file name.
+function pacificDate(date: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
 
 async function failStaleExportJobs(
   q: { query: typeof db.query },
@@ -845,15 +859,15 @@ router.get('/export', async (req, res) => {
 });
 
 // GET /api/me/export/download
-// Redirects to a short-lived signed link for the account's latest unexpired
-// export, so the link only ever reaches the signed-in owner.
+// The account's latest unexpired export: a redirect to a short-lived signed
+// link (s3) or the ZIP itself (local), so it only ever reaches the signed-in owner.
 router.get('/export/download', async (req, res) => {
   const accountId = req.session!.account!.id;
   res.set('Cache-Control', 'no-store');
 
   try {
-    const { rows } = await db.query<{ id: number }>(
-      `SELECT id FROM data_export_jobs
+    const { rows } = await db.query<{ id: number; completed_at: Date | null }>(
+      `SELECT id, completed_at FROM data_export_jobs
        WHERE account_id = $1 AND status = 'complete' AND expires_at > now()
        ORDER BY expires_at DESC
        LIMIT 1`,
@@ -863,21 +877,27 @@ router.get('/export/download', async (req, res) => {
       return res.status(404).json({ error: 'No export available.' });
     }
 
-    let link: string;
+    const filename = `vernal-export-${pacificDate(rows[0].completed_at ?? new Date())}.zip`;
     try {
-      link = await getPresignedDownloadUrl(
+      await storage().sendDownload(
+        res,
+        'exports',
         exportKey(accountId, rows[0].id),
+        filename,
         EXPORT_LINK_TTL_SECONDS,
-        exportsBucket(),
       );
     } catch (err) {
-      if (isR2ConfigError(err)) {
+      if (isStorageConfigError(err) && !res.headersSent) {
         return res.status(503).json({ error: 'Export storage is not configured.' });
       }
       throw err;
     }
-    res.redirect(302, link);
   } catch (err) {
+    // A file that fails mid-stream has already sent its headers.
+    if (res.headersSent) {
+      logger.error('GET /me/export/download failed mid-response', err);
+      return;
+    }
     logger.error('GET /me/export/download failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }

@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { stripe } from './stripe';
+import { getStripe } from './stripe';
 
 // Stripe calls tied to the account-deletion lifecycle. Objects that are
 // already gone (canceled subscription, deleted customer) are treated as done;
@@ -20,7 +20,7 @@ function isMissing(err: unknown): boolean {
 // Returns the subscription, or null if Stripe no longer has it.
 export async function retrieveSubscription(subId: string): Promise<Stripe.Subscription | null> {
   try {
-    return await stripe.subscriptions.retrieve(subId);
+    return await getStripe().subscriptions.retrieve(subId);
   } catch (err) {
     if (isMissing(err)) return null;
     throw err;
@@ -34,7 +34,7 @@ export async function stopRenewal(subId: string): Promise<void> {
   const sub = await retrieveSubscription(subId);
   if (!sub || NO_RENEWAL.has(sub.status)) return;
   if (sub.cancel_at_period_end) return;
-  await stripe.subscriptions.update(subId, {
+  await getStripe().subscriptions.update(subId, {
     cancel_at_period_end: true,
     metadata: { [PAUSE_MARKER]: '1' },
   });
@@ -48,7 +48,7 @@ export async function resumeRenewal(subId: string): Promise<void> {
   if (!sub || NO_RENEWAL.has(sub.status)) return;
   if (sub.metadata?.[PAUSE_MARKER] !== '1') return;
   // An empty string unsets a Stripe metadata key.
-  await stripe.subscriptions.update(subId, {
+  await getStripe().subscriptions.update(subId, {
     cancel_at_period_end: false,
     metadata: { [PAUSE_MARKER]: '' },
   });
@@ -60,7 +60,7 @@ export async function cancelSubscriptionNow(subId: string): Promise<void> {
   const sub = await retrieveSubscription(subId);
   if (!sub || ENDED.has(sub.status)) return;
   try {
-    await stripe.subscriptions.cancel(subId);
+    await getStripe().subscriptions.cancel(subId);
   } catch (err) {
     if (!isMissing(err)) throw err;
   }
@@ -78,7 +78,7 @@ export async function teardownCustomer({
   if (subId) await cancelSubscriptionNow(subId);
   if (customerId) {
     try {
-      await stripe.customers.del(customerId);
+      await getStripe().customers.del(customerId);
     } catch (err) {
       if (!isMissing(err)) throw err;
     }

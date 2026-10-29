@@ -1,9 +1,11 @@
 import crypto from 'crypto';
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import Stripe from 'stripe';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
-import { stripe } from '../lib/stripe';
+import { getStripe } from '../lib/stripe';
+import { getServerConfig } from '../lib/serverConfig';
+import { effectiveTier } from '../lib/tier';
 import { requireAuth } from '../middleware/auth';
 import { checkoutLimiter } from '../middleware/rateLimiters';
 
@@ -28,6 +30,16 @@ const DB_SCOPE = crypto
 const router = Router();
 router.use(requireAuth);
 
+const NO_BILLING = { error: "Billing isn't set up on this server." };
+
+// Checkout and the billing portal exist only when billing is on.
+function requireBilling(_req: Request, res: Response, next: NextFunction) {
+  if (getServerConfig().billing === 'off') {
+    return res.status(404).json(NO_BILLING);
+  }
+  next();
+}
+
 interface SubscriptionRow {
   subscription_tier: 'free' | 'supporter';
   subscription_interval: string | null;
@@ -50,9 +62,11 @@ router.get('/', async (req, res) => {
       return res.status(401).json({ error: 'Account not found' });
     }
     const row = rows[0];
+    const tier = effectiveTier(row.subscription_tier);
     res.json({
-      tier: row.subscription_tier,
-      isSupporter: row.subscription_tier === 'supporter',
+      billing: getServerConfig().billing === 'stripe',
+      tier,
+      isSupporter: tier === 'supporter',
       interval: row.subscription_interval,
       periodEnd: row.subscription_period_end,
       cancelledAt: row.subscription_cancelled_at,
@@ -65,7 +79,7 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/subscription/checkout
-router.post('/checkout', checkoutLimiter, async (req, res) => {
+router.post('/checkout', requireBilling, checkoutLimiter, async (req, res) => {
   const { interval } = req.body as { interval?: unknown };
   if (interval !== 'monthly' && interval !== 'annual' && interval !== 'lifetime') {
     return res.status(400).json({ error: 'interval must be monthly, annual, or lifetime' });
@@ -113,7 +127,7 @@ router.post('/checkout', checkoutLimiter, async (req, res) => {
     if (customerId && interval !== 'lifetime') {
       // The tier may lag Stripe (a second checkout before the first one's
       // webhook lands), so ask Stripe for a live subscription too.
-      const { data } = await stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 10 });
+      const { data } = await getStripe().subscriptions.list({ customer: customerId, status: 'all', limit: 10 });
       if (data.some((s) => LIVE_STATUSES.has(s.status))) {
         return res.status(409).json({ error: "You're already a supporter.", code: 'already_supporter' });
       }
@@ -121,7 +135,7 @@ router.post('/checkout', checkoutLimiter, async (req, res) => {
     if (!customerId) {
       // The idempotency key makes a double-click or retry return the same
       // Stripe customer instead of creating a second one.
-      const customer = await stripe.customers.create(
+      const customer = await getStripe().customers.create(
         {
           email: rows[0].email,
           name: rows[0].display_name ?? undefined,
@@ -141,7 +155,7 @@ router.post('/checkout', checkoutLimiter, async (req, res) => {
       customerId = stored[0]?.stripe_customer_id ?? customer.id;
     }
 
-    const session = await stripe.checkout.sessions.create({
+    const session = await getStripe().checkout.sessions.create({
       mode,
       customer: customerId,
       line_items: [{ price: PRICE_IDS[interval], quantity: 1 }],
@@ -162,7 +176,7 @@ router.post('/checkout', checkoutLimiter, async (req, res) => {
 });
 
 // POST /api/subscription/portal
-router.post('/portal', async (req, res) => {
+router.post('/portal', requireBilling, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
@@ -176,7 +190,7 @@ router.post('/portal', async (req, res) => {
       return res.status(400).json({ error: 'No billing account found. Please subscribe first.' });
     }
 
-    const session = await stripe.billingPortal.sessions.create({
+    const session = await getStripe().billingPortal.sessions.create({
       customer: customerId,
       return_url: process.env.STRIPE_CANCEL_URL!,
     });

@@ -1,9 +1,17 @@
 import Stripe from 'stripe';
+import { getServerConfig } from './serverConfig';
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+let instance: Stripe | null = null;
 
-if (!STRIPE_SECRET_KEY) {
-  throw new Error('STRIPE_SECRET_KEY environment variable is required');
+// Built on first use so a server running with BILLING=off never needs a key.
+export function getStripe(): Stripe {
+  if (getServerConfig().billing === 'off') {
+    throw new Error('Stripe is not available: BILLING=off');
+  }
+  if (!instance) {
+    const key = process.env.STRIPE_SECRET_KEY;
+    if (!key) throw new Error('STRIPE_SECRET_KEY environment variable is required');
+    instance = new Stripe(key, { timeout: 15_000 });
+  }
+  return instance;
 }
-
-export const stripe = new Stripe(STRIPE_SECRET_KEY, { timeout: 15_000 });

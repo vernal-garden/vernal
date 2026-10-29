@@ -8,7 +8,7 @@ import { escapeLike, isNumericId, textField } from '../lib/validation';
 import { writeLimiter } from '../middleware/rateLimiters';
 import seedPhotosRouter from './seedPhotos';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
-import { seedPhotoFolder } from '../lib/r2';
+import { seedPhotoFolder } from '../lib/storage/keys';
 
 const router = Router();
 router.use(requireAuth);

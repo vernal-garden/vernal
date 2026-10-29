@@ -1,6 +1,10 @@
 import dotenv from 'dotenv';
+import { loadServerConfig } from '../lib/serverConfig';
 
 dotenv.config();
+
+// Suites that never import index.ts (unit tests of libs) still need a config.
+loadServerConfig();
 
 const testUrl = process.env.TEST_DATABASE_URL;
 const appUrl = process.env.DATABASE_URL;

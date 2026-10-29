@@ -4,8 +4,8 @@ import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import sharp from 'sharp';
 
-vi.mock('../lib/r2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/r2')>()),
+vi.mock('../lib/storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/storage/s3')>()),
   uploadToR2: vi.fn(async () => undefined),
   deleteFromR2: vi.fn(async () => {}),
 }));
@@ -15,7 +15,7 @@ vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
   drainSoon: vi.fn(),
 }));
 
-import { uploadToR2, deleteFromR2 } from '../lib/r2';
+import { uploadToR2, deleteFromR2 } from '../lib/storage/s3';
 import { drainSoon } from '../lib/r2Cleanup';
 import app from '../index';
 import { currentSeason } from '../lib/season';
@@ -464,7 +464,8 @@ describe('Garden thumbnails', () => {
     const key = keyOf(res.body.thumbnailUrl);
     expect(key).toMatch(KEY_RE(gardenId));
     expect(await thumbnailUrl(gardenId)).toBe(key);
-    expect(uploadToR2).toHaveBeenCalledWith(key, expect.any(Buffer), 'image/png');
+    // The photo bucket (R2_BUCKET_NAME) is the default, passed as undefined.
+    expect(uploadToR2).toHaveBeenCalledWith(key, expect.any(Buffer), 'image/png', undefined);
   });
 
   it('guest uploads to its own garden → 200', async () => {

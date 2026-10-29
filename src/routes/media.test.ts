@@ -1,16 +1,20 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import { Pool } from 'pg';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
-vi.mock('../lib/r2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/r2')>()),
+vi.mock('../lib/storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/storage/s3')>()),
   getMediaRedirectUrl: vi.fn(async (key: string) => `https://signed.test/${key}`),
 }));
 
-import { getMediaRedirectUrl } from '../lib/r2';
+import { getMediaRedirectUrl } from '../lib/storage/s3';
 import app from '../index';
+import { getServerConfig, setServerConfigForTests } from '../lib/serverConfig';
 
 const getMediaRedirectUrlMock = vi.mocked(getMediaRedirectUrl);
 
@@ -246,5 +250,67 @@ describe('GET /api/media/*', () => {
   it('accepts a thumbnail stored as an old public URL', async () => {
     const key = await setThumbnail(f.gardenId, 'https://pub-x.r2.dev/');
     expectRedirect(await f.owner.get(`/api/media/${key}`), key);
+  });
+});
+
+describe('GET /api/media/* with local storage', () => {
+  const s3Config = getServerConfig();
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vernal-media-'));
+    vi.stubEnv('MEDIA_DIR', dir);
+    setServerConfigForTests({ ...s3Config, media: 'local' });
+    const keys = [f.seedPhoto.key, f.harvestPhoto.key, f.thumbnail, f.guestHarvestPhoto, f.guestThumbnail, f.guestSeedPhoto];
+    for (const key of keys) {
+      const file = path.join(dir, 'media', ...key.split('/'));
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, `bytes:${key}`);
+    }
+  });
+
+  afterEach(async () => {
+    setServerConfigForTests(s3Config);
+    vi.unstubAllEnvs();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  function expectFile(res: request.Response, key: string) {
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe(key.endsWith('.png') ? 'image/png' : 'image/jpeg');
+    expect(res.headers['cache-control']).toBe('private, max-age=3600');
+    expect(Buffer.from(res.body).toString()).toBe(`bytes:${key}`);
+  }
+
+  it('serves the owner the file bytes for each kind', async () => {
+    for (const key of [f.seedPhoto.key, f.harvestPhoto.key, f.thumbnail]) {
+      expectFile(await f.owner.get(`/api/media/${key}`), key);
+    }
+    expect(getMediaRedirectUrlMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 to another account for each kind', async () => {
+    for (const key of [f.seedPhoto.key, f.harvestPhoto.key, f.thumbnail]) {
+      expectNotFound(await f.other.get(`/api/media/${key}`));
+    }
+  });
+
+  it("serves a guest its own garden's thumbnail and harvest photo, never a seed photo", async () => {
+    expectFile(await f.guest.get(`/api/media/${f.guestThumbnail}`), f.guestThumbnail);
+    expectFile(await f.guest.get(`/api/media/${f.guestHarvestPhoto}`), f.guestHarvestPhoto);
+    expectNotFound(await f.guest.get(`/api/media/${f.guestSeedPhoto}`));
+    expectNotFound(await f.guest.get(`/api/media/${f.seedPhoto.key}`));
+  });
+
+  it('returns 404 for malformed keys and without a session', async () => {
+    for (const key of ['seed-photos/1/x.jpg', '../etc/passwd', '..%2Fetc%2Fpasswd', 'exports/1/2.zip']) {
+      expectNotFound(await f.owner.get(`/api/media/${key}`));
+    }
+    expectNotFound(await request(app).get(`/api/media/${f.thumbnail}`));
+  });
+
+  it('returns 404 to the owner when the file is gone from disk', async () => {
+    await fs.rm(path.join(dir, 'media', ...f.thumbnail.split('/')));
+    expectNotFound(await f.owner.get(`/api/media/${f.thumbnail}`));
   });
 });

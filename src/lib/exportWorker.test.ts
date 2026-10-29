@@ -2,27 +2,33 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } 
 import { randomUUID } from 'crypto';
 import { Pool, PoolClient } from 'pg';
 import { Readable } from 'stream';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
-const { entries, appendOrder, appendOpts } = vi.hoisted(() => ({
+const { entries, appendOrder, appendOpts, archiverMode } = vi.hoisted(() => ({
+  // The local-storage test needs a real ZIP; every other test uses the stand-in.
+  archiverMode: { real: false },
   entries: new Map<string, string>(),
   appendOrder: [] as string[],
   appendOpts: new Map<string, Record<string, unknown>>(),
 }));
 
-vi.mock('./r2', () => ({
+vi.mock('./storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./storage/s3')>()),
   uploadStreamToR2: vi.fn(),
   exportsBucket: vi.fn(() => 'test-exports'),
-  exportFolder: (id: number) => `exports/${id}/`,
   getMediaObject: vi.fn(),
 }));
 
 // Stand-in for archiver's ZipArchive: records each entry's name and options in
 // append order, reads it to the end, records its text by name, then emits
 // 'entry' like the real one. finalize() ends the piped stream with a
-// placeholder payload.
-vi.mock('archiver', async () => {
+// placeholder payload. With archiverMode.real, the real ZipArchive is used.
+vi.mock('archiver', async (importOriginal) => {
+  const real = await importOriginal<typeof import('archiver')>();
   const { EventEmitter } = await import('events');
-  class ZipArchive extends EventEmitter {
+  class FakeZipArchive extends EventEmitter {
     private dest: NodeJS.WritableStream | null = null;
     pipe<T extends NodeJS.WritableStream>(dest: T): T {
       this.dest = dest;
@@ -47,12 +53,18 @@ vi.mock('archiver', async () => {
       this.dest?.end(Buffer.from('fake-zip'));
     }
   }
+  class ZipArchive {
+    constructor(opts?: ConstructorParameters<typeof real.ZipArchive>[0]) {
+      return (archiverMode.real ? new real.ZipArchive(opts) : new FakeZipArchive()) as unknown as ZipArchive;
+    }
+  }
   return { ZipArchive };
 });
 
-import { uploadStreamToR2, exportsBucket, getMediaObject } from './r2';
+import { uploadStreamToR2, exportsBucket, getMediaObject } from './storage/s3';
 import { jobDb } from './db';
 import { processExportJob } from './exportWorker';
+import { getServerConfig, setServerConfigForTests } from './serverConfig';
 
 const uploadMock = vi.mocked(uploadStreamToR2);
 const exportsBucketMock = vi.mocked(exportsBucket);
@@ -637,5 +649,52 @@ describe('processExportJob', () => {
       [jobId],
     );
     expect(rows[0]).toEqual({ status: 'failed' });
+  });
+});
+
+describe('processExportJob with local storage', () => {
+  const s3Config = getServerConfig();
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vernal-export-'));
+    vi.stubEnv('MEDIA_DIR', dir);
+    setServerConfigForTests({ ...s3Config, media: 'local' });
+    archiverMode.real = true;
+    for (const key of [mine.seedPhotoKey, mine.harvestPhotoKey]) {
+      const file = path.join(dir, 'media', ...key.split('/'));
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, photoBytes(key));
+    }
+  });
+
+  afterEach(async () => {
+    archiverMode.real = false;
+    setServerConfigForTests(s3Config);
+    vi.unstubAllEnvs();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('writes a ZIP under MEDIA_DIR/exports that contains the photo files', async () => {
+    const jobId = await runExport();
+
+    const { rows } = await pool.query('SELECT status FROM data_export_jobs WHERE id = $1', [jobId]);
+    expect(rows[0]).toEqual({ status: 'complete' });
+    expect(uploadMock).not.toHaveBeenCalled();
+    expect(getObjectMock).not.toHaveBeenCalled();
+
+    const zipDir = path.join(dir, 'exports', 'exports', String(accountId));
+    expect(await fs.readdir(zipDir)).toEqual([`${jobId}.zip`]);
+    const zip = await fs.readFile(path.join(zipDir, `${jobId}.zip`));
+    expect(zip.subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    // Photos are stored uncompressed, so each one's name and bytes appear as is.
+    for (const [name, key] of [
+      [seedPhotoPath(mine), mine.seedPhotoKey],
+      [harvestPhotoPath(mine), mine.harvestPhotoKey],
+    ]) {
+      expect(zip.includes(Buffer.from(name)), name).toBe(true);
+      expect(zip.includes(Buffer.from(photoBytes(key))), key).toBe(true);
+    }
+    expect(zip.includes(Buffer.from('README.txt'))).toBe(true);
   });
 });

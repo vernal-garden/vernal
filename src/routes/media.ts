@@ -1,15 +1,14 @@
 import { Router, type Response } from 'express';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
-import { getMediaRedirectUrl, isR2ConfigError } from '../lib/r2';
+import { storage, isStorageConfigError } from '../lib/storage';
 import { parseMediaKey, thumbnailKey } from '../lib/media';
 
 // GET /api/media/<key> — a photo or garden thumbnail, for its owner only.
-// Redirects to a signed R2 link. Every refusal is the same 404 so the route
-// never reveals whether a key exists.
+// The storage driver answers: a redirect to a signed link (s3) or the file
+// itself (local). Every refusal is the same 404 so the route never reveals
+// whether a key exists.
 const router = Router();
-
-const HOUR_MS = 60 * 60 * 1000;
 
 function notFound(res: Response) {
   return res.status(404).json({ error: 'Not found' });
@@ -54,14 +53,14 @@ router.get('/*key', async (req, res) => {
   const key = req.path.slice(1);
   try {
     if (!(await owns(key, session.account?.id ?? null, session.id))) return notFound(res);
-    const now = new Date();
-    const location = await getMediaRedirectUrl(key, now);
-    // The signed URL changes on the hour, so the redirect is cached until then.
-    const untilNextHour = Math.ceil((HOUR_MS - (now.getTime() % HOUR_MS)) / 1000);
-    res.set('Cache-Control', `private, max-age=${Math.max(60, untilNextHour)}`);
-    return res.redirect(302, location);
+    await storage().sendMedia(res, key);
   } catch (err) {
-    if (isR2ConfigError(err)) {
+    // A file that fails mid-stream has already sent its headers.
+    if (res.headersSent) {
+      logger.error('GET /api/media failed mid-response', err);
+      return;
+    }
+    if (isStorageConfigError(err)) {
       return res.status(503).json({ error: 'Photo storage is not configured.' });
     }
     logger.error('GET /api/media failed', err);

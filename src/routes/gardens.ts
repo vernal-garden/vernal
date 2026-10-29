@@ -7,7 +7,7 @@ import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId, textField } from '../lib/validation';
 import { LIMITS, withinCap } from '../lib/limits';
 import { currentSeason } from '../lib/season';
-import { uploadToR2, isR2ConfigError } from '../lib/r2';
+import { storage, isStorageConfigError } from '../lib/storage';
 import { mediaUrl, thumbnailKey } from '../lib/media';
 import { queueR2Deletions, queueDeletedGardens, drainSoon } from '../lib/r2Cleanup';
 import { processThumbnail, ImageRejectedError, ImageBusyError } from '../lib/imageProcessing';
@@ -597,9 +597,9 @@ router.post(
 
       const key = `garden-thumbnails/${gardenId}/${crypto.randomUUID()}.png`;
       try {
-        await uploadToR2(key, png, 'image/png');
+        await storage().put('media', key, png, 'image/png');
       } catch (err) {
-        if (isR2ConfigError(err)) {
+        if (isStorageConfigError(err)) {
           return res.status(503).json({ error: 'Photo storage is not configured.' });
         }
         throw err;
