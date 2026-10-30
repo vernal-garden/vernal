@@ -34,7 +34,7 @@ function choice<T extends string>(env: NodeJS.ProcessEnv, key: string, allowed: 
 
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const billing = choice(env, 'BILLING', ['stripe', 'off'] as const, 'stripe');
-  const mail = choice(env, 'MAIL', ['smtp', 'off'] as const, 'smtp');
+  const mail = choice(env, 'MAIL_MODE', ['smtp', 'off'] as const, 'smtp');
   const media = choice(env, 'MEDIA_STORAGE', ['s3', 'local'] as const, 's3');
 
   if (billing === 'stripe' && !read(env, 'STRIPE_SECRET_KEY')) {
@@ -45,7 +45,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
 
   // Development without SMTP_HOST keeps the console fallback.
   if (mail === 'smtp' && env.NODE_ENV === 'production' && !read(env, 'SMTP_HOST')) {
-    throw new ConfigError('SMTP_HOST is not set. Set it, or set MAIL=off to run without email.');
+    throw new ConfigError('SMTP_HOST is not set. Set it, or set MAIL_MODE=off to run without email.');
   }
 
   if (media === 'local') {

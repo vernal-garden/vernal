@@ -26,7 +26,13 @@ describe('loadServerConfig', () => {
   });
 
   it('turns everything off when asked', () => {
-    expect(loadServerConfig({ BILLING: 'off', MAIL: 'off' })).toMatchObject({ billing: 'off', mail: 'off' });
+    expect(loadServerConfig({ BILLING: 'off', MAIL_MODE: 'off' })).toMatchObject({ billing: 'off', mail: 'off' });
+  });
+
+  // Linux login shells set MAIL to the mail spool path; it must not be read as the mail mode.
+  it('ignores the shell MAIL variable', () => {
+    expect(() => loadServerConfig({ ...base, MAIL: '/var/mail/deploy' })).not.toThrow();
+    expect(loadServerConfig({ ...base, MAIL: '/var/mail/deploy' }).mail).toBe('smtp');
   });
 
   it('reads Google sign-in and weather from their settings', () => {
@@ -49,7 +55,7 @@ describe('loadServerConfig', () => {
 
   it.each([
     ['BILLING', 'bogus', 'stripe, off'],
-    ['MAIL', 'bogus', 'smtp, off'],
+    ['MAIL_MODE', 'bogus', 'smtp, off'],
     ['MEDIA_STORAGE', 'bogus', 's3, local'],
   ])('rejects an invalid %s', (key, value, allowed) => {
     const run = () => loadServerConfig({ ...base, [key]: value });
@@ -66,11 +72,11 @@ describe('loadServerConfig', () => {
 
   it('requires SMTP_HOST in production only', () => {
     expect(() => loadServerConfig({ ...base, NODE_ENV: 'production' })).toThrow(
-      'SMTP_HOST is not set. Set it, or set MAIL=off to run without email.',
+      'SMTP_HOST is not set. Set it, or set MAIL_MODE=off to run without email.',
     );
     expect(() => loadServerConfig({ ...base, NODE_ENV: 'development' })).not.toThrow();
     expect(() => loadServerConfig({ ...base, NODE_ENV: 'production', SMTP_HOST: 'smtp.example.com' })).not.toThrow();
-    expect(() => loadServerConfig({ ...base, NODE_ENV: 'production', MAIL: 'off' })).not.toThrow();
+    expect(() => loadServerConfig({ ...base, NODE_ENV: 'production', MAIL_MODE: 'off' })).not.toThrow();
   });
 
   it('requires an absolute MEDIA_DIR for local media', () => {
