@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import type { PoolClient } from 'pg';
 import type Stripe from 'stripe';
 import { db } from '../lib/db';
-import { stripe } from '../lib/stripe';
+import { getStripe } from '../lib/stripe';
 import { logger } from '../lib/logger';
 import { cancelSubscriptionNow, retrieveSubscription } from '../lib/billing';
 
@@ -51,7 +51,7 @@ async function planSubscription(subId: string, deleted: boolean): Promise<Apply>
   let sub = retrieved;
   let isDeleted = deleted;
   if (deleted || !LIVE_STATUSES.has(sub.status)) {
-    const { data } = await stripe.subscriptions.list({ customer: customerId, status: 'all', limit: 10 });
+    const { data } = await getStripe().subscriptions.list({ customer: customerId, status: 'all', limit: 10 });
     const other = data.find((s) => s.id !== sub.id && LIVE_STATUSES.has(s.status));
     if (other) {
       logger.warn('Customer has more than one subscription', { subscriptionId: other.id });
@@ -219,7 +219,7 @@ export async function handleStripeWebhook(req: Request, res: Response) {
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(req.body as Buffer, signature, webhookSecret);
+    event = getStripe().webhooks.constructEvent(req.body as Buffer, signature, webhookSecret);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Invalid signature';
     return res.status(400).json({ error: message });

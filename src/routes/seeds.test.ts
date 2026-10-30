@@ -3,8 +3,8 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 
-vi.mock('../lib/r2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/r2')>()),
+vi.mock('../lib/storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/storage/s3')>()),
   deleteFromR2: vi.fn(() => Promise.resolve()),
 }));
 

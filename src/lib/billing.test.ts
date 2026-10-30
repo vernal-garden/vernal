@@ -1,14 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Stripe from 'stripe';
 
-vi.mock('./stripe', () => ({
-  stripe: {
+vi.mock('./stripe', () => {
+  const stripe = {
     subscriptions: { retrieve: vi.fn(), update: vi.fn(), cancel: vi.fn() },
     customers: { del: vi.fn() },
-  },
-}));
+  };
+  return { getStripe: () => stripe };
+});
 
-import { stripe } from './stripe';
+import { getStripe } from './stripe';
+const stripe = getStripe();
 import { stopRenewal, resumeRenewal, teardownCustomer } from './billing';
 
 const subs = vi.mocked(stripe.subscriptions);

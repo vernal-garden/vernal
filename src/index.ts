@@ -1,4 +1,5 @@
 import './instrument';
+import './loadConfig';
 import express, { Application } from 'express';
 import * as Sentry from '@sentry/node';
 import helmet from 'helmet';
@@ -30,6 +31,9 @@ import mediaRouter from './routes/media';
 import microFeedbackRouter from './routes/microFeedback';
 import metricsRouter from './routes/metrics';
 import notificationsRouter from './routes/notifications';
+import configRouter from './routes/config';
+import { ConfigError, getServerConfig } from './lib/serverConfig';
+import { storage } from './lib/storage';
 import { sessionMiddleware } from './middleware/session';
 import { blockWhilePendingDeletion } from './middleware/pendingDeletion';
 import { dbBackpressure } from './middleware/dbBackpressure';
@@ -86,7 +90,15 @@ app.use(requestMetricsMiddleware);
 // ── Stripe webhook ───────────────────────────────────────────────────────────
 // Must be mounted before express.json() — Stripe signature verification
 // requires the raw, unparsed request body.
-app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
+// Mounted only when billing is on. The check runs per request so the server
+// config stays the single source of truth (and tests can flip it); with billing
+// off the request falls through to the /api 404 backstop.
+app.post(
+  '/api/webhooks/stripe',
+  (_req, _res, next) => (getServerConfig().billing === 'stripe' ? next() : next('route')),
+  express.raw({ type: 'application/json' }),
+  handleStripeWebhook,
+);
 
 // ── Body parsing ─────────────────────────────────────────────────────────────
 // 64kb covers every real payload — the largest is a 2,000-point freeform bed
@@ -131,6 +143,7 @@ app.use('/api/media', mediaRouter);
 app.use('/api/micro-feedback', microFeedbackRouter);
 app.use('/api/metrics', metricsRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/config', configRouter);
 // JSON 404 backstop for any unmatched /api path:
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -157,10 +170,29 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 // Playwright suite needs a real bound server (unlike Vitest/supertest, which
 // import `app` in-process) while still getting test-mode DB/rate-limit behavior.
 if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
-  app.listen(PORT, () => {
-    logger.info(`API running → http://localhost:${PORT}`);
-    logger.info(`Environment: ${process.env.NODE_ENV ?? 'development'}`);
-  });
+  // Storage is checked before listening: an unusable MEDIA_DIR stops the process.
+  storage()
+    .checkReady()
+    .then(() => {
+      const cfg = getServerConfig();
+      console.log(
+        `[config] billing=${cfg.billing} mail=${cfg.mail} media=${cfg.media} ` +
+          `google=${cfg.googleSignIn ? 'on' : 'off'} weather=${cfg.weather ? 'on' : 'off'}`,
+      );
+
+      app.listen(PORT, () => {
+        logger.info(`API running → http://localhost:${PORT}`);
+        logger.info(`Environment: ${process.env.NODE_ENV ?? 'development'}`);
+      });
+    })
+    .catch((err: unknown) => {
+      if (err instanceof ConfigError) {
+        console.error(err.message);
+        process.exit(1);
+      }
+      logger.error('Storage startup check failed', err);
+      void Sentry.flush(2000).finally(() => process.exit(1));
+    });
 
   cron.schedule('0 3 * * *', () => {
     console.log('[nightly] job starting');

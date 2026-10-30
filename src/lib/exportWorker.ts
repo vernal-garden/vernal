@@ -5,7 +5,8 @@ import Cursor from 'pg-cursor';
 import { types as pgTypes, CustomTypesConfig, PoolClient } from 'pg';
 import { jobDb as db } from './db'; // long-running work: job pool, 5-min statement cap
 import { logger } from './logger';
-import { uploadStreamToR2, exportsBucket, exportFolder, getMediaObject } from './r2';
+import { storage } from './storage';
+import { exportFolder } from './storage/keys';
 import { exportPhotoPath } from './media';
 
 export function exportKey(accountId: number, jobId: number): string {
@@ -315,14 +316,13 @@ function readme(): string {
   );
 }
 
-// Streams the whole archive into R2. Entries are appended one at a time, the
+// Streams the whole archive into storage. Entries are appended one at a time, the
 // next only after archiver has read the previous one to the end, so the
 // single client never has more than one cursor open.
 async function streamExport(
   client: PoolClient,
   accountId: number,
   key: string,
-  bucket: string,
 ): Promise<void> {
   const small = await collectSmallFiles(client, accountId);
 
@@ -343,7 +343,7 @@ async function streamExport(
   // uncaught exception whenever the upload has stopped reading the stream.
   output.on('error', fail);
   archive.pipe(output);
-  const uploaded = uploadStreamToR2(key, output, 'application/zip', bucket);
+  const uploaded = storage().putStream('exports', key, output, 'application/zip');
   uploaded.catch(fail);
 
   let source: Readable | null = null;
@@ -364,7 +364,7 @@ async function streamExport(
         missing.add(key);
         continue;
       }
-      const fetched = getMediaObject(key);
+      const fetched = storage().getStream('media', key);
       const body = await step(fetched).catch((err: unknown) => {
         // A body that arrives after the export has failed is closed, not left open.
         fetched.then((late) => late?.destroy(), () => undefined);
@@ -423,16 +423,13 @@ export async function processExportJob(jobId: number): Promise<void> {
     }
     const accountId = rows[0].account_id;
 
-    // Exports go to the private bucket. Resolved first so a missing config
-    // fails the job before a connection is taken.
-    const bucket = exportsBucket();
     const key = exportKey(accountId, jobId);
 
     const client = await db.connect();
     let failed: Error | undefined;
     try {
       await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-      await streamExport(client, accountId, key, bucket);
+      await streamExport(client, accountId, key);
       await client.query('COMMIT');
     } catch (err) {
       failed = err instanceof Error ? err : new Error(String(err));

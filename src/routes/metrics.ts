@@ -25,6 +25,7 @@ import { geocode } from '../lib/weather/geocode';
 import { fetchHistory } from '../lib/weather/providers/visualCrossing';
 import { UpstreamError, logWeatherFailure } from '../lib/weather/upstream';
 import type { SessionData } from '../types';
+import { getServerConfig } from '../lib/serverConfig';
 
 // Metrics Dashboard and Cross-Season Comparison (Phase 49). Read-only: every
 // aggregate is computed here and the client renders what it gets. Units are
@@ -742,7 +743,9 @@ async function buildWeather(accountId: number, isCurrentSeason: boolean) {
   let week: WeekSummary | null = null;
   let insights: WeatherInsight[] = [];
   let historyUnavailable = false;
-  if (locationLabel !== null && isCurrentSeason) {
+  // With weather off the provider is never called, and that isn't a failure,
+  // so historyUnavailable stays false.
+  if (locationLabel !== null && isCurrentSeason && getServerConfig().weather) {
     try {
       const history = await withTimeout(
         (async () => {

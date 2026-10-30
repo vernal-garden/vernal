@@ -1,63 +1,34 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
-import crypto from 'crypto';
-import { uploadToR2, deleteFromR2, getPresignedUploadUrl } from '../src/lib/r2';
+import { uploadToR2, getMediaObject, deleteFromR2 } from '../src/lib/storage/s3';
 
-// --presign: check that a presigned PUT enforces its signed Content-Type and
-// Content-Length. R2 must accept the exact match and reject both mismatches.
-async function presignSmoke(): Promise<void> {
-  const key = `seed-photos/smoke/${crypto.randomUUID()}.jpg`;
-  const url = await getPresignedUploadUrl(key, 'image/jpeg', 10);
-  console.log('Presigned key:', key);
-
-  const cases: { label: string; body: Uint8Array<ArrayBuffer>; contentType: string; expected: number }[] = [
-    { label: '10 bytes image/jpeg', body: new Uint8Array(10).fill(1), contentType: 'image/jpeg', expected: 200 },
-    { label: '11 bytes image/jpeg', body: new Uint8Array(11).fill(1), contentType: 'image/jpeg', expected: 403 },
-    { label: '10 bytes text/html ', body: new Uint8Array(10).fill(1), contentType: 'text/html', expected: 403 },
-  ];
-
-  let failed = false;
-  try {
-    for (const c of cases) {
-      const res = await fetch(url, {
-        method: 'PUT',
-        headers: { 'Content-Type': c.contentType },
-        body: c.body,
-      });
-      const ok = res.status === c.expected;
-      if (!ok) failed = true;
-      console.log(`PUT ${c.label}: ${res.status} (expected ${c.expected})${ok ? '' : '  <-- UNEXPECTED'}`);
-    }
-  } finally {
-    await deleteFromR2(key);
-    console.log('Deleted', key);
-  }
-
-  if (failed) process.exit(1);
-}
+// S3 only (MEDIA_STORAGE=s3, the default): uploads a small object to
+// R2_BUCKET_NAME through the s3 driver's code, reads it back, and with
+// --cleanup deletes it. Uploads always go through the server, so there is no
+// presigned-upload check. A MEDIA_STORAGE=local server has nothing to smoke-test
+// here: its startup check already writes and deletes a file in MEDIA_DIR.
 
 async function main(): Promise<void> {
-  if (process.argv.includes('--presign')) {
-    await presignSmoke();
-    return;
-  }
-
   const key = `smoke-test/${Date.now()}.txt`;
-  const body = Buffer.from(`Vernal R2 smoke test ${new Date().toISOString()}\n`);
+  const text = `Vernal R2 smoke test ${new Date().toISOString()}`;
 
-  const url = await uploadToR2(key, body, 'text/plain');
+  await uploadToR2(key, Buffer.from(`${text}\n`), 'text/plain');
   console.log('Uploaded key:', key);
-  console.log('Public URL:  ', url);
 
-  const res = await fetch(url);
-  console.log('GET status:  ', res.status, res.headers.get('content-type'));
-  console.log('GET body:    ', (await res.text()).trim());
+  const body = await getMediaObject(key);
+  if (!body) throw new Error(`Uploaded ${key} but could not read it back`);
+  let read = '';
+  for await (const chunk of body) read += (chunk as Buffer).toString();
+  const ok = read.trim() === text;
+  console.log('GET body:    ', read.trim(), ok ? '' : '  <-- UNEXPECTED');
 
   if (process.argv.includes('--cleanup')) {
     await deleteFromR2(key);
     console.log('Deleted', key);
   }
+
+  if (!ok) process.exit(1);
 }
 
 main().catch((err) => {

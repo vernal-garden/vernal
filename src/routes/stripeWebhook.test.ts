@@ -3,7 +3,9 @@ import request from 'supertest';
 import { Pool } from 'pg';
 import Stripe from 'stripe';
 import app from '../index';
-import { stripe as appStripe } from '../lib/stripe';
+import { getStripe } from '../lib/stripe';
+
+const appStripe = getStripe();
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');

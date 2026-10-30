@@ -23,22 +23,27 @@ export function resetR2Client(): void {
 function getClient(): S3Client {
   if (cachedClient) return cachedClient;
 
+  // S3_ENDPOINT points at any S3-compatible service (MinIO, Garage, …) in
+  // place of Cloudflare R2; R2_ACCOUNT_ID is then not needed.
+  const endpoint = process.env.S3_ENDPOINT?.trim() || undefined;
   const accountId = process.env.R2_ACCOUNT_ID;
   const accessKeyId = process.env.R2_ACCESS_KEY_ID;
   const secretKey = process.env.R2_SECRET_ACCESS_KEY;
   const bucket = process.env.R2_BUCKET_NAME;
 
-  if (!accountId || !accessKeyId || !secretKey || !bucket) {
+  if ((!endpoint && !accountId) || !accessKeyId || !secretKey || !bucket) {
     throw new Error(
-      'R2 not configured: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, ' +
+      'R2 not configured: R2_ACCOUNT_ID (or S3_ENDPOINT), R2_ACCESS_KEY_ID, ' +
         'R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME are required.',
     );
   }
 
   cachedClient = new S3Client({
     region: 'auto',
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    endpoint: endpoint ?? `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey: secretKey },
+    // Self-hosted S3 services rarely have per-bucket DNS names.
+    ...(endpoint ? { forcePathStyle: true } : {}),
   });
   return cachedClient;
 }
@@ -145,10 +150,13 @@ export async function getMediaRedirectUrl(key: string, now = new Date()): Promis
   );
 }
 
-/** A photo's bytes as a stream, or null when the object does not exist. */
-export async function getMediaObject(key: string): Promise<Readable | null> {
+/**
+ * A photo's bytes as a stream, or null when the object does not exist.
+ * bucket defaults to R2_BUCKET_NAME.
+ */
+export async function getMediaObject(key: string, bucket?: string): Promise<Readable | null> {
   try {
-    const res = await getClient().send(new GetObjectCommand({ Bucket: BUCKET(), Key: key }));
+    const res = await getClient().send(new GetObjectCommand({ Bucket: bucket ?? BUCKET(), Key: key }));
     return res.Body as Readable;
   } catch (err) {
     if (err instanceof Error && err.name === 'NoSuchKey') return null;
@@ -170,13 +178,6 @@ export async function deleteFromR2(key: string, bucket?: string): Promise<void> 
     }),
   );
 }
-
-// Folder paths for each owner of R2 objects. Each ends in '/', so a prefix
-// delete for seed 5 can never match seed 50.
-export const seedPhotoFolder = (seedId: number | string) => `seed-photos/${seedId}/`;
-export const harvestPhotoFolder = (harvestId: number | string) => `harvest-photos/${harvestId}/`;
-export const gardenThumbnailFolder = (gardenId: number | string) => `garden-thumbnails/${gardenId}/`;
-export const exportFolder = (accountId: number | string) => `exports/${accountId}/`;
 
 // One page at a time through a listing; yields each page's response.
 async function* listPages(

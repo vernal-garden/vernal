@@ -55,13 +55,10 @@ import {
   deletePrefixFromR2,
   listFolders,
   listKeys,
-  seedPhotoFolder,
-  harvestPhotoFolder,
-  gardenThumbnailFolder,
-  exportFolder,
   getMediaRedirectUrl,
   getMediaObject,
-} from './r2';
+} from './s3';
+import { seedPhotoFolder, harvestPhotoFolder, gardenThumbnailFolder, exportFolder } from './keys';
 
 const R2_ENV = {
   R2_ACCOUNT_ID: 'test-account',
@@ -141,6 +138,27 @@ describe('r2', () => {
     await deleteFromR2('a');
     await deleteFromR2('b');
     expect(vi.mocked(S3Client)).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the R2 endpoint with virtual-hosted buckets by default', async () => {
+    delete process.env.S3_ENDPOINT;
+    await deleteFromR2('a');
+    const opts = vi.mocked(S3Client).mock.calls[0][0] as Record<string, unknown>;
+    expect(opts.endpoint).toBe('https://test-account.r2.cloudflarestorage.com');
+    expect(opts).not.toHaveProperty('forcePathStyle');
+  });
+
+  it('S3_ENDPOINT sets the endpoint and path-style buckets, without R2_ACCOUNT_ID', async () => {
+    process.env.S3_ENDPOINT = 'http://minio.local:9000';
+    delete process.env.R2_ACCOUNT_ID;
+    try {
+      await deleteFromR2('a');
+      const opts = vi.mocked(S3Client).mock.calls[0][0] as Record<string, unknown>;
+      expect(opts).toMatchObject({ endpoint: 'http://minio.local:9000', forcePathStyle: true });
+      expect(sendMock.mock.calls[0][0].input).toEqual({ Bucket: 'test-bucket', Key: 'a' });
+    } finally {
+      delete process.env.S3_ENDPOINT;
+    }
   });
 
   it('resetR2Client makes the next call build a new client', async () => {

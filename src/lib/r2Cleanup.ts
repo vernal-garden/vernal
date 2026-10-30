@@ -1,13 +1,8 @@
 import type { PoolClient } from 'pg';
 import { db } from './db';
 import { logger } from './logger';
-import {
-  deleteFromR2,
-  deletePrefixFromR2,
-  exportsBucket,
-  gardenThumbnailFolder,
-  harvestPhotoFolder,
-} from './r2';
+import { storage, type Area } from './storage';
+import { gardenThumbnailFolder, harvestPhotoFolder } from './storage/keys';
 
 // The R2 cleanup queue. Every delete that owns R2 files queues them here in the
 // same transaction as the DB delete, then calls drainSoon() after COMMIT; the
@@ -127,9 +122,10 @@ export async function drainR2Deletions(
   let failed = 0;
   for (const row of rows) {
     try {
-      const bucket = row.bucket === 'exports' ? exportsBucket() : undefined;
-      if (row.is_prefix) await deletePrefixFromR2(row.path, bucket);
-      else await deleteFromR2(row.path, bucket);
+      // The queue's bucket column predates storage areas: 'public' is media.
+      const area: Area = row.bucket === 'exports' ? 'exports' : 'media';
+      if (row.is_prefix) await storage().removePrefix(area, row.path);
+      else await storage().remove(area, row.path);
       // Deletes are idempotent, so a concurrent drain of the same row is harmless.
       if (!row.is_prefix || row.settled) {
         await db.query('DELETE FROM r2_deletions WHERE id = $1', [row.id]);

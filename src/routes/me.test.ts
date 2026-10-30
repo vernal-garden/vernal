@@ -8,7 +8,11 @@ import { hashToken } from '../lib/tokens';
 import * as mailer from '../lib/mailer';
 import * as exportWorker from '../lib/exportWorker';
 import * as billing from '../lib/billing';
-import * as r2 from '../lib/r2';
+import * as r2 from '../lib/storage/s3';
+import { getServerConfig, setServerConfigForTests } from '../lib/serverConfig';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
 const sendMailMock = vi.mocked(mailer.sendMail);
@@ -19,8 +23,8 @@ vi.mock('../lib/exportWorker', async (importOriginal) => ({
 }));
 const processExportJobMock = vi.mocked(exportWorker.processExportJob);
 
-vi.mock('../lib/r2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/r2')>()),
+vi.mock('../lib/storage/s3', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/storage/s3')>()),
   getPresignedDownloadUrl: vi.fn(),
   exportsBucket: vi.fn(() => 'test-exports'),
 }));
@@ -1312,6 +1316,47 @@ describe('/api/me/export', () => {
       await insertJob('complete', { expiresInDays: 3 });
       presignMock.mockRejectedValueOnce(new Error('boom'));
       expect((await agent.get('/api/me/export/download')).status).toBe(500);
+    });
+
+    describe('with local storage', () => {
+      const s3Config = getServerConfig();
+      let dir: string;
+
+      beforeEach(async () => {
+        dir = await fs.mkdtemp(path.join(os.tmpdir(), 'vernal-me-export-'));
+        vi.stubEnv('MEDIA_DIR', dir);
+        setServerConfigForTests({ ...s3Config, media: 'local' });
+      });
+
+      afterEach(async () => {
+        setServerConfigForTests(s3Config);
+        vi.unstubAllEnvs();
+        await fs.rm(dir, { recursive: true, force: true });
+      });
+
+      it('streams the ZIP named for its Pacific completion date', async () => {
+        const jobId = await insertJob('complete', { expiresInDays: 3 });
+        // 05:00 UTC on the 28th is still the 27th in Los Angeles.
+        await pool.query(`UPDATE data_export_jobs SET completed_at = '2026-10-28T05:00:00Z' WHERE id = $1`, [jobId]);
+        const file = path.join(dir, 'exports', 'exports', String(accountId), `${jobId}.zip`);
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, 'zip-bytes');
+
+        const res = await agent
+          .get('/api/me/export/download')
+          .buffer(true)
+          .parse((r, cb) => {
+            const chunks: Buffer[] = [];
+            r.on('data', (c: Buffer) => chunks.push(c));
+            r.on('end', () => cb(null, Buffer.concat(chunks)));
+          });
+        expect(res.status).toBe(200);
+        expect(res.headers['content-type']).toBe('application/zip');
+        expect(res.headers['content-disposition']).toBe('attachment; filename="vernal-export-2026-10-27.zip"');
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect((res.body as Buffer).toString()).toBe('zip-bytes');
+        expect(presignMock).not.toHaveBeenCalled();
+      });
     });
   });
 });

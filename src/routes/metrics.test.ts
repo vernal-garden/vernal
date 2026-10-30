@@ -10,6 +10,7 @@ import type { DailyHistoryPoint } from '../lib/weather/types';
 import * as visualCrossing from '../lib/weather/providers/visualCrossing';
 import * as geocoder from '../lib/weather/geocode';
 import app from '../index';
+import { getServerConfig, setServerConfigForTests } from '../lib/serverConfig';
 
 // The dashboard's weather block geocodes the account location and fetches
 // Visual Crossing history; never hit the network from tests.
@@ -874,6 +875,27 @@ describe('paid', () => {
     });
     expect(geocoder.geocode).not.toHaveBeenCalled();
     expect(visualCrossing.fetchHistory).not.toHaveBeenCalled();
+  });
+
+  it('weather off makes no provider call and is not reported as a failure', async () => {
+    const original = getServerConfig();
+    setServerConfigForTests({ ...original, weather: false });
+    try {
+      const { agent } = await account('paid-weather-off@example.com', 'supporter');
+      const body = await dashboard(agent, { season: NOW });
+      expect(body.paid.weather).toEqual({
+        station: null,
+        locationLabel: 'Test City',
+        units: 'imperial',
+        week: null,
+        insights: [],
+        historyUnavailable: false,
+      });
+      expect(geocoder.geocode).not.toHaveBeenCalled();
+      expect(visualCrossing.fetchHistory).not.toHaveBeenCalled();
+    } finally {
+      setServerConfigForTests(original);
+    }
   });
 
   it('a failed Visual Crossing fetch marks history unavailable without failing the dashboard', async () => {

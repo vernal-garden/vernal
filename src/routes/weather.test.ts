@@ -6,6 +6,7 @@ import app from '../index';
 import { LOCATION_NOT_SET } from '../lib/constants';
 import { decryptFromBuffer } from '../lib/crypto';
 import { clearHistoryCache } from '../lib/weather/providers/visualCrossing';
+import { getServerConfig, setServerConfigForTests } from '../lib/serverConfig';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -538,6 +539,66 @@ describe('GET /api/weather/history', () => {
     const res = await noLocationAgent.get('/api/weather/history');
     expect(res.status).toBe(422);
     expect(res.body.code).toBe('location_not_set');
+  });
+});
+
+// ── Weather switched off ───────────────────────────────────────────────────────
+
+describe('weather off (VISUAL_CROSSING_API_KEY unset)', () => {
+  const original = getServerConfig();
+  const OFF_MESSAGE = "Weather isn't set up on this server.";
+
+  beforeEach(() => {
+    setServerConfigForTests({ ...original, weather: false });
+  });
+  afterEach(() => {
+    setServerConfigForTests(original);
+  });
+
+  it('GET /current with no station → 503 and no provider call', async () => {
+    const fetchMock = routedFetchMock({});
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await noLocationAgent.get('/api/weather/current');
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: OFF_MESSAGE });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /history → 503 and no provider call', async () => {
+    const fetchMock = routedFetchMock({});
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await supporterAgent.get('/api/weather/history');
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: OFF_MESSAGE });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('GET /history still requires a supporter first', async () => {
+    const res = await freeAgent.get('/api/weather/history');
+    expect(res.status).toBe(402);
+  });
+
+  it('GET /current still serves a Tempest-connected account', async () => {
+    setServerConfigForTests(original);
+    vi.stubGlobal('fetch', routedFetchMock({ tempest: tempestFetchResponse() }));
+    const created = await otherAgent.post('/api/weather/connections').send({
+      provider: 'pws_tempest',
+      credentials: { accessToken: 'off-token' },
+      stationId: '107',
+    });
+    expect(created.status).toBe(201);
+
+    setServerConfigForTests({ ...original, weather: false });
+    const fetchMock = routedFetchMock({ tempest: tempestFetchResponse() });
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await otherAgent.get('/api/weather/current');
+    expect(res.status).toBe(200);
+    expect(res.body.source).toBe('pws_tempest');
+    for (const [u] of fetchMock.mock.calls) {
+      expect(String(u)).toContain('weatherflow.com');
+    }
+
+    await otherAgent.delete(`/api/weather/connections/${created.body.id}`);
   });
 });
 

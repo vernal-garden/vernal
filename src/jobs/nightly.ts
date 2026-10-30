@@ -1,9 +1,10 @@
 import { jobDb as db, db as webDb } from '../lib/db'; // long-running work: job pool, 5-min statement cap
 import { COMPANION_CONFIDENCE_THRESHOLD, deleteAccountRatings } from '../services/cambium';
-import { gardenThumbnailFolder, seedPhotoFolder, exportFolder } from '../lib/r2';
+import { gardenThumbnailFolder, seedPhotoFolder, exportFolder } from '../lib/storage/keys';
 import { queueR2Deletions, gardenFiles, drainR2Deletions, type R2Deletion } from '../lib/r2Cleanup';
 import { logger } from '../lib/logger';
 import { teardownCustomer } from '../lib/billing';
+import { getServerConfig } from '../lib/serverConfig';
 import { exportKey } from '../lib/exportWorker';
 import { harvestableCountSql } from '../lib/gardenBadges';
 import { STAGE_BOUNDS } from '../lib/growthStages';
@@ -390,6 +391,11 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number; fail
 // Lifetime accounts have subscription_interval = 'lifetime', excluded by the
 // IN clause below — this task must never touch them.
 export async function checkSubscriptionDowngrades(): Promise<{ affected: number }> {
+  // With billing off nobody pays, so a lapsed period end means nothing.
+  if (getServerConfig().billing === 'off') {
+    console.log('[nightly] checkSubscriptionDowngrades: skipped (billing is off)');
+    return { affected: 0 };
+  }
   const result = await db.query(`
     UPDATE accounts SET
       subscription_tier       = 'free',

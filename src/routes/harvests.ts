@@ -10,7 +10,8 @@ import { currentSeason, isIsoDate } from '../lib/plantingSchedule';
 import { seasonOf } from '../lib/season';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { recomputeHarvestableCount } from '../lib/gardenBadges';
-import { harvestPhotoFolder, uploadToR2 } from '../lib/r2';
+import { storage, isStorageConfigError } from '../lib/storage';
+import { harvestPhotoFolder } from '../lib/storage/keys';
 import { mediaUrl } from '../lib/media';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { ImageBusyError, ImageRejectedError, processPhoto } from '../lib/imageProcessing';
@@ -158,13 +159,6 @@ function seedKeyWhere(key: SeedKey, param: string, alias = ''): string {
 
 function likePattern(q: string): string {
   return `%${escapeLike(q)}%`;
-}
-
-function isR2ConfigError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.message.startsWith('R2 not configured') || err.message.endsWith('is not set.'))
-  );
 }
 
 async function rollback(client: PoolClient): Promise<void> {
@@ -1048,9 +1042,9 @@ router.post('/:id/photos', ...photoGuards, photoBody, async (req: Request, res: 
 
     const key = `harvest-photos/${id}/${crypto.randomUUID()}.jpg`;
     try {
-      await uploadToR2(key, photo, 'image/jpeg');
+      await storage().put('media', key, photo, 'image/jpeg');
     } catch (err) {
-      if (isR2ConfigError(err)) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
+      if (isStorageConfigError(err)) return res.status(503).json({ error: STORAGE_UNAVAILABLE });
       throw err;
     }
     uploadedKey = key;
