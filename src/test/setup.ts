@@ -3,6 +3,9 @@ import { loadServerConfig } from '../lib/serverConfig';
 
 dotenv.config();
 
+// The test config must not depend on the developer's .env; weather-off behavior is tested through setServerConfigForTests.
+process.env.VISUAL_CROSSING_API_KEY ||= 'test-key';
+
 // Suites that never import index.ts (unit tests of libs) still need a config.
 loadServerConfig();
 
