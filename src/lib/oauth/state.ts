@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { safeReturnTo } from './returnTo';
+import { secureCookies } from '../serverConfig';
 
 export const OAUTH_NONCE_COOKIE = '_vernal_oauth_nonce';
 const NONCE_PATTERN = /^[0-9a-f]{32}$/;
@@ -8,7 +9,7 @@ const NONCE_PATTERN = /^[0-9a-f]{32}$/;
 export const OAUTH_NONCE_COOKIE_OPTIONS = {
   httpOnly: true,
   sameSite: 'lax' as const,
-  secure: process.env.NODE_ENV === 'production',
+  secure: secureCookies(),
 };
 
 export function buildOAuthState(nonce: string, returnTo: unknown): string {

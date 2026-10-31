@@ -9,6 +9,21 @@
 #
 # Usage: vernal-deploy <40-char commit sha>
 # Under the forced command the SHA comes from SSH_ORIGINAL_COMMAND instead.
+#
+# The deploy runs under `env -i` with a small allow-list (HOME, PATH, LANG,
+# PM2_HOME) and reloads the app from ecosystem.config.cjs. The app must not
+# inherit the SSH session's environment: pm2 --update-env merges the caller's
+# env into the app's, and dotenv never overrides existing variables, so a stray
+# MAIL (the mail spool path) once beat the .env setting and crashed production.
+# npm ci / migrate / the Vite build also run with this clean env.
+#
+# pm2 --update-env only adds/overwrites keys: keys inherited by earlier deploys
+# stay in the stored process env (and dump.pm2) until a one-time
+# `pm2 delete vernal && pm2 start ecosystem.config.cjs && pm2 save` from a clean
+# shell. Setting VERNAL_DEPLOY_CLEAN_ENV by hand skips the clean re-exec (the
+# forced command can't).
+#
+# After changing this file, reinstall the copy at /home/deploy/bin/vernal-deploy.
 set -euo pipefail
 
 APP_DIR=/var/www/vernal
@@ -25,6 +40,18 @@ else
     exit 2
   fi
   SHA="$1"
+fi
+
+# Re-exec once in a clean environment. The copy has no SSH_ORIGINAL_COMMAND, so
+# it takes the $1 path with the SHA validated above. BASH_SOURCE[0] is the
+# absolute /home/deploy/bin/vernal-deploy under sshd's forced command (and
+# whatever path was used when run manually, which is fine).
+if [[ -z "${VERNAL_DEPLOY_CLEAN_ENV:-}" ]]; then
+  clean_env=(HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 VERNAL_DEPLOY_CLEAN_ENV=1)
+  if [[ -n "${PM2_HOME:-}" ]]; then
+    clean_env+=(PM2_HOME="$PM2_HOME")
+  fi
+  exec env -i "${clean_env[@]}" bash "${BASH_SOURCE[0]}" "$SHA"
 fi
 
 exec 9>"$HOME/.vernal-deploy.lock"
@@ -49,7 +76,8 @@ npm ci
 npm run build
 cd "$APP_DIR"
 # 9>&-: a pm2 daemon started here must not inherit the deploy lock.
-pm2 reload vernal --update-env 9>&-
+# Reload from the ecosystem file (app name 'vernal') so its env block applies.
+pm2 startOrReload ecosystem.config.cjs --update-env 9>&-
 sleep 5
 pm2 jlist 9>&- | node -e '
 const list = JSON.parse(require("fs").readFileSync(0, "utf8"));

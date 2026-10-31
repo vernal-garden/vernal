@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import sharp from 'sharp';
+import { gzipSync } from 'zlib';
 
 vi.mock('../lib/storage/s3', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/storage/s3')>()),
@@ -779,6 +780,16 @@ describe('Photos', () => {
     const text = await postPhoto(supporter, entryId, Buffer.from('hello, not an image'));
     expect(text.status).toBe(400);
     expect(text.body).toEqual({ error: "That file isn't a supported image." });
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('a gzip-encoded body → 415, nothing uploaded', async () => {
+    const res = await supporter
+      .post(`/api/harvests/${entryId}/photos`)
+      .set('Content-Type', 'image/jpeg')
+      .set('Content-Encoding', 'gzip')
+      .send(gzipSync(jpeg));
+    expect(res.status).toBe(415);
     expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 

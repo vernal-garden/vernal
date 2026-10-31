@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { SessionData, SessionAccount } from '../types';
 import { hashToken } from './tokens';
 import { effectiveTier } from './tier';
+import { secureCookies } from './serverConfig';
 
 const SESSION_DAYS = parseInt(process.env.SESSION_DAYS ?? '7', 10);
 const GUEST_SESSION_DAYS = parseInt(process.env.GUEST_SESSION_DAYS ?? '30', 10);
@@ -53,7 +54,7 @@ export function makeSessionCookie(
   res.cookie(COOKIE_NAME, signedToken, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: secureCookies(),
     expires: cookieExpires ?? expiresAt,
     path: '/',
   });

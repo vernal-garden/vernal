@@ -996,7 +996,7 @@ const photoGuards = [requireAuth, requireSupporter, writeLimiter];
 
 // The photo is the raw request body; any other Content-Type leaves req.body
 // unset (or parsed as JSON), which the route answers with NOT_AN_IMAGE.
-const photoBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '5mb' });
+const photoBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '5mb', inflate: false });
 
 // Called after the upload landed but the entry didn't commit (the ROLLBACK
 // would have undone a queue row written in the transaction), so the queue

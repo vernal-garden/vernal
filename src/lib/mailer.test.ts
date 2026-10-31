@@ -50,7 +50,16 @@ describe('mailer', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('SMTP_HOST', '');
     const { sendMail } = await loadMailer();
-    await expect(sendMail(message)).rejects.toThrow('SMTP_HOST must be set in production');
+    await expect(sendMail(message)).rejects.toThrow('SMTP_HOST must be set');
+  });
+
+  it('refuses to fall back to the console when NODE_ENV is unset', async () => {
+    vi.stubEnv('NODE_ENV', undefined);
+    vi.stubEnv('SMTP_HOST', '');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { sendMail } = await loadMailer();
+    await expect(sendMail(message)).rejects.toThrow('SMTP_HOST must be set');
+    expect(log).not.toHaveBeenCalled();
   });
 
   it('logs only the recipient domain for a real send', async () => {

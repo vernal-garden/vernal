@@ -3,6 +3,8 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   ConfigError,
   getServerConfig,
+  isLocalEnv,
+  secureCookies,
   loadServerConfig,
   setServerConfigForTests,
   type ServerConfig,
@@ -12,7 +14,8 @@ import {
 const original = getServerConfig();
 afterAll(() => setServerConfigForTests(original));
 
-const base = { STRIPE_SECRET_KEY: 'sk_test_x' };
+// development so the SMTP_HOST rule (production-strict otherwise) stays out of the way.
+const base = { STRIPE_SECRET_KEY: 'sk_test_x', NODE_ENV: 'development' };
 
 describe('loadServerConfig', () => {
   it('defaults to today\'s behaviour', () => {
@@ -26,7 +29,13 @@ describe('loadServerConfig', () => {
   });
 
   it('turns everything off when asked', () => {
-    expect(loadServerConfig({ BILLING: 'off', MAIL: 'off' })).toMatchObject({ billing: 'off', mail: 'off' });
+    expect(loadServerConfig({ BILLING: 'off', MAIL_MODE: 'off' })).toMatchObject({ billing: 'off', mail: 'off' });
+  });
+
+  // Linux login shells set MAIL to the mail spool path; it must not be read as the mail mode.
+  it('ignores the shell MAIL variable', () => {
+    expect(() => loadServerConfig({ ...base, MAIL: '/var/mail/deploy' })).not.toThrow();
+    expect(loadServerConfig({ ...base, MAIL: '/var/mail/deploy' }).mail).toBe('smtp');
   });
 
   it('reads Google sign-in and weather from their settings', () => {
@@ -49,7 +58,7 @@ describe('loadServerConfig', () => {
 
   it.each([
     ['BILLING', 'bogus', 'stripe, off'],
-    ['MAIL', 'bogus', 'smtp, off'],
+    ['MAIL_MODE', 'bogus', 'smtp, off'],
     ['MEDIA_STORAGE', 'bogus', 's3, local'],
   ])('rejects an invalid %s', (key, value, allowed) => {
     const run = () => loadServerConfig({ ...base, [key]: value });
@@ -64,13 +73,53 @@ describe('loadServerConfig', () => {
     );
   });
 
-  it('requires SMTP_HOST in production only', () => {
-    expect(() => loadServerConfig({ ...base, NODE_ENV: 'production' })).toThrow(
-      'SMTP_HOST is not set. Set it, or set MAIL=off to run without email.',
-    );
-    expect(() => loadServerConfig({ ...base, NODE_ENV: 'development' })).not.toThrow();
-    expect(() => loadServerConfig({ ...base, NODE_ENV: 'production', SMTP_HOST: 'smtp.example.com' })).not.toThrow();
-    expect(() => loadServerConfig({ ...base, NODE_ENV: 'production', MAIL: 'off' })).not.toThrow();
+  describe('SMTP_HOST rule', () => {
+    const smtpMessage =
+      'SMTP_HOST is not set. Set it, set MAIL_MODE=off to run without email, or set NODE_ENV=development to print mail to the console on a local machine.';
+    const noEnv = { STRIPE_SECRET_KEY: 'sk_test_x' };
+
+    it('is required in production', () => {
+      expect(() => loadServerConfig({ ...noEnv, NODE_ENV: 'production' })).toThrow(smtpMessage);
+      expect(() => loadServerConfig({ ...noEnv, NODE_ENV: 'production', SMTP_HOST: 'smtp.example.com' })).not.toThrow();
+    });
+
+    it('is required when NODE_ENV is unset', () => {
+      expect(() => loadServerConfig(noEnv)).toThrow(smtpMessage);
+      expect(() => loadServerConfig({ ...noEnv, SMTP_HOST: 'smtp.example.com' })).not.toThrow();
+    });
+
+    it('is optional in development', () => {
+      expect(() => loadServerConfig({ ...noEnv, NODE_ENV: 'development' })).not.toThrow();
+    });
+
+    it.each([undefined, 'production', 'development'])('is not needed with MAIL_MODE=off (NODE_ENV=%s)', (nodeEnv) => {
+      expect(() => loadServerConfig({ ...noEnv, NODE_ENV: nodeEnv, MAIL_MODE: 'off' })).not.toThrow();
+    });
+  });
+
+  describe('NODE_ENV', () => {
+    it('rejects an unknown value', () => {
+      const run = () => loadServerConfig({ ...base, NODE_ENV: 'staging' });
+      expect(run).toThrow(ConfigError);
+      expect(run).toThrow('NODE_ENV must be one of: production, development, test (got "staging").');
+    });
+
+    it('refuses test outside the test suites', () => {
+      const run = () => loadServerConfig({ ...base, NODE_ENV: 'test' });
+      expect(run).toThrow(ConfigError);
+      expect(run).toThrow(/NODE_ENV=test is only for the test suites and turns off rate limits/);
+    });
+
+    it('allows test under Vitest or the E2E server', () => {
+      expect(() => loadServerConfig({ ...base, NODE_ENV: 'test', VITEST: 'true' })).not.toThrow();
+      expect(() => loadServerConfig({ ...base, NODE_ENV: 'test', E2E_LISTEN: 'true' })).not.toThrow();
+      expect(() => loadServerConfig({ ...base, NODE_ENV: 'test', E2E_LISTEN: 'false' })).toThrow(ConfigError);
+    });
+
+    it('allows production and development', () => {
+      expect(() => loadServerConfig({ ...base, NODE_ENV: 'production', SMTP_HOST: 'h' })).not.toThrow();
+      expect(() => loadServerConfig({ ...base, NODE_ENV: 'development' })).not.toThrow();
+    });
   });
 
   it('requires an absolute MEDIA_DIR for local media', () => {
@@ -88,8 +137,46 @@ describe('loadServerConfig', () => {
   });
 
   it('stores the result for getServerConfig', () => {
-    const c = loadServerConfig({ BILLING: 'off' });
+    const c = loadServerConfig({ BILLING: 'off', MAIL_MODE: 'off' });
     expect(getServerConfig()).toBe(c);
+  });
+});
+
+describe('isLocalEnv', () => {
+  it('is true only for development and test', () => {
+    expect(isLocalEnv({ NODE_ENV: 'development' })).toBe(true);
+    expect(isLocalEnv({ NODE_ENV: 'test' })).toBe(true);
+    expect(isLocalEnv({ NODE_ENV: ' development ' })).toBe(true);
+  });
+
+  it('is false for production, unset, blank and unknown values', () => {
+    expect(isLocalEnv({ NODE_ENV: 'production' })).toBe(false);
+    expect(isLocalEnv({})).toBe(false);
+    expect(isLocalEnv({ NODE_ENV: '  ' })).toBe(false);
+    expect(isLocalEnv({ NODE_ENV: 'staging' })).toBe(false);
+    expect(isLocalEnv({ NODE_ENV: 'Development' })).toBe(false);
+  });
+
+  it('reads process.env by default', () => {
+    expect(isLocalEnv()).toBe(true); // Vitest runs with NODE_ENV=test
+  });
+});
+
+describe('secureCookies', () => {
+  it('follows the FRONTEND_URL scheme', () => {
+    expect(secureCookies({ FRONTEND_URL: 'https://vernal.garden' })).toBe(true);
+    expect(secureCookies({ FRONTEND_URL: 'http://192.168.1.5', NODE_ENV: 'production' })).toBe(false);
+    expect(secureCookies({ FRONTEND_URL: 'http://localhost:5173' })).toBe(false);
+  });
+
+  it('fails closed on an unparseable FRONTEND_URL', () => {
+    expect(secureCookies({ FRONTEND_URL: 'not a url', NODE_ENV: 'development' })).toBe(true);
+  });
+
+  it('without FRONTEND_URL, secure unless NODE_ENV is development or test', () => {
+    expect(secureCookies({ NODE_ENV: 'production' })).toBe(true);
+    expect(secureCookies({})).toBe(true);
+    expect(secureCookies({ NODE_ENV: 'development' })).toBe(false);
   });
 });
 

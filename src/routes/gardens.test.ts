@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import sharp from 'sharp';
+import { gzipSync } from 'zlib';
 
 vi.mock('../lib/storage/s3', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/storage/s3')>()),
@@ -454,6 +455,17 @@ describe('Garden thumbnails', () => {
     vi.mocked(deleteFromR2).mockClear();
     vi.mocked(drainSoon).mockClear();
     await pool.query('TRUNCATE r2_deletions RESTART IDENTITY');
+  });
+
+  it('a gzip-encoded body → 415, nothing uploaded', async () => {
+    const gardenId = await createGarden(agent);
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/thumbnail`)
+      .set('Content-Type', 'image/png')
+      .set('Content-Encoding', 'gzip')
+      .send(gzipSync(realPng));
+    expect(res.status).toBe(415);
+    expect(uploadToR2).not.toHaveBeenCalled();
   });
 
   it('account uploads to its garden → 200, returns a media URL and stores the bare key', async () => {

@@ -32,9 +32,38 @@ function choice<T extends string>(env: NodeJS.ProcessEnv, key: string, allowed: 
   throw new ConfigError(`${key} must be one of: ${allowed.join(', ')} (got "${value}").`);
 }
 
+// Relaxes security defaults for console mail only; unset counts as production.
+export function isLocalEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  const nodeEnv = read(env, 'NODE_ENV');
+  return nodeEnv === 'development' || nodeEnv === 'test';
+}
+
+// Cookies are secure iff the frontend is https; with no FRONTEND_URL, secure unless local env. Unparseable fails closed.
+export function secureCookies(env: NodeJS.ProcessEnv = process.env): boolean {
+  const frontend = read(env, 'FRONTEND_URL');
+  if (frontend === undefined) return !isLocalEnv(env);
+  try {
+    return new URL(frontend).protocol === 'https:';
+  } catch {
+    return true;
+  }
+}
+
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const nodeEnv = read(env, 'NODE_ENV');
+  if (nodeEnv !== undefined) {
+    if (!(['production', 'development', 'test'] as readonly string[]).includes(nodeEnv)) {
+      throw new ConfigError(`NODE_ENV must be one of: production, development, test (got "${nodeEnv}").`);
+    }
+    if (nodeEnv === 'test' && !env.VITEST && env.E2E_LISTEN !== 'true') {
+      throw new ConfigError(
+        'NODE_ENV=test is only for the test suites and turns off rate limits. Set NODE_ENV=production (or development on a local machine).',
+      );
+    }
+  }
+
   const billing = choice(env, 'BILLING', ['stripe', 'off'] as const, 'stripe');
-  const mail = choice(env, 'MAIL', ['smtp', 'off'] as const, 'smtp');
+  const mail = choice(env, 'MAIL_MODE', ['smtp', 'off'] as const, 'smtp');
   const media = choice(env, 'MEDIA_STORAGE', ['s3', 'local'] as const, 's3');
 
   if (billing === 'stripe' && !read(env, 'STRIPE_SECRET_KEY')) {
@@ -43,9 +72,12 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     );
   }
 
-  // Development without SMTP_HOST keeps the console fallback.
-  if (mail === 'smtp' && env.NODE_ENV === 'production' && !read(env, 'SMTP_HOST')) {
-    throw new ConfigError('SMTP_HOST is not set. Set it, or set MAIL=off to run without email.');
+  // Only a local env (development/test) may run without SMTP_HOST, and then mail
+  // is printed to the console. Unset NODE_ENV counts as production.
+  if (mail === 'smtp' && !isLocalEnv(env) && !read(env, 'SMTP_HOST')) {
+    throw new ConfigError(
+      'SMTP_HOST is not set. Set it, set MAIL_MODE=off to run without email, or set NODE_ENV=development to print mail to the console on a local machine.',
+    );
   }
 
   if (media === 'local') {

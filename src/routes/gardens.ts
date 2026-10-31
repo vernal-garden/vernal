@@ -554,7 +554,7 @@ router.get('/:id/seasons', async (req, res) => {
 router.post(
   '/:id/thumbnail',
   writeLimiter,
-  express.raw({ type: 'image/png', limit: '1mb' }),
+  express.raw({ type: 'image/png', limit: '1mb', inflate: false }),
   async (req, res) => {
     const accountId = req.session!.account?.id ?? null;
     const sessionId = req.session!.id;
