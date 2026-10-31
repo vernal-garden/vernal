@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vites
 import request from 'supertest';
 import { Pool } from 'pg';
 import Stripe from 'stripe';
+import { gzipSync } from 'zlib';
 import app from '../index';
 import { getStripe } from '../lib/stripe';
 
@@ -96,6 +97,15 @@ beforeEach(() => {
 afterAll(() => pool.end());
 
 describe('POST /api/webhooks/stripe — signature verification', () => {
+  it('returns 415 for a gzip-encoded body', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/stripe')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'gzip')
+      .send(gzipSync(Buffer.from('{}')));
+    expect(res.status).toBe(415);
+  });
+
   it('returns 400 with a missing signature', async () => {
     const res = await request(app)
       .post('/api/webhooks/stripe')

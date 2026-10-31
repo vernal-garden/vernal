@@ -1,9 +1,9 @@
 // Must be the first import in src/index.ts — Sentry's OpenTelemetry
 // instrumentation patches modules at require() time, so it has to run
-// before express and anything express touches. dotenv is loaded here
-// rather than relying on index.ts's later dotenv.config() call, since
-// SENTRY_DSN must already be in process.env by the time Sentry.init runs.
-import 'dotenv/config';
+// before express and anything express touches. The .env file is loaded here
+// (via ./loadEnv, by explicit path) since SENTRY_DSN must already be in
+// process.env by the time Sentry.init runs.
+import './loadEnv';
 import * as Sentry from '@sentry/node';
 import { scrubEvent } from './lib/sentryScrub';
 

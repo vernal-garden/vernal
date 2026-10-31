@@ -5,7 +5,6 @@ import * as Sentry from '@sentry/node';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import dotenv from 'dotenv';
 import cron from 'node-cron';
 import { logger } from './lib/logger';
 import { runNightlyJob } from './jobs/nightly';
@@ -40,8 +39,6 @@ import { dbBackpressure } from './middleware/dbBackpressure';
 import { apiLimiters } from './middleware/rateLimiters';
 import { requestMetricsMiddleware } from './lib/requestMetrics';
 import { initPassport, passport } from './lib/oauth/index';
-
-dotenv.config();
 
 // ── App setup ─────────────────────────────────────────────────────────────────
 
@@ -96,7 +93,9 @@ app.use(requestMetricsMiddleware);
 app.post(
   '/api/webhooks/stripe',
   (_req, _res, next) => (getServerConfig().billing === 'stripe' ? next() : next('route')),
-  express.raw({ type: 'application/json' }),
+  // inflate: false — Stripe sends plain bodies; this route is unauthenticated and
+  // mounted ahead of the /api limiters (GHSA-27r3-jxmh-p828).
+  express.raw({ type: 'application/json', inflate: false }),
   handleStripeWebhook,
 );
 
@@ -104,8 +103,11 @@ app.post(
 // 64kb covers every real payload — the largest is a 2,000-point freeform bed
 // (~38kb worst case) — and keeps one request from making the server parse
 // megabytes of JSON.
-app.use(express.json({ limit: '64kb' }));
-app.use(express.urlencoded({ extended: false, limit: '64kb' }));
+// inflate: false — no client sends compressed bodies, and body-parser < 2.4.0
+// has a DoS in its decompression path (GHSA-27r3-jxmh-p828). Revisit after the
+// 2026-11-05 upgrade.
+app.use(express.json({ limit: '64kb', inflate: false }));
+app.use(express.urlencoded({ extended: false, limit: '64kb', inflate: false }));
 app.use(cookieParser());
 // Global limits and load shedding run before the session lookup so a flood
 // never reaches the database. /health (mounted outside /api) and the Stripe

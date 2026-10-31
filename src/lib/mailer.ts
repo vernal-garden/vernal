@@ -1,17 +1,17 @@
 import nodemailer from 'nodemailer';
 import { logger } from './logger';
-import { isMailEnabled } from './serverConfig';
+import { isLocalEnv, isMailEnabled } from './serverConfig';
 
 type Transport = ReturnType<typeof nodemailer.createTransport>;
 
 function createTransport(): Transport {
   if (!process.env.SMTP_HOST) {
-    // Without this, production mail would go to jsonTransport: nothing sent,
-    // and the dev printout below would log reset links.
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('SMTP_HOST must be set in production');
+    // Only a local env may fall back to jsonTransport; anywhere else (including
+    // unset NODE_ENV) nothing would be sent and the printout below would log reset links.
+    if (!isLocalEnv()) {
+      throw new Error('SMTP_HOST must be set (or NODE_ENV=development for console mail on a local machine)');
     }
-    // Development fallback — log emails to the console
+    // Local fallback — log emails to the console
     return nodemailer.createTransport({ jsonTransport: true });
   }
   return nodemailer.createTransport({

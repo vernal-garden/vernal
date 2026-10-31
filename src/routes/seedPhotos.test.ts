@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import sharp from 'sharp';
+import { gzipSync } from 'zlib';
 
 vi.mock('../lib/storage/s3', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/storage/s3')>()),
@@ -320,6 +321,17 @@ describe('POST photo', () => {
     const seedId = await createSeed(supporter, 'Big Seed');
     const res = await postPhoto(supporter, seedId, Buffer.alloc(5 * 1024 * 1024 + 1));
     expect(res.status).toBe(413);
+    expect(uploadToR2Mock).not.toHaveBeenCalled();
+  });
+
+  it('a gzip-encoded body → 415, nothing uploaded', async () => {
+    const seedId = await createSeed(supporter, 'Gzip Seed');
+    const res = await supporter
+      .post(`/api/seeds/${seedId}/photos`)
+      .set('Content-Type', 'image/jpeg')
+      .set('Content-Encoding', 'gzip')
+      .send(gzipSync(jpeg));
+    expect(res.status).toBe(415);
     expect(uploadToR2Mock).not.toHaveBeenCalled();
   });
 

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { gzipSync } from 'zlib';
 
 // Mock the db module before importing app so Pool is never instantiated
 vi.mock('../lib/db', () => ({
@@ -51,5 +52,17 @@ describe('GET /health', () => {
     expect(res.status).toBe(503);
     expect(res.body.status).toBe('degraded');
     expect(res.body.db).toBe('error');
+  });
+});
+
+describe('compressed request bodies', () => {
+  it('rejects a gzip-encoded JSON body with 415 instead of inflating it', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'gzip')
+      .send(gzipSync(JSON.stringify({ email: 'a@example.com', password: 'x' })));
+
+    expect(res.status).toBe(415);
   });
 });

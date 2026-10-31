@@ -22,7 +22,7 @@ const NOT_AN_IMAGE = "That file isn't a supported image.";
 
 // The photo is the raw request body; any other Content-Type leaves req.body
 // unset (or parsed as JSON), which the route answers with NOT_AN_IMAGE.
-const photoBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '5mb' });
+const photoBody = express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '5mb', inflate: false });
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
