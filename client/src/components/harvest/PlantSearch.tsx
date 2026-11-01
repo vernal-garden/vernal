@@ -12,7 +12,7 @@ const DEBOUNCE_MS = 250;
 export const SOURCE_HINT: Record<PlantOptionSource, string> = {
   planted: 'In your garden',
   personal: 'Your seed',
-  cambium: 'Cambium™',
+  cambium: 'Cambium',
 };
 
 interface Props {
@@ -165,7 +165,7 @@ export default function PlantSearch({
           ))}
           {!loading && !failed && visible.length === 0 && (
             <li role="presentation" style={emptyRowStyle}>
-              {query.trim().length < 2 ? 'Type to search Cambium™ too.' : 'No plants match.'}
+              {query.trim().length < 2 ? 'Type to search Cambium too.' : 'No plants match.'}
             </li>
           )}
           {failed && (

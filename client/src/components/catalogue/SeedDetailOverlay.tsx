@@ -601,7 +601,7 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
     (contributionStatus === 'private' || contributionStatus === 'rejected');
   const contributionStatusLabel: Partial<Record<ContributionStatus, string>> = {
     pending: 'Submitted, under review',
-    approved: 'Published to Cambium™',
+    approved: 'Published to Cambium',
     rejected: 'Returned, not published',
   };
 
@@ -809,7 +809,7 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
               setContributeOpen(true);
             }}
           >
-            Contribute to Cambium™
+            Contribute to Cambium
           </button>
         )}
         {!canContribute && detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (

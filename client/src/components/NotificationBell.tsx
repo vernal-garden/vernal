@@ -35,7 +35,7 @@ function describe(n: NotificationItem): string | null {
     case 'contribution_rejected':
       return `Your submission of ${name} wasn't approved. You can edit it and try again.`;
     case 'contribution_approved':
-      return `Your ${name} is now in Cambium™ for other gardeners to find. Thanks for sharing it.`;
+      return `Your ${name} is now in Cambium for other gardeners to find. Thanks for sharing it.`;
     default:
       return null;
   }
