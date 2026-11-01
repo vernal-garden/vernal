@@ -2,22 +2,26 @@ import { Pool, PoolConfig } from 'pg';
 import dotenv from 'dotenv';
 import * as Sentry from '@sentry/node';
 import { logger } from './logger';
+import { dbConnectionString, dbSslConfig } from './dbSsl';
 
 dotenv.config();
 
 // During tests (NODE_ENV=test, set automatically by Vitest) the app must
 // connect to TEST_DATABASE_URL, never DATABASE_URL — otherwise supertest
 // requests through `app` would read/write the real production database.
-const connectionString =
+const rawConnectionString =
   process.env.NODE_ENV === 'test' ? process.env.TEST_DATABASE_URL : process.env.DATABASE_URL;
 
-if (!connectionString) {
+if (!rawConnectionString) {
   throw new Error(
     process.env.NODE_ENV === 'test'
       ? 'TEST_DATABASE_URL environment variable is required'
       : 'DATABASE_URL environment variable is required',
   );
 }
+
+// TLS parameters in the URL are dropped; see dbSsl.ts.
+const connectionString: string = dbConnectionString(rawConnectionString);
 
 // Neon silently drops pg's `statement_timeout` startup setting, and its pooled
 // endpoint rejects it in `options` ("unsupported startup parameter"), so the
@@ -41,12 +45,8 @@ if (webTimeoutOptions === undefined) {
 
 const config: PoolConfig = {
   connectionString,
-  // SSL is required for Neon; test mode targets a local/throwaway Postgres
-  // (no SSL). DATABASE_SSL=false also disables it for local dev without SSL.
-  ssl:
-    process.env.NODE_ENV === 'test' || process.env.DATABASE_SSL === 'false'
-      ? false
-      : { rejectUnauthorized: false },
+  // Certificate always verified unless TLS is off; see dbSsl.ts.
+  ssl: dbSslConfig(),
   max: 20,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,

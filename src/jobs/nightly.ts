@@ -322,7 +322,7 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number; fail
   let failed = 0;
   for (const { id, stripe_subscription_id, stripe_customer_id } of rows) {
     try {
-      await teardownCustomer({ subId: stripe_subscription_id, customerId: stripe_customer_id });
+      await teardownCustomer({ subId: stripe_subscription_id, customerId: stripe_customer_id, accountId: id });
     } catch (err) {
       logger.error('Could not end Stripe customer for purged account; keeping account', err, {
         accountId: id,

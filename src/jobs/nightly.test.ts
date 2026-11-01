@@ -931,7 +931,7 @@ describe('purgeScheduledAccounts', () => {
 
     const { affected } = await purgeScheduledAccounts();
     expect(affected).toBe(1);
-    expect(teardownCustomerMock).toHaveBeenCalledWith({ subId: 'sub_purge', customerId: 'cus_purge' });
+    expect(teardownCustomerMock).toHaveBeenCalledWith({ subId: 'sub_purge', customerId: 'cus_purge', accountId: id });
   });
 
   it('keeps the account when Stripe teardown fails', async () => {

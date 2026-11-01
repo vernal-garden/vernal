@@ -73,6 +73,17 @@ describe('mailer', () => {
     expect(JSON.stringify(vi.mocked(logger.info).mock.calls)).not.toContain('Someone');
   });
 
+  it('refuses an invalid recipient and logs only its domain', async () => {
+    vi.stubEnv('SMTP_HOST', 'smtp.example.com');
+    const { sendMail, logger } = await loadMailer();
+
+    await sendMail({ ...message, to: 'x@y.com, victim@evil.com' });
+
+    expect(sendMailMock).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith('Email refused: invalid recipient', { recipientDomain: 'evil.com' });
+    expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain('victim');
+  });
+
   it('still prints the full message in dev mode', async () => {
     vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv('SMTP_HOST', '');

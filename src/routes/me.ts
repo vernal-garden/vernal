@@ -612,7 +612,7 @@ router.delete('/', writeLimiter, async (req, res) => {
         // If the DB transaction below fails, renewal stays stopped with no
         // deletion scheduled. Accepted: a retry makes it consistent, and the
         // webhook surfaces "cancels on X" meanwhile.
-        await stopRenewal(subId);
+        await stopRenewal(subId, accountId);
       } catch (err) {
         logger.error('Could not stop renewal for account deletion', err, { accountId });
         return res
@@ -671,7 +671,7 @@ router.post('/cancel-deletion', writeLimiter, async (req, res) => {
     // idempotent endpoint could undo a cancellation made in the Stripe portal.
     if (subId && rows[0]?.deletion_scheduled_at) {
       try {
-        await resumeRenewal(subId);
+        await resumeRenewal(subId, accountId);
       } catch (err) {
         logger.error('Could not resume renewal when cancelling deletion', err, { accountId });
         return res.status(502).json({

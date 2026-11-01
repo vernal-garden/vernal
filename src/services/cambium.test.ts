@@ -2,16 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import { searchSeeds, getSeedById, listFamilies, getCompanionsForSeed } from './cambium';
 import { ensureCambiumSeeded } from '../test/helpers';
+import { dbConnectionString, dbSslConfig } from '../lib/dbSsl';
 
 // TEST_DATABASE_URL is validated by src/test/setup.ts before this file runs.
 const url = process.env.TEST_DATABASE_URL as string;
 
 const pool = new Pool({
-  connectionString: url,
-  ssl:
-    process.env.NODE_ENV === 'test' || process.env.DATABASE_SSL === 'false'
-      ? false
-      : { rejectUnauthorized: false },
+  connectionString: dbConnectionString(url),
+  ssl: dbSslConfig(),
 });
 
 // Seeds itself (idempotent) rather than assuming npm run seed:cambium output

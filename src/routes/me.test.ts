@@ -1404,7 +1404,7 @@ describe('DELETE /api/me and cancel-deletion — Stripe renewal', () => {
 
     const res = await agent.delete('/api/me');
     expect(res.status).toBe(204);
-    expect(stopRenewalMock).toHaveBeenCalledWith('sub_del');
+    expect(stopRenewalMock).toHaveBeenCalledWith('sub_del', id);
   });
 
   it('returns 502 and schedules nothing when Stripe fails', async () => {
@@ -1445,7 +1445,7 @@ describe('DELETE /api/me and cancel-deletion — Stripe renewal', () => {
     resumeRenewalMock.mockClear();
     const ok = await agent.post('/api/me/cancel-deletion');
     expect(ok.status).toBe(200);
-    expect(resumeRenewalMock).toHaveBeenCalledWith('sub_cancel');
+    expect(resumeRenewalMock).toHaveBeenCalledWith('sub_cancel', id);
   });
 
   it('cancel-deletion does not touch Stripe when no deletion is scheduled', async () => {

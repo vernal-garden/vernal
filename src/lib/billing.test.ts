@@ -6,11 +6,21 @@ vi.mock('./stripe', () => {
     subscriptions: { retrieve: vi.fn(), update: vi.fn(), cancel: vi.fn() },
     customers: { del: vi.fn() },
   };
-  return { getStripe: () => stripe };
+  const state = { configured: true };
+  return {
+    getStripe: () => stripe,
+    getStripeForCleanup: () => (state.configured ? stripe : null),
+    __state: state,
+  };
 });
 
+vi.mock('./logger', () => ({ logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() } }));
+
 import { getStripe } from './stripe';
+import * as stripeModule from './stripe';
+import { logger } from './logger';
 const stripe = getStripe();
+const stripeState = (stripeModule as unknown as { __state: { configured: boolean } }).__state;
 import { stopRenewal, resumeRenewal, teardownCustomer } from './billing';
 
 const subs = vi.mocked(stripe.subscriptions);
@@ -24,12 +34,15 @@ function missing(): Error {
   });
 }
 
-beforeEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetAllMocks();
+  stripeState.configured = true;
+});
 
 describe('stopRenewal', () => {
   it('sets cancel_at_period_end on an active subscription', async () => {
     subs.retrieve.mockResolvedValue({ status: 'active' } as never);
-    await stopRenewal('sub_1');
+    await stopRenewal('sub_1', 1);
     expect(subs.update).toHaveBeenCalledWith('sub_1', {
       cancel_at_period_end: true,
       metadata: { vernal_deletion_pause: '1' },
@@ -38,27 +51,27 @@ describe('stopRenewal', () => {
 
   it('does nothing when the user already cancelled renewal', async () => {
     subs.retrieve.mockResolvedValue({ status: 'active', cancel_at_period_end: true } as never);
-    await stopRenewal('sub_1');
+    await stopRenewal('sub_1', 1);
     expect(subs.update).not.toHaveBeenCalled();
   });
 
   it('does nothing for an incomplete subscription', async () => {
     subs.retrieve.mockResolvedValue({ status: 'incomplete' } as never);
-    await stopRenewal('sub_1');
+    await stopRenewal('sub_1', 1);
     expect(subs.update).not.toHaveBeenCalled();
   });
 
   it('does nothing for a canceled or missing subscription', async () => {
     subs.retrieve.mockResolvedValueOnce({ status: 'canceled' } as never);
-    await stopRenewal('sub_1');
+    await stopRenewal('sub_1', 1);
     subs.retrieve.mockRejectedValueOnce(missing());
-    await stopRenewal('sub_2');
+    await stopRenewal('sub_2', 1);
     expect(subs.update).not.toHaveBeenCalled();
   });
 
   it('propagates other Stripe errors', async () => {
     subs.retrieve.mockRejectedValue(new Error('network down'));
-    await expect(stopRenewal('sub_1')).rejects.toThrow('network down');
+    await expect(stopRenewal('sub_1', 1)).rejects.toThrow('network down');
   });
 });
 
@@ -68,7 +81,7 @@ describe('resumeRenewal', () => {
       status: 'active',
       metadata: { vernal_deletion_pause: '1' },
     } as never);
-    await resumeRenewal('sub_1');
+    await resumeRenewal('sub_1', 1);
     expect(subs.update).toHaveBeenCalledWith('sub_1', {
       cancel_at_period_end: false,
       metadata: { vernal_deletion_pause: '' },
@@ -77,13 +90,13 @@ describe('resumeRenewal', () => {
 
   it('does nothing without the marker (user cancelled themselves)', async () => {
     subs.retrieve.mockResolvedValue({ status: 'active', cancel_at_period_end: true, metadata: {} } as never);
-    await resumeRenewal('sub_1');
+    await resumeRenewal('sub_1', 1);
     expect(subs.update).not.toHaveBeenCalled();
   });
 
   it('does nothing for a canceled subscription', async () => {
     subs.retrieve.mockResolvedValue({ status: 'canceled' } as never);
-    await resumeRenewal('sub_1');
+    await resumeRenewal('sub_1', 1);
     expect(subs.update).not.toHaveBeenCalled();
   });
 });
@@ -91,7 +104,7 @@ describe('resumeRenewal', () => {
 describe('teardownCustomer', () => {
   it('cancels an active subscription then deletes the customer', async () => {
     subs.retrieve.mockResolvedValue({ status: 'active' } as never);
-    await teardownCustomer({ subId: 'sub_1', customerId: 'cus_1' });
+    await teardownCustomer({ subId: 'sub_1', customerId: 'cus_1', accountId: 1 });
     expect(subs.cancel).toHaveBeenCalledWith('sub_1');
     expect(customers.del).toHaveBeenCalledWith('cus_1');
   });
@@ -100,7 +113,7 @@ describe('teardownCustomer', () => {
     'skips cancel for a %s subscription but still deletes the customer',
     async (status) => {
       subs.retrieve.mockResolvedValue({ status } as never);
-      await teardownCustomer({ subId: 'sub_1', customerId: 'cus_1' });
+      await teardownCustomer({ subId: 'sub_1', customerId: 'cus_1', accountId: 1 });
       expect(subs.cancel).not.toHaveBeenCalled();
       expect(customers.del).toHaveBeenCalledWith('cus_1');
     },
@@ -109,17 +122,56 @@ describe('teardownCustomer', () => {
   it('tolerates already-gone objects', async () => {
     subs.retrieve.mockRejectedValue(missing());
     customers.del.mockRejectedValue(missing());
-    await expect(teardownCustomer({ subId: 'sub_1', customerId: 'cus_1' })).resolves.toBeUndefined();
+    await expect(teardownCustomer({ subId: 'sub_1', customerId: 'cus_1', accountId: 1 })).resolves.toBeUndefined();
   });
 
   it('skips null ids', async () => {
-    await teardownCustomer({ subId: null, customerId: null });
+    await teardownCustomer({ subId: null, customerId: null, accountId: 1 });
     expect(subs.retrieve).not.toHaveBeenCalled();
     expect(customers.del).not.toHaveBeenCalled();
   });
 
   it('propagates other errors', async () => {
     customers.del.mockRejectedValue(new Error('stripe 500'));
-    await expect(teardownCustomer({ subId: null, customerId: 'cus_1' })).rejects.toThrow('stripe 500');
+    await expect(teardownCustomer({ subId: null, customerId: 'cus_1', accountId: 1 })).rejects.toThrow('stripe 500');
+  });
+});
+
+describe('without a Stripe key', () => {
+  beforeEach(() => {
+    stripeState.configured = false;
+  });
+
+  it('stopRenewal skips and warns with the account id', async () => {
+    await stopRenewal('sub_1', 42);
+    expect(subs.retrieve).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith('Stripe not configured: billing step skipped', {
+      action: 'stopRenewal',
+      accountId: 42,
+    });
+  });
+
+  it('resumeRenewal skips and warns', async () => {
+    await resumeRenewal('sub_1', 42);
+    expect(subs.retrieve).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith('Stripe not configured: billing step skipped', {
+      action: 'resumeRenewal',
+      accountId: 42,
+    });
+  });
+
+  it('teardownCustomer skips and warns', async () => {
+    await teardownCustomer({ subId: 'sub_1', customerId: 'cus_1', accountId: 42 });
+    expect(subs.cancel).not.toHaveBeenCalled();
+    expect(customers.del).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith('Stripe not configured: billing step skipped', {
+      action: 'teardownCustomer',
+      accountId: 42,
+    });
+  });
+
+  it('teardownCustomer with nothing to tear down does not warn', async () => {
+    await teardownCustomer({ subId: null, customerId: null, accountId: 42 });
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });

@@ -2,6 +2,7 @@ import bcrypt from 'bcrypt';
 import type { PoolClient } from 'pg';
 import { sendPasswordChangedNotice } from './accountSecurity';
 import { revokeAccountSessions } from './sessions';
+import { isValidEmail } from './validation';
 
 // Logic behind `npm run account`: operator-side account fixes for servers that
 // run without mail (no password-reset or email-change links). The CLI itself
@@ -72,9 +73,23 @@ export async function setRole(client: PoolClient, emailInput: string, role: Role
   return rowCount ? { ok: true } : { ok: false, error: NO_ACCOUNT_MESSAGE };
 }
 
-// Marks the new address verified and clears any pending change. Outstanding
-// email_change_tokens are left alone: they only work from a link mailed to the
-// address they name.
+// Links that were mailed before an operator change must stop working.
+const TOKEN_TABLES = [
+  'password_reset_tokens',
+  'email_change_tokens',
+  'email_revert_tokens',
+  'email_verification_tokens',
+] as const;
+
+async function deleteAccountTokens(client: PoolClient, accountId: number): Promise<void> {
+  for (const table of TOKEN_TABLES) {
+    await client.query(`DELETE FROM ${table} WHERE account_id = $1`, [accountId]);
+  }
+}
+
+// In one transaction: validates the new address, refuses one that is another
+// account's current or pending address, marks it verified, clears any pending
+// change, deletes every outstanding emailed link and signs out every device.
 export async function setEmail(
   client: PoolClient,
   currentInput: string,
@@ -82,22 +97,44 @@ export async function setEmail(
 ): Promise<ActionResult> {
   const current = normalize(currentInput);
   const next = normalize(nextInput);
+  if (!isValidEmail(next)) return { ok: false, error: 'That is not a valid email address.' };
 
-  const { rows } = await client.query<{ id: number }>('SELECT id FROM accounts WHERE email = $1', [current]);
-  if (rows.length === 0) return { ok: false, error: NO_ACCOUNT_MESSAGE };
+  await client.query('BEGIN');
+  try {
+    const { rows } = await client.query<{ id: number }>('SELECT id FROM accounts WHERE email = $1 FOR UPDATE', [
+      current,
+    ]);
+    if (rows.length === 0) {
+      await client.query('ROLLBACK');
+      return { ok: false, error: NO_ACCOUNT_MESSAGE };
+    }
+    const accountId = Number(rows[0].id);
 
-  const taken = await client.query('SELECT 1 FROM accounts WHERE email = $1 AND id <> $2', [next, rows[0].id]);
-  if (taken.rows.length > 0) return { ok: false, error: 'That email belongs to another account.' };
+    const taken = await client.query(
+      'SELECT 1 FROM accounts WHERE (email = $1 OR pending_email = $1) AND id <> $2',
+      [next, accountId],
+    );
+    if (taken.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return { ok: false, error: 'That email belongs to another account.' };
+    }
 
-  await client.query(
-    'UPDATE accounts SET email = $1, email_verified = true, pending_email = NULL, updated_at = NOW() WHERE id = $2',
-    [next, rows[0].id],
-  );
-  return { ok: true };
+    await client.query(
+      'UPDATE accounts SET email = $1, email_verified = true, pending_email = NULL, updated_at = NOW() WHERE id = $2',
+      [next, accountId],
+    );
+    await deleteAccountTokens(client, accountId);
+    await revokeAccountSessions(client, accountId);
+    await client.query('COMMIT');
+    return { ok: true };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  }
 }
 
 // Hashes, then looks the account up and updates it in one transaction, signing
-// out every device. The notice goes out after the commit and skips itself when
+// out every device and deleting outstanding emailed links. The notice goes out after the commit and skips itself when
 // mail is off.
 export async function setPassword(
   client: PoolClient,
@@ -126,6 +163,7 @@ export async function setPassword(
       accountId,
     ]);
     await revokeAccountSessions(client, accountId);
+    await deleteAccountTokens(client, accountId);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);

@@ -3,6 +3,7 @@ import readline from 'readline';
 import { Writable } from 'stream';
 import { Pool } from 'pg';
 import { ConfigError, loadServerConfig } from '../src/lib/serverConfig';
+import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
 import {
   USAGE,
   parseArgs,
@@ -74,8 +75,8 @@ async function main(command: Command): Promise<Outcome> {
 
   if (!process.env.DATABASE_URL) return { ok: false, error: 'DATABASE_URL is not set.' };
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+    connectionString: dbConnectionString(process.env.DATABASE_URL),
+    ssl: dbSslConfig(),
   });
   const client = await pool.connect();
   try {

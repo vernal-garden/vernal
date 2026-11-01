@@ -15,10 +15,11 @@ export function isNumericId(v: unknown): v is string {
 }
 
 const EMAIL_MAX_LENGTH = 254;
-// Local part up to 64 non-space/non-@ chars; domain is dot-separated labels with
-// no empty labels. No two quantifiers can match the same characters, so the
-// match is linear — the old /^[^\s@]+@[^\s@]+\.[^\s@]+$/ was quadratic.
-const EMAIL_RE = /^[^\s@]{1,64}@[^\s@.]+(?:\.[^\s@.]+)+$/;
+// Local part up to 64 chars, domain of dot-separated labels with no empty
+// labels. Whitespace, @ and the address-syntax characters , ; " < > ( ) [ ] : \
+// are rejected so an address can never be read as a list or a display name.
+// No two quantifiers can match the same characters, so the match is linear.
+const EMAIL_RE = /^[^\s@,;"<>()[\]:\\]{1,64}@[^\s@.,;"<>()[\]:\\]+(?:\.[^\s@.,;"<>()[\]:\\]+)+$/;
 
 // True when v is a plausibly valid email address. The length check runs before
 // the regex so oversized input never reaches it.

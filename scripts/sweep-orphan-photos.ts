@@ -4,6 +4,7 @@ import { ConfigError, loadServerConfig } from '../src/lib/serverConfig';
 import { storage } from '../src/lib/storage';
 import { findOrphans } from '../src/lib/orphanPhotos';
 import { queueR2Deletions } from '../src/lib/r2Cleanup';
+import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
 
 dotenv.config();
 
@@ -31,8 +32,8 @@ if (!process.env.DATABASE_URL) {
 }
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  connectionString: dbConnectionString(process.env.DATABASE_URL),
+  ssl: dbSslConfig(),
 });
 
 async function main(): Promise<void> {

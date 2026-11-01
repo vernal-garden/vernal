@@ -82,6 +82,30 @@ describe('isValidEmail', () => {
     expect(isValidEmail(v)).toBe(false);
   });
 
+  it.each([
+    'a,b@example.com',
+    'a;b@example.com',
+    '"a"@example.com',
+    'a<b@example.com',
+    'a>b@example.com',
+    'a(b)@example.com',
+    'a[b]@example.com',
+    'a:b@example.com',
+    'a\\b@example.com',
+    'a@exa,mple.com',
+    'a@example.com>',
+    'x@y.com, victim@evil.com',
+  ])('rejects address-syntax characters in %s', (email) => {
+    expect(isValidEmail(email)).toBe(false);
+  });
+
+  it.each(['user@example.com', 'first.last+tag@sub.example.co.uk', "o'brien@example.ie", 'a_b-c@x.io'])(
+    'accepts %s',
+    (email) => {
+      expect(isValidEmail(email)).toBe(true);
+    },
+  );
+
   it('rejects non-strings', () => {
     expect(isValidEmail(undefined)).toBe(false);
     expect(isValidEmail(42)).toBe(false);

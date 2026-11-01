@@ -32,6 +32,7 @@ import metricsRouter from './routes/metrics';
 import notificationsRouter from './routes/notifications';
 import configRouter from './routes/config';
 import { ConfigError, getServerConfig } from './lib/serverConfig';
+import { dbSslMode } from './lib/dbSsl';
 import { storage } from './lib/storage';
 import { sessionMiddleware } from './middleware/session';
 import { blockWhilePendingDeletion } from './middleware/pendingDeletion';
@@ -109,6 +110,9 @@ app.post(
 app.use(express.json({ limit: '64kb', inflate: false }));
 app.use(express.urlencoded({ extended: false, limit: '64kb', inflate: false }));
 app.use(cookieParser());
+// Before the session lookup: /health never touches sessions, and its own DB
+// check is cached (see routes/health.ts).
+app.use('/health', healthRouter);
 // Global limits and load shedding run before the session lookup so a flood
 // never reaches the database. /health (mounted outside /api) and the Stripe
 // webhook (registered above) are not affected.
@@ -120,7 +124,6 @@ initPassport();
 app.use(passport.initialize());
 
 // ── Routes ───────────────────────────────────────────────────────────────────
-app.use('/health', healthRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/catalogue', catalogueRouter);
 app.use('/api/gardens/:gardenId/beds/:bedId/plantings', plantingsNestedRouter);
@@ -179,7 +182,8 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
       const cfg = getServerConfig();
       console.log(
         `[config] billing=${cfg.billing} mail=${cfg.mail} media=${cfg.media} ` +
-          `google=${cfg.googleSignIn ? 'on' : 'off'} weather=${cfg.weather ? 'on' : 'off'}`,
+          `google=${cfg.googleSignIn ? 'on' : 'off'} weather=${cfg.weather ? 'on' : 'off'} ` +
+          `db_tls=${dbSslMode()}`,
       );
 
       app.listen(PORT, () => {
