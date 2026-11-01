@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { Pool } from 'pg';
+import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
 
 dotenv.config();
 
@@ -21,8 +22,8 @@ const FIXTURE_NAMES = [
 ];
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  connectionString: dbConnectionString(process.env.DATABASE_URL),
+  ssl: dbSslConfig(),
 });
 
 async function main(): Promise<void> {

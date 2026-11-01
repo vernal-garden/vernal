@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { logger } from './logger';
 import { isLocalEnv, isMailEnabled } from './serverConfig';
+import { isValidEmail } from './validation';
 
 type Transport = ReturnType<typeof nodemailer.createTransport>;
 
@@ -47,6 +48,12 @@ export async function sendMail(opts: MailOptions): Promise<void> {
   if (!isMailEnabled()) {
     // No address, domain, subject or body: nothing about the message.
     logger.info('mail off: message skipped');
+    return;
+  }
+
+  // Also covers addresses stored before the stricter check.
+  if (!isValidEmail(opts.to)) {
+    logger.warn('Email refused: invalid recipient', { recipientDomain: recipientDomain(opts.to) });
     return;
   }
 

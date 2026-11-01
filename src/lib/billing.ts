@@ -1,5 +1,6 @@
 import Stripe from 'stripe';
-import { getStripe } from './stripe';
+import { getStripeForCleanup } from './stripe';
+import { logger } from './logger';
 
 // Stripe calls tied to the account-deletion lifecycle. Objects that are
 // already gone (canceled subscription, deleted customer) are treated as done;
@@ -17,24 +18,45 @@ function isMissing(err: unknown): boolean {
   return err instanceof Stripe.errors.StripeInvalidRequestError && err.code === 'resource_missing';
 }
 
+// The client for these calls, or null (with a warning) when no key is set:
+// deletion and purge then carry on, and the operator cancels in Stripe by hand.
+function cleanupClient(action: string, accountId: number): Stripe | null {
+  const stripe = getStripeForCleanup();
+  if (!stripe) logger.warn('Stripe not configured: billing step skipped', { action, accountId });
+  return stripe;
+}
+
+// Webhook-only helpers run with billing on, where a key is required at startup.
+function requireClient(): Stripe {
+  const stripe = getStripeForCleanup();
+  if (!stripe) throw new Error('STRIPE_SECRET_KEY environment variable is required');
+  return stripe;
+}
+
 // Returns the subscription, or null if Stripe no longer has it.
-export async function retrieveSubscription(subId: string): Promise<Stripe.Subscription | null> {
+async function retrieveWith(stripe: Stripe, subId: string): Promise<Stripe.Subscription | null> {
   try {
-    return await getStripe().subscriptions.retrieve(subId);
+    return await stripe.subscriptions.retrieve(subId);
   } catch (err) {
     if (isMissing(err)) return null;
     throw err;
   }
 }
 
+export async function retrieveSubscription(subId: string): Promise<Stripe.Subscription | null> {
+  return retrieveWith(requireClient(), subId);
+}
+
 // Deletion requested: let the paid period run out, never renew. A subscription
 // the user already set to cancel is left alone and unmarked, so cancelling the
 // deletion never re-enables renewal the user chose themselves.
-export async function stopRenewal(subId: string): Promise<void> {
-  const sub = await retrieveSubscription(subId);
+export async function stopRenewal(subId: string, accountId: number): Promise<void> {
+  const stripe = cleanupClient('stopRenewal', accountId);
+  if (!stripe) return;
+  const sub = await retrieveWith(stripe, subId);
   if (!sub || NO_RENEWAL.has(sub.status)) return;
   if (sub.cancel_at_period_end) return;
-  await getStripe().subscriptions.update(subId, {
+  await stripe.subscriptions.update(subId, {
     cancel_at_period_end: true,
     metadata: { [PAUSE_MARKER]: '1' },
   });
@@ -43,12 +65,14 @@ export async function stopRenewal(subId: string): Promise<void> {
 // Deletion cancelled: turn renewal back on, but only if we turned it off.
 // Known limitation (accepted): a portal cancellation made during the deletion
 // window, while our marker is set, is indistinguishable and will be undone.
-export async function resumeRenewal(subId: string): Promise<void> {
-  const sub = await retrieveSubscription(subId);
+export async function resumeRenewal(subId: string, accountId: number): Promise<void> {
+  const stripe = cleanupClient('resumeRenewal', accountId);
+  if (!stripe) return;
+  const sub = await retrieveWith(stripe, subId);
   if (!sub || NO_RENEWAL.has(sub.status)) return;
   if (sub.metadata?.[PAUSE_MARKER] !== '1') return;
   // An empty string unsets a Stripe metadata key.
-  await getStripe().subscriptions.update(subId, {
+  await stripe.subscriptions.update(subId, {
     cancel_at_period_end: false,
     metadata: { [PAUSE_MARKER]: '' },
   });
@@ -56,14 +80,18 @@ export async function resumeRenewal(subId: string): Promise<void> {
 
 // Ends a subscription immediately (a lifetime purchase replaces it). One that
 // has already ended, or that Stripe no longer has, counts as done.
-export async function cancelSubscriptionNow(subId: string): Promise<void> {
-  const sub = await retrieveSubscription(subId);
+async function cancelWith(stripe: Stripe, subId: string): Promise<void> {
+  const sub = await retrieveWith(stripe, subId);
   if (!sub || ENDED.has(sub.status)) return;
   try {
-    await getStripe().subscriptions.cancel(subId);
+    await stripe.subscriptions.cancel(subId);
   } catch (err) {
     if (!isMissing(err)) throw err;
   }
+}
+
+export async function cancelSubscriptionNow(subId: string): Promise<void> {
+  return cancelWith(requireClient(), subId);
 }
 
 // Account purge: end any remaining subscription now and delete the customer
@@ -71,14 +99,19 @@ export async function cancelSubscriptionNow(subId: string): Promise<void> {
 export async function teardownCustomer({
   subId,
   customerId,
+  accountId,
 }: {
   subId: string | null;
   customerId: string | null;
+  accountId: number;
 }): Promise<void> {
-  if (subId) await cancelSubscriptionNow(subId);
+  if (!subId && !customerId) return;
+  const stripe = cleanupClient('teardownCustomer', accountId);
+  if (!stripe) return;
+  if (subId) await cancelWith(stripe, subId);
   if (customerId) {
     try {
-      await getStripe().customers.del(customerId);
+      await stripe.customers.del(customerId);
     } catch (err) {
       if (!isMissing(err)) throw err;
     }

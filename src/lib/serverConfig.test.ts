@@ -136,6 +136,12 @@ describe('loadServerConfig', () => {
     expect(() => loadServerConfig({ ...base, GOOGLE_CLIENT_SECRET: 's' })).toThrow(/GOOGLE_CLIENT_ID is not set/);
   });
 
+  it('rejects DATABASE_SSL=false together with DATABASE_SSL_CA', () => {
+    expect(() =>
+      loadServerConfig({ ...base, DATABASE_SSL: 'false', DATABASE_SSL_CA: '/etc/ssl/ca.pem' }),
+    ).toThrow(ConfigError);
+  });
+
   it('stores the result for getServerConfig', () => {
     const c = loadServerConfig({ BILLING: 'off', MAIL_MODE: 'off' });
     expect(getServerConfig()).toBe(c);

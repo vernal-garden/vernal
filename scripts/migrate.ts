@@ -2,6 +2,7 @@ import { Pool } from 'pg';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
 
 dotenv.config();
 
@@ -12,8 +13,8 @@ async function migrate(): Promise<void> {
   }
 
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+    connectionString: dbConnectionString(process.env.DATABASE_URL),
+    ssl: dbSslConfig(),
   });
 
   const client = await pool.connect();

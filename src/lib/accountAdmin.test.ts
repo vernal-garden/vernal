@@ -31,13 +31,61 @@ async function accountRow(id: number) {
   return rows[0];
 }
 
+const TOKEN_TABLES = [
+  'password_reset_tokens',
+  'email_change_tokens',
+  'email_revert_tokens',
+  'email_verification_tokens',
+] as const;
+
+const TRUNCATE_ALL =
+  'TRUNCATE accounts, guest_sessions, password_reset_tokens, email_change_tokens, email_revert_tokens, email_verification_tokens RESTART IDENTITY CASCADE';
+
+async function tokenCount(accountId: number): Promise<number> {
+  let total = 0;
+  for (const t of TOKEN_TABLES) {
+    const { rows } = await pool.query<{ n: string }>(`SELECT count(*) AS n FROM ${t} WHERE account_id = $1`, [accountId]);
+    total += Number(rows[0].n);
+  }
+  return total;
+}
+
+async function liveSessions(accountId: number): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    'SELECT count(*) AS n FROM guest_sessions WHERE account_id = $1 AND expires_at > now()',
+    [accountId],
+  );
+  return Number(rows[0].n);
+}
+
+async function seedTokens(accountId: number): Promise<void> {
+  const exp = "now() + interval '1 hour'";
+  await pool.query(`INSERT INTO password_reset_tokens (account_id, token_hash, expires_at) VALUES ($1, 'seed-pr', ${exp})`, [accountId]);
+  await pool.query(
+    `INSERT INTO email_change_tokens (account_id, token_hash, new_email, expires_at) VALUES ($1, 'seed-ec', 'n@x.io', ${exp})`,
+    [accountId],
+  );
+  await pool.query(
+    `INSERT INTO email_revert_tokens (account_id, token_hash, old_email, new_email, expires_at) VALUES ($1, 'seed-er', 'o@x.io', 'n@x.io', ${exp})`,
+    [accountId],
+  );
+  await pool.query(
+    `INSERT INTO email_verification_tokens (account_id, email, token_hash, expires_at) VALUES ($1, 'o@x.io', 'seed-ev', ${exp})`,
+    [accountId],
+  );
+  await pool.query(
+    `INSERT INTO guest_sessions (token_hash, account_id, expires_at) VALUES ('seed-sess', $1, ${exp})`,
+    [accountId],
+  );
+}
+
 beforeAll(async () => {
   client = await pool.connect();
-  await pool.query('TRUNCATE accounts, guest_sessions, password_reset_tokens RESTART IDENTITY CASCADE');
+  await pool.query(TRUNCATE_ALL);
 });
 
 beforeEach(async () => {
-  await pool.query('TRUNCATE accounts, guest_sessions, password_reset_tokens RESTART IDENTITY CASCADE');
+  await pool.query(TRUNCATE_ALL);
   sendMailMock.mockClear();
 });
 
@@ -100,6 +148,39 @@ describe('setEmail', () => {
 
   it('reports a missing account', async () => {
     expect(await setEmail(client, 'ghost@x.io', 'new@x.io')).toEqual({ ok: false, error: NO_ACCOUNT_MESSAGE });
+  });
+});
+
+describe('setEmail hardening', () => {
+  it('rejects an invalid new address', async () => {
+    const id = await createAccount('old@example.com');
+    const result = await setEmail(client, 'old@example.com', 'x@y.com, z@evil.com');
+    expect(result.ok).toBe(false);
+    expect((await accountRow(id)).email).toBe('old@example.com');
+  });
+
+  it("refuses another account's pending address", async () => {
+    await createAccount('other@example.com', { pending: 'wanted@example.com' });
+    await createAccount('old@example.com');
+    const result = await setEmail(client, 'old@example.com', 'wanted@example.com');
+    expect(result).toEqual({ ok: false, error: 'That email belongs to another account.' });
+  });
+
+  it('deletes outstanding tokens and signs out every device', async () => {
+    const id = await createAccount('old@example.com');
+    await seedTokens(id);
+    expect(await setEmail(client, 'old@example.com', 'new@example.com')).toEqual({ ok: true });
+    expect(await tokenCount(id)).toBe(0);
+    expect(await liveSessions(id)).toBe(0);
+  });
+});
+
+describe('setPassword hardening', () => {
+  it('deletes outstanding tokens', async () => {
+    const id = await createAccount('user@example.com');
+    await seedTokens(id);
+    expect(await setPassword(client, 'user@example.com', 'a-new-password')).toEqual({ ok: true });
+    expect(await tokenCount(id)).toBe(0);
   });
 });
 

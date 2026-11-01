@@ -1,4 +1,8 @@
 import path from 'path';
+import { ConfigError } from './configError';
+import { dbSslConfig } from './dbSsl';
+
+export { ConfigError };
 
 // Deployment switches, read once at startup. Every default matches how
 // vernal.garden runs today; self-hosters change them via environment variables.
@@ -8,13 +12,6 @@ export interface ServerConfig {
   media: 's3' | 'local';
   googleSignIn: boolean;
   weather: boolean;
-}
-
-export class ConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConfigError';
-  }
 }
 
 let loaded: ServerConfig | null = null;
@@ -98,6 +95,10 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
       `${missing} is not set. Set both GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google sign-in, or leave both blank to turn it off.`,
     );
   }
+
+  // Validated here so a bad DB TLS setting stops startup with one line (via
+  // loadConfig) instead of a stack trace from db.ts.
+  dbSslConfig(env);
 
   loaded = {
     billing,

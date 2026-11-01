@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import { Pool } from 'pg';
 import Stripe from 'stripe';
+import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
 
 dotenv.config();
 
@@ -16,8 +17,8 @@ if (!process.env.DATABASE_URL || !process.env.STRIPE_SECRET_KEY) {
 }
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
+  connectionString: dbConnectionString(process.env.DATABASE_URL),
+  ssl: dbSslConfig(),
 });
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
