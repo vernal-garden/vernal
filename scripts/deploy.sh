@@ -9,6 +9,9 @@
 #
 # Usage: vernal-deploy <40-char commit sha>
 # Under the forced command the SHA comes from SSH_ORIGINAL_COMMAND instead.
+# Only the live commit or a newer one deploys. To roll back on purpose, run it
+# by hand as deploy with VERNAL_DEPLOY_ALLOW_DOWNGRADE=1; the forced command
+# never passes that variable on.
 #
 # The deploy runs under `env -i` with a small allow-list (HOME, PATH, LANG,
 # PM2_HOME) and reloads the app from ecosystem.config.cjs. The app must not
@@ -68,6 +71,11 @@ if [[ -z "${VERNAL_DEPLOY_CLEAN_ENV:-}" ]]; then
   if [[ -n "${PM2_HOME:-}" ]]; then
     clean_env+=(PM2_HOME="$PM2_HOME")
   fi
+  # A deliberate rollback is a manual run only: the forced command (GitHub's
+  # key) never passes the override on.
+  if [[ -z "${SSH_ORIGINAL_COMMAND:-}" && "${VERNAL_DEPLOY_ALLOW_DOWNGRADE:-}" == 1 ]]; then
+    clean_env+=(VERNAL_DEPLOY_ALLOW_DOWNGRADE=1)
+  fi
   exec env -i "${clean_env[@]}" bash "${BASH_SOURCE[0]}" "$SHA"
 fi
 
@@ -104,6 +112,17 @@ if ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
   exit 2
 fi
 PREV_SHA="$(git rev-parse HEAD)"
+
+# Only the live commit or a newer one. An older one would quietly roll
+# production back (for example by re-running an old Actions run).
+if [[ "$SHA" != "$PREV_SHA" ]] && ! git merge-base --is-ancestor "$PREV_SHA" "$SHA"; then
+  if [[ "${VERNAL_DEPLOY_ALLOW_DOWNGRADE:-}" == 1 ]]; then
+    echo "VERNAL_DEPLOY_ALLOW_DOWNGRADE=1: deploying $SHA, which is older than the live $PREV_SHA" >&2
+  else
+    echo "refused: $SHA is not the live $PREV_SHA or a newer commit. To roll back on purpose, run vernal-deploy by hand on the server with VERNAL_DEPLOY_ALLOW_DOWNGRADE=1." >&2
+    exit 2
+  fi
+fi
 
 print_migrations() {
   if [[ -n "$APPLIED" ]]; then

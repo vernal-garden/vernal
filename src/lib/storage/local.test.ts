@@ -44,6 +44,21 @@ describe('local storage driver', () => {
     expect(await fs.readdir(path.join(dir, 'exports', 'exports', '3'))).toEqual(['9.zip']);
   });
 
+  it.skipIf(process.platform === 'win32')('creates files 0600 and folders 0700 whatever the umask', async () => {
+    const previous = process.umask(0o022);
+    try {
+      await put('seed-photos/1/a.jpg');
+      await local.putStream('exports', 'exports/3/9.zip', Readable.from([Buffer.from('x')]), 'application/zip');
+      const mode = async (p: string) => (await fs.stat(p)).mode & 0o777;
+      expect(await mode(path.join(dir, 'media', 'seed-photos', '1', 'a.jpg'))).toBe(0o600);
+      expect(await mode(path.join(dir, 'media', 'seed-photos', '1'))).toBe(0o700);
+      expect(await mode(path.join(dir, 'exports', 'exports', '3', '9.zip'))).toBe(0o600);
+      expect(await mode(path.join(dir, 'exports', 'exports', '3'))).toBe(0o700);
+    } finally {
+      process.umask(previous);
+    }
+  });
+
   it('putStream removes its temp file when the stream fails', async () => {
     const failing = new Readable({
       read() {

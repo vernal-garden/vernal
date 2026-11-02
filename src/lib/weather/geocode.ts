@@ -55,6 +55,10 @@ function baseUrl(envVar: string, fallback: string): string {
 
 const nominatimBase = (): string => baseUrl('NOMINATIM_BASE_URL', 'https://nominatim.openstreetmap.org');
 
+// Two decimals is about 1 km: plenty for weather, and nearby places then share
+// cached Visual Crossing results.
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
 async function lookup(label: string): Promise<GeoLocation> {
   await takeNominatimSlot();
   const url = `${nominatimBase()}/search?q=${encodeURIComponent(label)}&format=json&limit=1`;
@@ -67,7 +71,7 @@ async function lookup(label: string): Promise<GeoLocation> {
     throw new UpstreamError(NO_RESULTS);
   }
 
-  const location: GeoLocation = { lat: Number(first.lat), lon: Number(first.lon) };
+  const location: GeoLocation = { lat: round2(Number(first.lat)), lon: round2(Number(first.lon)) };
   geocodeCache.set(label, location);
   return location;
 }

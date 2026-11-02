@@ -6,6 +6,7 @@ import { Pool } from 'pg';
 import app from '../index';
 import * as mailer from '../lib/mailer';
 import { hashToken } from '../lib/tokens';
+import { getServerConfig, setServerConfigForTests } from '../lib/serverConfig';
 
 vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
 const sendMailMock = vi.mocked(mailer.sendMail);
@@ -53,6 +54,28 @@ beforeEach(() => sendMailMock.mockClear());
 afterAll(() => pool.end());
 
 describe('POST /api/auth/email/revert', () => {
+  it('refuses while mail is off and changes nothing', async () => {
+    const original = getServerConfig();
+    const { id, raw } = await changedAccount('mailoff-owner@example.com', 'mailoff-new@example.com');
+    const before = await pool.query('SELECT email, password_hash FROM accounts WHERE id = $1', [id]);
+    const thief = await loginAgent('mailoff-new@example.com');
+
+    setServerConfigForTests({ ...original, mail: 'off' });
+    try {
+      const res = await revert(raw);
+      expect(res.status).toBe(409);
+    } finally {
+      setServerConfigForTests(original);
+    }
+
+    const after = await pool.query('SELECT email, password_hash FROM accounts WHERE id = $1', [id]);
+    expect(after.rows[0]).toEqual(before.rows[0]);
+    const token = await pool.query('SELECT used_at FROM email_revert_tokens WHERE token_hash = $1', [hashToken(raw)]);
+    expect(token.rows[0].used_at).toBeNull();
+    expect((await thief.get('/api/me')).status).toBe(200); // sessions untouched
+    expect(sendMailMock).not.toHaveBeenCalled();
+  });
+
   it('restores the old email, scrambles the password, signs out every device and mails a reset link', async () => {
     const { id, raw } = await changedAccount('owner@example.com', 'thief@example.com');
     const thief = await loginAgent('thief@example.com');

@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
-import { makeApiLimiters, makeLoginLimiters, makeEventsBatchLimiter, makeWeatherTestLimiter, writeLimiterKey, consumeResetEmailQuota, clearResetEmailQuota } from './rateLimiters';
+import { makeApiLimiters, makeLoginLimiters, makeEventsBatchLimiter, makeWeatherTestLimiter, makeLocationChangeLimiter, writeLimiterKey, consumeResetEmailQuota, clearResetEmailQuota } from './rateLimiters';
 
 describe('makeEventsBatchLimiter', () => {
   it('allows max batches per session, then 429', async () => {
@@ -248,5 +248,32 @@ describe('consumeResetEmailQuota', () => {
   it('always allows under test unless enforcement is on', () => {
     delete process.env.ENFORCE_RATE_LIMITS;
     for (let i = 0; i < 10; i++) expect(consumeResetEmailQuota('t@example.com', '192.0.2.1')).toBe(true);
+  });
+});
+
+describe('makeLocationChangeLimiter', () => {
+  function meApp() {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as unknown as { session: unknown }).session = { id: 's', account: { id: 77 } }; next(); });
+    app.patch('/me', makeLocationChangeLimiter({ max: 2, windowMs: 60_000 }), (_req, res) => res.json({ ok: true }));
+    return app;
+  }
+
+  it('allows max location changes per account, then 429', async () => {
+    const app = meApp();
+    expect((await request(app).patch('/me').send({ zoneLocationLabel: 'A' })).status).toBe(200);
+    expect((await request(app).patch('/me').send({ zoneLocationLabel: 'B' })).status).toBe(200);
+    const res = await request(app).patch('/me').send({ zoneLocationLabel: 'C' });
+    expect(res.status).toBe(429);
+    expect(res.body.error).toMatch(/changed your location too often/);
+  });
+
+  it('does not count saves without a location change', async () => {
+    const app = meApp();
+    for (let i = 0; i < 5; i++) {
+      expect((await request(app).patch('/me').send({ zone: '7b' })).status).toBe(200);
+    }
+    expect((await request(app).patch('/me').send({ zoneLocationLabel: 'A' })).status).toBe(200);
   });
 });

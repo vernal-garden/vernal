@@ -23,6 +23,10 @@ function createTransport(): Transport {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
+    // nodemailer's defaults are minutes; a stuck SMTP server shouldn't hold a request that long.
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 30_000,
   });
 }
 

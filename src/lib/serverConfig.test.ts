@@ -16,6 +16,8 @@ afterAll(() => setServerConfigForTests(original));
 
 // development so the SMTP_HOST rule (production-strict otherwise) stays out of the way.
 const base = { STRIPE_SECRET_KEY: 'sk_test_x', NODE_ENV: 'development' };
+// Outside development and test the two public URLs are required.
+const siteUrls = { FRONTEND_URL: 'https://app.example.com', APP_URL: 'https://app.example.com' };
 
 describe('loadServerConfig', () => {
   it('defaults to today\'s behaviour', () => {
@@ -29,7 +31,7 @@ describe('loadServerConfig', () => {
   });
 
   it('turns everything off when asked', () => {
-    expect(loadServerConfig({ BILLING: 'off', MAIL_MODE: 'off' })).toMatchObject({ billing: 'off', mail: 'off' });
+    expect(loadServerConfig({ ...siteUrls, BILLING: 'off', MAIL_MODE: 'off' })).toMatchObject({ billing: 'off', mail: 'off' });
   });
 
   // Linux login shells set MAIL to the mail spool path; it must not be read as the mail mode.
@@ -76,7 +78,7 @@ describe('loadServerConfig', () => {
   describe('SMTP_HOST rule', () => {
     const smtpMessage =
       'SMTP_HOST is not set. Set it, set MAIL_MODE=off to run without email, or set NODE_ENV=development to print mail to the console on a local machine.';
-    const noEnv = { STRIPE_SECRET_KEY: 'sk_test_x' };
+    const noEnv = { STRIPE_SECRET_KEY: 'sk_test_x', ...siteUrls };
 
     it('is required in production', () => {
       expect(() => loadServerConfig({ ...noEnv, NODE_ENV: 'production' })).toThrow(smtpMessage);
@@ -117,7 +119,7 @@ describe('loadServerConfig', () => {
     });
 
     it('allows production and development', () => {
-      expect(() => loadServerConfig({ ...base, NODE_ENV: 'production', SMTP_HOST: 'h' })).not.toThrow();
+      expect(() => loadServerConfig({ ...base, ...siteUrls, NODE_ENV: 'production', SMTP_HOST: 'h' })).not.toThrow();
       expect(() => loadServerConfig({ ...base, NODE_ENV: 'development' })).not.toThrow();
     });
   });
@@ -143,8 +145,38 @@ describe('loadServerConfig', () => {
   });
 
   it('stores the result for getServerConfig', () => {
-    const c = loadServerConfig({ BILLING: 'off', MAIL_MODE: 'off' });
+    const c = loadServerConfig({ ...siteUrls, BILLING: 'off', MAIL_MODE: 'off' });
     expect(getServerConfig()).toBe(c);
+  });
+});
+
+describe('public URLs', () => {
+  const prod = { STRIPE_SECRET_KEY: 'sk_test_x', NODE_ENV: 'production', SMTP_HOST: 'smtp.example.com', ...siteUrls };
+
+  it.each(['FRONTEND_URL', 'APP_URL'])('requires %s outside development and test', (key) => {
+    expect(() => loadServerConfig({ ...prod, [key]: undefined })).toThrow(`${key} is not set`);
+    expect(() => loadServerConfig({ ...prod, [key]: '  ' })).toThrow(`${key} is not set`);
+    expect(() => loadServerConfig({ ...prod, [key]: 'ftp://app.example.com' })).toThrow(`${key} must be an http(s) URL`);
+    expect(() => loadServerConfig({ ...prod, [key]: 'not a url' })).toThrow(`${key} must be an http(s) URL`);
+  });
+
+  it('never echoes the value', () => {
+    expect(() => loadServerConfig({ ...prod, APP_URL: 'secret-looking-value' })).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining('secret-looking-value') }),
+    );
+  });
+
+  it('accepts http and https URLs', () => {
+    expect(() => loadServerConfig(prod)).not.toThrow();
+    expect(() => loadServerConfig({ ...prod, APP_URL: 'http://localhost:3000' })).not.toThrow();
+  });
+
+  it('counts unset NODE_ENV as production', () => {
+    expect(() => loadServerConfig({ ...prod, NODE_ENV: undefined, FRONTEND_URL: undefined })).toThrow('FRONTEND_URL is not set');
+  });
+
+  it('does not require them in development', () => {
+    expect(() => loadServerConfig(base)).not.toThrow();
   });
 });
 

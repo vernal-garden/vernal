@@ -221,8 +221,11 @@ export async function handleStripeWebhook(req: Request, res: Response) {
   try {
     event = getStripe().webhooks.constructEvent(req.body as Buffer, signature, webhookSecret);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Invalid signature';
-    return res.status(400).json({ error: message });
+    // The SDK's message stays in our log; the caller only learns it failed.
+    logger.warn('Stripe webhook signature check failed', {
+      errMsg: err instanceof Error ? err.message : String(err),
+    });
+    return res.status(400).json({ error: 'Invalid signature' });
   }
 
   try {

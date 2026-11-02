@@ -21,6 +21,14 @@ describe('fetchProviderJson', () => {
     );
   });
 
+  it('cancels the unread body of a non-OK response', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({ cancel });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 503 })));
+    await expect(fetchProviderJson('Test', 'https://provider.test/x')).rejects.toThrow('status 503');
+    expect(cancel).toHaveBeenCalled();
+  });
+
   it('turns an unreadable body into UpstreamError', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>', { status: 200 })));
     await expect(fetchProviderJson('Visual Crossing', 'https://x')).rejects.toThrow(UpstreamError);

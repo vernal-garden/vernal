@@ -50,6 +50,20 @@ describe('geocode', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
     await expect(geocode('Nowhere Land — empty-results-test')).rejects.toThrow();
   });
+
+  it('rounds coordinates to 2 decimals so nearby places share a cache key', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => [{ lat: '51.50731', lon: '-0.12765' }] })
+        .mockResolvedValueOnce({ ok: true, json: async () => [{ lat: '51.50912', lon: '-0.12588' }] }),
+    );
+    const a = await geocode('London — round-test-a');
+    const b = await geocode('Charing Cross — round-test-b');
+    expect(a).toEqual({ lat: 51.51, lon: -0.13 });
+    expect(b).toEqual(a);
+  });
 });
 
 describe('geocode caching and rate limiting', () => {

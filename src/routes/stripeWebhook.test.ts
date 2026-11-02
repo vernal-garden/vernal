@@ -122,6 +122,16 @@ describe('POST /api/webhooks/stripe — signature verification', () => {
       .send(JSON.stringify({ id: 'evt_x', type: 'customer.subscription.updated' }));
     expect(res.status).toBe(400);
   });
+
+  it('answers a bad signature with a fixed message', async () => {
+    const res = await request(app)
+      .post('/api/webhooks/stripe')
+      .set('stripe-signature', 'bad-sig')
+      .set('Content-Type', 'application/json')
+      .send('{}');
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Invalid signature' });
+  });
 });
 
 describe.skipIf(!WEBHOOK_SECRET)('subscription events', () => {

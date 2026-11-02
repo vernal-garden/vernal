@@ -42,6 +42,17 @@ function getClient(): S3Client {
     region: 'auto',
     endpoint: endpoint ?? `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey: secretKey },
+    // Give up on a dead connection or a stalled response instead of waiting
+    // forever. The connection must open within 5 s; response headers must
+    // arrive within 30 s (this includes sending one upload part); 120 s of
+    // socket silence ends a stalled transfer. Generous because the export
+    // worker pauses a photo download while a 5 MB part uploads.
+    requestHandler: {
+      connectionTimeout: 5_000,
+      requestTimeout: 30_000,
+      throwOnRequestTimeout: true,
+      socketTimeout: 120_000,
+    },
     // Self-hosted S3 services rarely have per-bucket DNS names.
     ...(endpoint ? { forcePathStyle: true } : {}),
   });

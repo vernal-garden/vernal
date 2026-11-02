@@ -46,6 +46,24 @@ export function secureCookies(env: NodeJS.ProcessEnv = process.env): boolean {
   }
 }
 
+// Links in emails and the OAuth redirects are built from these. Names the
+// variable, never echoes the value.
+function requireHttpUrl(env: NodeJS.ProcessEnv, key: string): void {
+  const value = read(env, key);
+  if (value === undefined) {
+    throw new ConfigError(`${key} is not set. Set it to the site's public URL (https://…).`);
+  }
+  let protocol = '';
+  try {
+    protocol = new URL(value).protocol;
+  } catch {
+    // reported below
+  }
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new ConfigError(`${key} must be an http(s) URL.`);
+  }
+}
+
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const nodeEnv = read(env, 'NODE_ENV');
   if (nodeEnv !== undefined) {
@@ -75,6 +93,12 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     throw new ConfigError(
       'SMTP_HOST is not set. Set it, set MAIL_MODE=off to run without email, or set NODE_ENV=development to print mail to the console on a local machine.',
     );
+  }
+
+  // Unset NODE_ENV counts as production, as for SMTP_HOST above.
+  if (!isLocalEnv(env)) {
+    requireHttpUrl(env, 'FRONTEND_URL');
+    requireHttpUrl(env, 'APP_URL');
   }
 
   if (media === 'local') {
