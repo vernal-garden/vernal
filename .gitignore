@@ -4,6 +4,12 @@ node_modules/
 # Build output
 dist/
 
+# Deploy: previous and rolled-back builds kept by scripts/deploy.sh
+node_modules.prev/
+node_modules.failed/
+dist.prev/
+dist.failed/
+
 # Test coverage
 coverage/
 

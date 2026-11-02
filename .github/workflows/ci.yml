@@ -32,3 +32,6 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Shellcheck deploy script
+        run: shellcheck scripts/deploy.sh

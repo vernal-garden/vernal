@@ -21,6 +21,7 @@ jobs:
       - run: npm run type-check
       - run: npm --prefix client run type-check
       - run: npm run lint
+      - run: shellcheck scripts/deploy.sh
 
   e2e:
     needs: checks

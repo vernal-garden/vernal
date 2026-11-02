@@ -23,10 +23,27 @@
 # shell. Setting VERNAL_DEPLOY_CLEAN_ENV by hand skips the clean re-exec (the
 # forced command can't).
 #
+# Flow: install and build in a separate worktree (BUILD_DIR, same filesystem as
+# APP_DIR), migrate, then swap node_modules, dist and client/dist into the live
+# checkout by renaming (the previous build is kept as *.prev) and reset it to
+# the new SHA. If the swap, the pm2 reload or the health gate fails, the swap is
+# undone (the new build moves to *.failed), the checkout is reset to the
+# previous SHA and the old build is reloaded and health-checked again.
+# Migrations are never rolled back, so a migration must work with the previous
+# release's code (see migrations/README.md).
+#
+# The build checkout's .env and any untracked client/.env* files (e.g.
+# .env.sentry-build-plugin) are symlinks to the live checkout's, so a new
+# server-side client env file only has to exist in /var/www/vernal/client/.
+#
+# One-time setup: `sudo install -d -o deploy -g deploy /var/www/vernal-build`.
+#
+# The VERNAL_DEPLOY_* overrides below exist for scripts/deploy.test.ts. They
+# only take effect together with a manual VERNAL_DEPLOY_CLEAN_ENV=1; the forced
+# command's env -i re-exec drops them.
+#
 # After changing this file, reinstall the copy at /home/deploy/bin/vernal-deploy.
 set -euo pipefail
-
-APP_DIR=/var/www/vernal
 
 if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
   if [[ ! "$SSH_ORIGINAL_COMMAND" =~ ^[^[:space:]]*vernal-deploy\ ([0-9a-f]{40})$ ]]; then
@@ -54,7 +71,27 @@ if [[ -z "${VERNAL_DEPLOY_CLEAN_ENV:-}" ]]; then
   exec env -i "${clean_env[@]}" bash "${BASH_SOURCE[0]}" "$SHA"
 fi
 
-exec 9>"$HOME/.vernal-deploy.lock"
+# If the SSH session drops mid-deploy, the next write to the closed stdout or
+# stderr would raise SIGPIPE (or the hangup SIGHUP) and kill bash halfway
+# through a swap or rollback. Ignore both so writes just fail with EPIPE and
+# the script runs to the end.
+trap '' HUP PIPE
+
+APP_DIR="${VERNAL_DEPLOY_APP_DIR:-/var/www/vernal}"
+BUILD_DIR="${VERNAL_DEPLOY_BUILD_DIR:-/var/www/vernal-build}"
+LOCK_FILE="${VERNAL_DEPLOY_LOCK:-$HOME/.vernal-deploy.lock}"
+HEALTH_URL="${VERNAL_DEPLOY_HEALTH_URL:-http://localhost:3000/health}"
+INTERVAL="${VERNAL_DEPLOY_INTERVAL:-2}"
+PM2_ATTEMPTS="${VERNAL_DEPLOY_PM2_ATTEMPTS:-10}"       # 10 x 2 s = 20 s
+HEALTH_ATTEMPTS="${VERNAL_DEPLOY_HEALTH_ATTEMPTS:-30}" # 30 x 2 s = 60 s
+
+# Moved between the build and live checkouts, in this order.
+SWAP_ITEMS=(node_modules dist client/dist)
+SWAPPED_OUT=() # live -> .prev done
+SWAPPED_IN=()  # build -> live done
+APPLIED=""     # migration versions this deploy applied
+
+exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   echo "another deploy is running" >&2
   exit 1
@@ -66,27 +103,181 @@ if ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
   echo "refused: $SHA is not on origin/main" >&2
   exit 2
 fi
+PREV_SHA="$(git rev-parse HEAD)"
 
-git reset --hard "$SHA"
-npm ci
-npm run migrate
-npm run build
-cd "$APP_DIR/client"
-npm ci
-npm run build
-cd "$APP_DIR"
-# 9>&-: a pm2 daemon started here must not inherit the deploy lock.
-# Reload from the ecosystem file (app name 'vernal') so its env block applies.
-pm2 startOrReload ecosystem.config.cjs --update-env 9>&-
-sleep 5
-pm2 jlist 9>&- | node -e '
+print_migrations() {
+  if [[ -n "$APPLIED" ]]; then
+    echo "migrations applied by this deploy$1: $APPLIED" >&2
+  fi
+}
+
+# Before the swap: the live checkout is untouched, so just stop.
+abort() {
+  echo "FAIL: deploy of $SHA failed at $1; nothing was swapped, $PREV_SHA is still live" >&2
+  print_migrations ""
+  exit 1
+}
+
+prepare_build() {
+  local f name
+  if [[ -e "$BUILD_DIR/.git" ]]; then
+    # Drop the client env links from the last deploy; they are re-linked below,
+    # and --force restores any that this SHA tracks.
+    for f in "$BUILD_DIR"/client/.env*; do
+      if [[ -L "$f" ]]; then
+        rm -f "$f" || return 1
+      fi
+    done
+    git -C "$BUILD_DIR" checkout -q --detach --force "$SHA" || return 1
+  else
+    git -C "$APP_DIR" worktree prune || return 1
+    git -C "$APP_DIR" worktree add -q --detach "$BUILD_DIR" "$SHA" || return 1
+  fi
+  # -x also removes ignored files (old dist, client/dist); -e keeps the installs
+  # and the untracked .env* links (tracked .env* files come from the checkout).
+  git -C "$BUILD_DIR" clean -q -ffdx -e node_modules -e '.env*' || return 1
+  ln -sfn "$APP_DIR/.env" "$BUILD_DIR/.env" || return 1
+  # Gitignored client env files on the server (.env.sentry-build-plugin for the
+  # Sentry Vite plugin, .env.production.local, ...) are read from the build's
+  # cwd, so link them in. Files either checkout tracks are left to git.
+  for f in "$APP_DIR"/client/.env*; do
+    [[ -f "$f" ]] || continue # also the unmatched glob
+    name="${f##*/}"
+    if git -C "$APP_DIR" ls-files --error-unmatch "client/$name" >/dev/null 2>&1 ||
+      git -C "$BUILD_DIR" ls-files --error-unmatch "client/$name" >/dev/null 2>&1; then
+      continue
+    fi
+    ln -sfn "$f" "$BUILD_DIR/client/$name" || return 1
+  done
+  if [[ "$(stat -c %d "$APP_DIR")" != "$(stat -c %d "$BUILD_DIR")" ]]; then
+    echo "$BUILD_DIR and $APP_DIR must be on the same filesystem" >&2
+    return 1
+  fi
+}
+
+build() {
+  (cd "$BUILD_DIR" && npm ci && npm run build) || return 1
+  (cd "$BUILD_DIR/client" && npm ci && npm run build) || return 1
+}
+
+migrate() {
+  local log status
+  log="$(mktemp)" || return 1
+  status=0
+  (cd "$BUILD_DIR" && npm run migrate) 2>&1 | tee "$log" || status=$?
+  APPLIED="$(sed -n 's/^\[ok\] *\([^ ]*\).*/\1/p' "$log" | paste -sd' ' -)"
+  rm -f "$log"
+  return "$status"
+}
+
+swap() {
+  local x
+  for x in "${SWAP_ITEMS[@]}"; do
+    rm -rf "${APP_DIR:?}/$x.prev" || return 1
+  done
+  for x in "${SWAP_ITEMS[@]}"; do
+    if [[ -e "$APP_DIR/$x" ]]; then
+      mv -T "$APP_DIR/$x" "$APP_DIR/$x.prev" || return 1
+      SWAPPED_OUT+=("$x")
+    fi
+    mv -T "$BUILD_DIR/$x" "$APP_DIR/$x" || return 1
+    SWAPPED_IN+=("$x")
+  done
+  git -C "$APP_DIR" reset -q --hard "$SHA" || return 1
+}
+
+reload() {
+  RELOAD_AT="$(date +%s%3N)"
+  # 9>&-: a pm2 daemon started here must not inherit the deploy lock.
+  # Reload from the ecosystem file (app name 'vernal') so its env block applies.
+  (cd "$APP_DIR" && pm2 startOrReload ecosystem.config.cjs --update-env 9>&-)
+}
+
+pm2_online() {
+  pm2 jlist 9>&- | RELOAD_AT="$RELOAD_AT" node -e '
 const list = JSON.parse(require("fs").readFileSync(0, "utf8"));
 const p = list.find(x => x.name === "vernal");
-if (!p) { console.error("FAIL: vernal not in pm2 list"); process.exit(1); }
-if (p.pm2_env.status !== "online") { console.error("FAIL: status " + p.pm2_env.status); process.exit(1); }
-const upSec = (Date.now() - p.pm2_env.pm_uptime) / 1000;
-if (upSec > 60) { console.error("FAIL: uptime " + upSec + "s — reload did not restart the process"); process.exit(1); }
-console.log("OK: vernal online, uptime " + Math.round(upSec) + "s");
+if (!p) { console.error("waiting: vernal not in pm2 list"); process.exit(1); }
+if (p.pm2_env.status !== "online") { console.error("waiting: status " + p.pm2_env.status); process.exit(1); }
+if (p.pm2_env.pm_uptime < Number(process.env.RELOAD_AT) - 1000) { console.error("waiting: not restarted by this reload"); process.exit(1); }
+console.log("OK: vernal online");
 '
-curl -fsS --max-time 10 http://localhost:3000/health
-echo "Deploy complete: $(date)"
+}
+
+health_ok() {
+  curl -fsS --max-time 5 "$HEALTH_URL" >/dev/null
+}
+
+# retry <attempts> <command...>: run until it succeeds, INTERVAL seconds apart.
+retry() {
+  local attempts="$1" i
+  shift
+  for ((i = 1; i <= attempts; i++)); do
+    if "$@"; then
+      return 0
+    fi
+    if ((i < attempts)); then
+      sleep "$INTERVAL"
+    fi
+  done
+  return 1
+}
+
+health_gate() {
+  retry "$PM2_ATTEMPTS" pm2_online || return 1
+  retry "$HEALTH_ATTEMPTS" health_ok || return 1
+  # || true: with SIGPIPE ignored, a dropped SSH session makes this write fail,
+  # and that must not turn a healthy deploy into a rollback.
+  echo "OK: $HEALTH_URL returned 200" || true
+}
+
+# After the swap started: put the previous build back. Always exits 1.
+rollback() {
+  local stage="$1" ok=1 i x
+  set +e
+  # swap failed before its first rename (clearing the old *.prev): the live
+  # checkout was never touched, so there is nothing to reload or check.
+  if ((${#SWAPPED_IN[@]} == 0 && ${#SWAPPED_OUT[@]} == 0)) &&
+    [[ "$(git -C "$APP_DIR" rev-parse HEAD)" == "$PREV_SHA" ]]; then
+    echo "FAIL: deploy of $SHA failed at $stage before anything was moved; $PREV_SHA is still live" >&2
+    print_migrations " (still applied)"
+    exit 1
+  fi
+  echo "deploy of $SHA failed at $stage; rolling back to $PREV_SHA" >&2
+  for ((i = ${#SWAPPED_IN[@]} - 1; i >= 0; i--)); do
+    x="${SWAPPED_IN[i]}"
+    rm -rf "${APP_DIR:?}/$x.failed"
+    mv -T "$APP_DIR/$x" "$APP_DIR/$x.failed" || ok=0
+  done
+  for ((i = ${#SWAPPED_OUT[@]} - 1; i >= 0; i--)); do
+    x="${SWAPPED_OUT[i]}"
+    mv -T "$APP_DIR/$x.prev" "$APP_DIR/$x" || ok=0
+  done
+  git -C "$APP_DIR" reset -q --hard "$PREV_SHA" || ok=0
+  if ((ok)); then
+    if ! reload || ! health_gate; then
+      ok=0
+    fi
+  fi
+  if ((ok)); then
+    echo "ROLLED BACK to $PREV_SHA: deploy of $SHA failed at $stage" >&2
+  else
+    echo "ROLLBACK FAILED: site may be down (deploy of $SHA failed at $stage; rollback to $PREV_SHA did not pass)" >&2
+  fi
+  print_migrations " (still applied)"
+  exit 1
+}
+
+for x in "${SWAP_ITEMS[@]}"; do
+  rm -rf "${APP_DIR:?}/$x.failed"
+done
+
+prepare_build || abort prepare
+build || abort build
+migrate || abort migrate
+swap || rollback swap
+reload || rollback reload
+health_gate || rollback health
+
+print_migrations ""
+echo "Deploy complete: $PREV_SHA -> $SHA ($(date))"
