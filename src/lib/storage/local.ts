@@ -15,6 +15,10 @@ import type { Area, StorageDriver } from './index';
 // In-flight writes; listings skip them.
 const TMP_MARK = '.tmp-';
 
+// Owner-only: photos and export ZIPs must not be readable by other users on the host.
+const DIR_MODE = 0o700;
+const FILE_MODE = 0o600;
+
 const CONTENT_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -57,7 +61,7 @@ const isMissing = (err: unknown) => code(err) === 'ENOENT' || code(err) === 'ENO
 // Writes to a temp file beside the target, then renames it into place, so a
 // reader never sees half a file.
 async function writeAtomically(file: string, write: (tmp: string) => Promise<void>): Promise<void> {
-  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.mkdir(path.dirname(file), { recursive: true, mode: DIR_MODE });
   const tmp = `${file}${TMP_MARK}${randomUUID()}`;
   try {
     await write(tmp);
@@ -151,12 +155,12 @@ async function sendFile(res: Response, file: string, headers: Record<string, str
 export const localDriver: StorageDriver = {
   async put(area, key, body, _contentType) {
     const file = resolve(area, key);
-    await writeAtomically(file, (tmp) => fsp.writeFile(tmp, body));
+    await writeAtomically(file, (tmp) => fsp.writeFile(tmp, body, { mode: FILE_MODE }));
   },
 
   async putStream(area, key, body, _contentType) {
     const file = resolve(area, key);
-    await writeAtomically(file, (tmp) => pipeline(body, fs.createWriteStream(tmp)));
+    await writeAtomically(file, (tmp) => pipeline(body, fs.createWriteStream(tmp, { mode: FILE_MODE })));
   },
 
   async getStream(area, key) {
@@ -224,9 +228,9 @@ export const localDriver: StorageDriver = {
     try {
       for (const area of ['media', 'exports'] as const) {
         const areaPath = path.join(dir, area);
-        await fsp.mkdir(areaPath, { recursive: true });
+        await fsp.mkdir(areaPath, { recursive: true, mode: DIR_MODE });
         const probe = path.join(areaPath, `${TMP_MARK}probe-${randomUUID()}`);
-        await fsp.writeFile(probe, 'ok');
+        await fsp.writeFile(probe, 'ok', { mode: FILE_MODE });
         await fsp.unlink(probe);
       }
     } catch (err) {

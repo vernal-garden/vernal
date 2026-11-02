@@ -501,7 +501,9 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
 // Public: the link was mailed to the replaced address, and whoever made the
 // change may hold every session and the password. Puts the old address back,
 // scrambles the password, signs out every device, and mails a reset link.
-authRouter.post('/email/revert', passwordResetLimiter, async (req: Request, res: Response): Promise<void> => {
+// Refused while mail is off: the reset link could not be sent, so the owner
+// would be locked out.
+authRouter.post('/email/revert', requireMail, passwordResetLimiter, async (req: Request, res: Response): Promise<void> => {
   const { token } = req.body as { token?: unknown };
   const invalid = { error: 'This link is invalid or has expired.' };
   const taken = { error: 'That address is now used by another account. Please contact support.' };

@@ -6,6 +6,9 @@ vi.mock('../lib/sessions', () => ({
   findSession: vi.fn(),
 }));
 
+const { dbQueryMock } = vi.hoisted(() => ({ dbQueryMock: vi.fn() }));
+vi.mock('../lib/db', () => ({ db: { query: dbQueryMock } }));
+
 import { findSession } from '../lib/sessions';
 import { sessionMiddleware } from './session';
 
@@ -60,6 +63,28 @@ describe('sessionMiddleware', () => {
     await sessionMiddleware(req, fakeRes() as unknown as Response, next);
     expect(req.session).toBeNull();
     expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('bumps last_active_at at most once an hour per account', async () => {
+    vi.useFakeTimers();
+    try {
+      dbQueryMock.mockReset().mockResolvedValue({ rowCount: 1 });
+      findSessionMock.mockResolvedValue({ id: 'sess-bump', account: { id: 9101 } } as never);
+      const run = () =>
+        sessionMiddleware(
+          { cookies: { _vernal_sid: 'signed' } } as unknown as Request,
+          fakeRes() as unknown as Response,
+          vi.fn() as unknown as NextFunction,
+        );
+      await run();
+      await run();
+      expect(dbQueryMock).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(60 * 60 * 1000 + 1);
+      await run();
+      expect(dbQueryMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('responds 503 and does not continue when the lookup throws', async () => {

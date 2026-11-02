@@ -9,7 +9,7 @@ import { generateRawToken, hashToken } from '../lib/tokens';
 import { sendMail } from '../lib/mailer';
 import { sendVerificationEmail } from '../lib/emailVerification';
 import { sendEmailChangedNotice, sendPasswordChangedNotice } from '../lib/accountSecurity';
-import { verificationResendLimiter, emailChangeLimiter, passwordChangeLimiter, writeLimiter } from '../middleware/rateLimiters';
+import { verificationResendLimiter, emailChangeLimiter, passwordChangeLimiter, writeLimiter, locationChangeLimiter } from '../middleware/rateLimiters';
 import { logger } from '../lib/logger';
 import { isValidEmail, textField } from '../lib/validation';
 import { stopRenewal, resumeRenewal } from '../lib/billing';
@@ -100,7 +100,7 @@ router.get('/', async (req, res) => {
 // Updatable: displayName, zone, zoneLocationLabel, lastSpringFrostDate, firstFallFrostDate.
 // Sending onboardingCompletedAt, email, role, or subscriptionTier yields 400.
 // zone and zoneLocationLabel are NOT NULL — blank/empty values are rejected.
-router.patch('/', writeLimiter, async (req, res) => {
+router.patch('/', writeLimiter, locationChangeLimiter, async (req, res) => {
   const body = req.body as Record<string, unknown>;
 
   for (const field of REJECTED_PATCH_FIELDS) {

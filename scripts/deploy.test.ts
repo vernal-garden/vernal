@@ -296,6 +296,30 @@ describe.skipIf(process.platform !== 'linux')('scripts/deploy.sh', () => {
     expect(git(env.app, 'rev-parse', 'HEAD')).toBe(env.shaA);
   });
 
+  it('refuses a commit older than the live one and changes nothing', () => {
+    expect(deploy(env, env.shaB).status).toBe(0);
+    fs.rmSync(env.log, { force: true });
+    const r = deploy(env, env.shaA);
+    expect(r.status, r.out).toBe(2);
+    expect(r.out).toContain(`refused: ${env.shaA} is not the live ${env.shaB} or a newer commit`);
+    expectLiveAt(env, env.shaB);
+    expect(calls(env)).toBe('');
+  });
+
+  it('deploys the live commit again', () => {
+    const r = deploy(env, env.shaA);
+    expect(r.status, r.out).toBe(0);
+    expectLiveAt(env, env.shaA);
+  });
+
+  it('deploys an older commit with VERNAL_DEPLOY_ALLOW_DOWNGRADE=1', () => {
+    expect(deploy(env, env.shaB).status).toBe(0);
+    const r = deploy(env, env.shaA, { VERNAL_DEPLOY_ALLOW_DOWNGRADE: '1' });
+    expect(r.status, r.out).toBe(0);
+    expect(r.out).toContain('VERNAL_DEPLOY_ALLOW_DOWNGRADE=1');
+    expectLiveAt(env, env.shaA);
+  });
+
   it('removes a leftover .failed build on the next deploy', () => {
     writeMarker(path.join(env.app, 'dist.failed'), 'old');
     const r = deploy(env, env.shaB);

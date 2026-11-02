@@ -46,6 +46,16 @@ describe('mailer', () => {
     expect(createTransportMock).not.toHaveBeenCalled();
   });
 
+  it('sets SMTP timeouts so a stuck server cannot hold a request open', async () => {
+    vi.stubEnv('SMTP_HOST', 'smtp.example.com');
+    sendMailMock.mockResolvedValue({ messageId: 'm1' });
+    const { sendMail } = await loadMailer();
+    await sendMail(message);
+    expect(createTransportMock).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 30_000 }),
+    );
+  });
+
   it('refuses to send in production without SMTP_HOST', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('SMTP_HOST', '');

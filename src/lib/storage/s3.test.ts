@@ -161,6 +161,17 @@ describe('r2', () => {
     }
   });
 
+  it('gives up on a dead connection or a stalled request', async () => {
+    await deleteFromR2('a');
+    const opts = vi.mocked(S3Client).mock.calls[0][0] as Record<string, unknown>;
+    expect(opts.requestHandler).toEqual({
+      connectionTimeout: 5_000,
+      requestTimeout: 30_000,
+      throwOnRequestTimeout: true,
+      socketTimeout: 120_000,
+    });
+  });
+
   it('resetR2Client makes the next call build a new client', async () => {
     await deleteFromR2('a');
     resetR2Client();

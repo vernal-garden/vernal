@@ -1,20 +1,26 @@
 import { Request, Response, NextFunction } from 'express';
+import { LRUCache } from 'lru-cache';
 import { findSession, COOKIE_NAME } from '../lib/sessions';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
 
 const ACTIVITY_BUMP_INTERVAL_MS = 60 * 60 * 1000;
 
-// accountId → time (ms) of the last last_active_at bump issued by this process.
-// Keeps the UPDATE to at most once per account per hour per process; the SQL
-// guard below covers multiple processes.
-const lastActivityBump = new Map<number, number>();
+// Accounts this process bumped within the last hour. Keeps the UPDATE to at
+// most once per account per hour per process (the SQL guard below covers
+// multiple processes), and bounded so a long-running process doesn't keep every
+// account it has seen. ttlResolution 0 + a perf that calls Date.now() each time
+// so expiry follows the current Date.
+const lastActivityBump = new LRUCache<number, true>({
+  max: 10_000,
+  ttl: ACTIVITY_BUMP_INTERVAL_MS,
+  ttlResolution: 0,
+  perf: { now: () => Date.now() },
+});
 
 function bumpLastActive(accountId: number): void {
-  const now = Date.now();
-  const last = lastActivityBump.get(accountId);
-  if (last !== undefined && now - last < ACTIVITY_BUMP_INTERVAL_MS) return;
-  lastActivityBump.set(accountId, now);
+  if (lastActivityBump.has(accountId)) return;
+  lastActivityBump.set(accountId, true);
 
   db.query(
     `UPDATE accounts SET last_active_at = now()

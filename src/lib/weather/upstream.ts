@@ -30,6 +30,9 @@ export async function fetchProviderJson<T>(provider: string, url: string, init: 
       throw new UpstreamError(timedOut ? `${provider} timed out` : `${provider} unreachable`, { cause: err });
     }
     if (!res.ok) {
+      // Release the socket and buffered body now instead of leaving them until
+      // garbage collection (undici closes the connection rather than pooling it).
+      await res.body?.cancel().catch(() => undefined);
       throw new UpstreamError(`${provider} request failed with status ${res.status}`);
     }
     try {

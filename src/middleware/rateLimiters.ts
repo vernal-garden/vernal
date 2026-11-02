@@ -188,6 +188,25 @@ export function makeWeatherTestLimiter(opts: { max: number; windowMs: number; sk
 }
 export const weatherTestLimiter = makeWeatherTestLimiter({ max: 10, windowMs: 60 * 60 * 1000, skip: skipInTest });
 
+// PATCH /api/me with a new zoneLocationLabel. Each new location costs a lookup
+// on the shared Nominatim queue (1/s for everyone) and a paid Visual Crossing
+// call. A save without zoneLocationLabel is not counted; the client only sends
+// it when the location changed.
+export function makeLocationChangeLimiter(opts: { max: number; windowMs: number; skip?: () => boolean }): RequestHandler {
+  const skip = opts.skip ?? (() => false);
+  return rateLimit({
+    windowMs: opts.windowMs,
+    max: opts.max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => `user:${req.session?.account?.id ?? 'none'}`,
+    skip: (req: Request) =>
+      skip() || (req.body as { zoneLocationLabel?: unknown } | undefined)?.zoneLocationLabel === undefined,
+    message: { error: "You've changed your location too often — please try again later" },
+  });
+}
+export const locationChangeLimiter = makeLocationChangeLimiter({ max: 10, windowMs: 60 * 60 * 1000, skip: skipInTest });
+
 // POST /api/me/verify-email/resend — keyed per account (route requires auth).
 export const verificationResendLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
