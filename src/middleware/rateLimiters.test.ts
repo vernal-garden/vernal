@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import request from 'supertest';
-import { makeApiLimiters, makeLoginLimiters, makeEventsBatchLimiter, makeWeatherTestLimiter, makeLocationChangeLimiter, writeLimiterKey, consumeResetEmailQuota, clearResetEmailQuota } from './rateLimiters';
+import { makeApiLimiters, makeLoginLimiters, makeEventsBatchLimiter, makeWeatherTestLimiter, makeRelayLimiter, makeLocationChangeLimiter, writeLimiterKey, consumeResetEmailQuota, clearResetEmailQuota } from './rateLimiters';
 
 describe('makeEventsBatchLimiter', () => {
   it('allows max batches per session, then 429', async () => {
@@ -24,6 +24,16 @@ describe('makeWeatherTestLimiter', () => {
     app.post('/t', makeWeatherTestLimiter({ max: 1, windowMs: 60_000 }), (_req, res) => res.json({ ok: true }));
     expect((await request(app).post('/t')).status).toBe(200);
     expect((await request(app).post('/t')).status).toBe(429);
+  });
+});
+
+describe('makeRelayLimiter', () => {
+  it('allows max envelopes per IP, then 429', async () => {
+    const app = express();
+    app.post('/r', makeRelayLimiter({ max: 2, windowMs: 60_000 }), (_req, res) => res.status(200).send());
+    expect((await request(app).post('/r')).status).toBe(200);
+    expect((await request(app).post('/r')).status).toBe(200);
+    expect((await request(app).post('/r')).status).toBe(429);
   });
 });
 

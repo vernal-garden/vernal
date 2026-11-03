@@ -38,6 +38,7 @@ import { sessionMiddleware } from './middleware/session';
 import { blockWhilePendingDeletion } from './middleware/pendingDeletion';
 import { dbBackpressure } from './middleware/dbBackpressure';
 import { apiLimiters } from './middleware/rateLimiters';
+import { sentryRelayRouter } from './routes/sentryRelay';
 import { requestMetricsMiddleware } from './lib/requestMetrics';
 import { initPassport, passport } from './lib/oauth/index';
 
@@ -117,6 +118,10 @@ app.use('/health', healthRouter);
 // never reaches the database. /health (mounted outside /api) and the Stripe
 // webhook (registered above) are not affected.
 app.use('/api', apiLimiters);
+// The browser's Sentry envelopes. Behind the global per-IP limit, but ahead of
+// load shedding and the session lookup: no database, and errors happen before
+// anyone logs in.
+app.use('/api/relay', sentryRelayRouter);
 app.use('/api', dbBackpressure);
 app.use(sessionMiddleware);
 app.use('/api', blockWhilePendingDeletion);
@@ -183,7 +188,7 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
       console.log(
         `[config] billing=${cfg.billing} mail=${cfg.mail} media=${cfg.media} ` +
           `google=${cfg.googleSignIn ? 'on' : 'off'} weather=${cfg.weather ? 'on' : 'off'} ` +
-          `db_tls=${dbSslMode()}`,
+          `relay=${cfg.sentryRelay ? 'on' : 'off'} db_tls=${dbSslMode()}`,
       );
 
       app.listen(PORT, () => {

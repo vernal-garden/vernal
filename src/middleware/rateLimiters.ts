@@ -207,6 +207,22 @@ export function makeLocationChangeLimiter(opts: { max: number; windowMs: number;
 }
 export const locationChangeLimiter = makeLocationChangeLimiter({ max: 10, windowMs: 60 * 60 * 1000, skip: skipInTest });
 
+// POST /api/relay — the browser's Sentry envelopes, before any session lookup.
+// Real use is a handful a minute (an error plus sampled traces); a refused
+// envelope is dropped by the SDK, not retried.
+export function makeRelayLimiter(opts: { max: number; windowMs: number; skip?: () => boolean }): RequestHandler {
+  return rateLimit({
+    windowMs: opts.windowMs,
+    max: opts.max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: byIp,
+    skip: opts.skip,
+    message: TOO_MANY,
+  });
+}
+export const relayLimiter = makeRelayLimiter({ max: 60, windowMs: 60 * 1000, skip: skipInTest });
+
 // POST /api/me/verify-email/resend — keyed per account (route requires auth).
 export const verificationResendLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,

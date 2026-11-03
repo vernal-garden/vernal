@@ -6,6 +6,7 @@ import {
   isLocalEnv,
   secureCookies,
   loadServerConfig,
+  parseSentryDsn,
   setServerConfigForTests,
   type ServerConfig,
 } from './serverConfig';
@@ -223,5 +224,53 @@ describe('setServerConfigForTests', () => {
     const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true };
     setServerConfigForTests(custom);
     expect(getServerConfig()).toBe(custom);
+  });
+});
+
+describe('SENTRY_CLIENT_DSN', () => {
+  const dsn = 'https://abc123@o1.ingest.us.sentry.io/4511';
+
+  it('leaves the relay off when unset or blank', () => {
+    expect(loadServerConfig(base).sentryRelay).toBeUndefined();
+    expect(loadServerConfig({ ...base, SENTRY_CLIENT_DSN: '  ' }).sentryRelay).toBeUndefined();
+  });
+
+  it('parses host, project id and public key', () => {
+    expect(loadServerConfig({ ...base, SENTRY_CLIENT_DSN: dsn }).sentryRelay).toEqual({
+      host: 'o1.ingest.us.sentry.io',
+      projectId: '4511',
+      publicKey: 'abc123',
+    });
+  });
+
+  it.each([
+    ['http scheme', 'http://abc123@o1.ingest.us.sentry.io/4511'],
+    ['no public key', 'https://o1.ingest.us.sentry.io/4511'],
+    ['no project id', 'https://abc123@o1.ingest.us.sentry.io/'],
+    ['non-numeric project id', 'https://abc123@o1.ingest.us.sentry.io/abc'],
+    ['not a URL', 'abc123-not-a-dsn'],
+  ])('refuses a DSN with %s, without echoing it', (_label, value) => {
+    expect(() => loadServerConfig({ ...base, SENTRY_CLIENT_DSN: value })).toThrow(ConfigError);
+    try {
+      loadServerConfig({ ...base, SENTRY_CLIENT_DSN: value });
+    } catch (err) {
+      expect((err as Error).message).toContain('SENTRY_CLIENT_DSN');
+      expect((err as Error).message).not.toContain(value);
+    }
+  });
+});
+
+describe('parseSentryDsn', () => {
+  it('accepts a trailing slash after the project id', () => {
+    expect(parseSentryDsn('https://k@sentry.example.com/12/')).toEqual({
+      host: 'sentry.example.com',
+      projectId: '12',
+      publicKey: 'k',
+    });
+  });
+
+  it('returns null for anything else', () => {
+    expect(parseSentryDsn('https://k@sentry.example.com/12/extra')).toBeNull();
+    expect(parseSentryDsn('')).toBeNull();
   });
 });
