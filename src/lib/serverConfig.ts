@@ -4,6 +4,14 @@ import { dbSslConfig } from './dbSsl';
 
 export { ConfigError };
 
+// Where /api/relay may forward the browser's Sentry envelopes: the one project
+// named by SENTRY_CLIENT_DSN.
+export interface SentryRelayTarget {
+  host: string;
+  projectId: string;
+  publicKey: string;
+}
+
 // Deployment switches, read once at startup. Every default matches how
 // vernal.garden runs today; self-hosters change them via environment variables.
 export interface ServerConfig {
@@ -12,6 +20,8 @@ export interface ServerConfig {
   media: 's3' | 'local';
   googleSignIn: boolean;
   weather: boolean;
+  // Set only when SENTRY_CLIENT_DSN is set; absent means the relay is off.
+  sentryRelay?: SentryRelayTarget;
 }
 
 let loaded: ServerConfig | null = null;
@@ -62,6 +72,20 @@ function requireHttpUrl(env: NodeJS.ProcessEnv, key: string): void {
   if (protocol !== 'http:' && protocol !== 'https:') {
     throw new ConfigError(`${key} must be an http(s) URL.`);
   }
+}
+
+// https://<public key>@<host>/<project id>, the shape of every Sentry DSN.
+// Also used by the relay to read the dsn in each envelope's header.
+export function parseSentryDsn(value: string): SentryRelayTarget | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  const match = /^\/(\d+)\/?$/.exec(url.pathname);
+  if (url.protocol !== 'https:' || !url.username || !match) return null;
+  return { host: url.host, projectId: match[1], publicKey: url.username };
 }
 
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -124,12 +148,20 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   // loadConfig) instead of a stack trace from db.ts.
   dbSslConfig(env);
 
+  // The browser's DSN, for /api/relay. Names the variable, never echoes the value.
+  const clientDsn = read(env, 'SENTRY_CLIENT_DSN');
+  const sentryRelay = clientDsn === undefined ? undefined : parseSentryDsn(clientDsn);
+  if (sentryRelay === null) {
+    throw new ConfigError('SENTRY_CLIENT_DSN must be a Sentry DSN (https://<key>@<host>/<project id>).');
+  }
+
   loaded = {
     billing,
     mail,
     media,
     googleSignIn: Boolean(googleId && googleSecret),
     weather: Boolean(read(env, 'VISUAL_CROSSING_API_KEY')),
+    ...(sentryRelay ? { sentryRelay } : {}),
   };
   return loaded;
 }

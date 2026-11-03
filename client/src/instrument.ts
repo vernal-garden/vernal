@@ -45,6 +45,9 @@ export function getUrlToken(pathname: string): string | null {
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN,
+  // Envelopes go through our own API (POST /api/relay) instead of Sentry's
+  // ingest host, which ad blockers block. Same base as lib/api.ts.
+  tunnel: `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/relay`,
   environment: import.meta.env.VITE_SENTRY_ENVIRONMENT ?? 'development',
   tracesSampleRate: 0.1,
   enabled: !!import.meta.env.VITE_SENTRY_DSN,
