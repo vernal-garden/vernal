@@ -64,6 +64,10 @@ describe('POST /api/auth/email/revert', () => {
     try {
       const res = await revert(raw);
       expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        error:
+          "This server can't send email right now, so this change can't be undone here. Please contact the server's administrator — they can restore your previous address.",
+      });
     } finally {
       setServerConfigForTests(original);
     }

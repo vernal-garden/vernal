@@ -1,4 +1,4 @@
-import dotenv from 'dotenv';
+import '../src/loadEnv';
 import readline from 'readline';
 import { Writable } from 'stream';
 import { Pool } from 'pg';
@@ -12,8 +12,6 @@ import {
   setRole,
   type Command,
 } from '../src/lib/accountAdmin';
-
-dotenv.config();
 
 // Operator-side account fixes: npm run account -- <command>. See USAGE.
 

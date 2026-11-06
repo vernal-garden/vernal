@@ -193,7 +193,7 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
 
       app.listen(PORT, () => {
         logger.info(`API running → http://localhost:${PORT}`);
-        logger.info(`Environment: ${process.env.NODE_ENV ?? 'development'}`);
+        logger.info(`Environment: ${process.env.NODE_ENV ?? 'production (NODE_ENV unset)'}`);
       });
     })
     .catch((err: unknown) => {

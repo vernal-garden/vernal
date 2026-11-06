@@ -1,10 +1,8 @@
-import dotenv from 'dotenv';
+import '../src/loadEnv';
 import { Pool } from 'pg';
 import { ConfigError, loadServerConfig } from '../src/lib/serverConfig';
 import { storage, type Area } from '../src/lib/storage';
 import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
-
-dotenv.config();
 
 try {
   loadServerConfig();

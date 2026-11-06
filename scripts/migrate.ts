@@ -1,10 +1,8 @@
+import '../src/loadEnv';
 import { Pool } from 'pg';
-import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
-
-dotenv.config();
 
 async function migrate(): Promise<void> {
   if (!process.env.DATABASE_URL) {
@@ -35,7 +33,8 @@ async function migrate(): Promise<void> {
     const applied = new Set(rows.map((r) => r.version));
 
     // Read migration files in sorted order
-    const migrationsDir = path.join(process.cwd(), 'migrations');
+    // Next to this script, not process.cwd(), like the .env above.
+    const migrationsDir = path.resolve(__dirname, '..', 'migrations');
     const files = fs
       .readdirSync(migrationsDir)
       .filter((f) => f.endsWith('.sql'))

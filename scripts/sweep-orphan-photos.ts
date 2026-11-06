@@ -1,12 +1,10 @@
-import dotenv from 'dotenv';
+import '../src/loadEnv';
 import { Pool } from 'pg';
 import { ConfigError, loadServerConfig } from '../src/lib/serverConfig';
 import { storage } from '../src/lib/storage';
 import { findOrphans } from '../src/lib/orphanPhotos';
 import { queueR2Deletions } from '../src/lib/r2Cleanup';
 import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
-
-dotenv.config();
 
 try {
   loadServerConfig();

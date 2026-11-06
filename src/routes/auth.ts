@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcrypt';
 import { effectiveTier } from '../lib/tier';
 import crypto from 'crypto';
@@ -497,13 +497,26 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
   if (email) await sendPasswordChangedNotice(email);
 });
 
+// requireMail for the revert route, with its own answer: the generic one gives
+// the owner no way forward (an admin can restore the address with the CLI).
+function requireMailForRevert(_req: Request, res: Response, next: NextFunction): void {
+  if (!isMailEnabled()) {
+    res.status(409).json({
+      error:
+        "This server can't send email right now, so this change can't be undone here. Please contact the server's administrator — they can restore your previous address.",
+    });
+    return;
+  }
+  next();
+}
+
 // POST /api/auth/email/revert
 // Public: the link was mailed to the replaced address, and whoever made the
 // change may hold every session and the password. Puts the old address back,
 // scrambles the password, signs out every device, and mails a reset link.
 // Refused while mail is off: the reset link could not be sent, so the owner
 // would be locked out.
-authRouter.post('/email/revert', requireMail, passwordResetLimiter, async (req: Request, res: Response): Promise<void> => {
+authRouter.post('/email/revert', requireMailForRevert, passwordResetLimiter, async (req: Request, res: Response): Promise<void> => {
   const { token } = req.body as { token?: unknown };
   const invalid = { error: 'This link is invalid or has expired.' };
   const taken = { error: 'That address is now used by another account. Please contact support.' };

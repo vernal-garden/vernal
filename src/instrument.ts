@@ -10,7 +10,8 @@ import { scrubEvent } from './lib/sentryScrub';
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.SENTRY_ENVIRONMENT ?? 'development',
-  tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+  // Unset NODE_ENV counts as production.
+  tracesSampleRate: process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' ? 1.0 : 0.1,
   enabled: !!process.env.SENTRY_DSN,
   // Every field is explicit: supplying `dataCollection` at all switches the SDK
   // from the sendDefaultPii:false profile to all-on defaults, so anything
