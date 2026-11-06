@@ -84,7 +84,10 @@ export default function App() {
     <Sentry.ErrorBoundary fallback={<p className="p-4 text-red-500">Something went wrong. Please refresh.</p>}>
       <AuthProvider>
         <CanvasPresenceProvider>
-          <RouterProvider router={router} />
+          {/* v6 behaviour: no startTransition around router state. With it, the
+              guard redirects (e.g. AccountRoute → /login) win the race against
+              useSignOut's navigate('/') after the auth state flips to guest. */}
+          <RouterProvider router={router} useTransitions={false} />
           <FeedbackWidget bottomOffset={deletionBannerHeight + (needRefresh ? bannerHeight : 0)} />
         </CanvasPresenceProvider>
         <MergePrompt />
