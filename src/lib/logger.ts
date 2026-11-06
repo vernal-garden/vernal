@@ -42,15 +42,16 @@ function serializeError(error: unknown): LogContext {
   return { err: error };
 }
 
-function isProduction(): boolean {
-  return process.env.NODE_ENV === 'production';
+// Unset NODE_ENV counts as production, as in serverConfig's isLocalEnv.
+function isLocal(): boolean {
+  return process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
 }
 
 function write(level: LogLevel, message: string, context: LogContext = {}) {
   const safeContext = redact(context);
   const sink = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
 
-  if (isProduction()) {
+  if (!isLocal()) {
     sink(JSON.stringify({ ts: new Date().toISOString(), level, message, ...safeContext }));
     return;
   }

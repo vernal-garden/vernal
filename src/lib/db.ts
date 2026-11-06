@@ -1,10 +1,9 @@
+// .env by explicit path (repo root), not process.cwd().
+import '../loadEnv';
 import { Pool, PoolConfig } from 'pg';
-import dotenv from 'dotenv';
 import * as Sentry from '@sentry/node';
 import { logger } from './logger';
 import { dbConnectionString, dbSslConfig } from './dbSsl';
-
-dotenv.config();
 
 // During tests (NODE_ENV=test, set automatically by Vitest) the app must
 // connect to TEST_DATABASE_URL, never DATABASE_URL — otherwise supertest

@@ -1,6 +1,4 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
+import '../src/loadEnv';
 import { uploadToR2, getMediaObject, deleteFromR2 } from '../src/lib/storage/s3';
 
 // S3 only (MEDIA_STORAGE=s3, the default): uploads a small object to

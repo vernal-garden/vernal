@@ -1,8 +1,6 @@
-import dotenv from 'dotenv';
+import '../src/loadEnv';
 import { Pool } from 'pg';
 import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
-
-dotenv.config();
 
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL not set');

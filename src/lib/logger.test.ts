@@ -11,7 +11,8 @@ describe('logger', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
   afterEach(() => {
-    process.env.NODE_ENV = originalNodeEnv;
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
     vi.restoreAllMocks();
     vi.mocked(Sentry.captureException).mockClear();
     vi.mocked(Sentry.captureMessage).mockClear();
@@ -76,6 +77,26 @@ describe('logger', () => {
       const parsed = JSON.parse(errorSpy.mock.calls[0][0] as string);
       expect(parsed.level).toBe('error');
       expect(parsed.message).toBe('checkout failed');
+    });
+
+    it('with NODE_ENV unset outputs JSON as in production', () => {
+      delete process.env.NODE_ENV;
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      logger.error('x');
+
+      const parsed = JSON.parse(errorSpy.mock.calls[0][0] as string);
+      expect(parsed.level).toBe('error');
+    });
+
+    it('in development mode outputs plain text, not JSON', () => {
+      process.env.NODE_ENV = 'development';
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      logger.error('x');
+
+      expect((errorSpy.mock.calls[0][0] as string).startsWith('[')).toBe(true);
+      expect(() => JSON.parse(errorSpy.mock.calls[0][0] as string)).toThrow();
     });
 
     it('with an Error instance includes errMsg and stack in output', () => {

@@ -1,9 +1,7 @@
-import dotenv from 'dotenv';
+import '../src/loadEnv';
 import { Pool } from 'pg';
 import Stripe from 'stripe';
 import { dbConnectionString, dbSslConfig } from '../src/lib/dbSsl';
-
-dotenv.config();
 
 // One-off: records the payment intent behind each existing lifetime purchase,
 // so refunds and disputes can find the account. Dry run by default; pass
