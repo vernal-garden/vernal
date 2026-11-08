@@ -20,6 +20,8 @@ export interface ServerConfig {
   media: 's3' | 'local';
   googleSignIn: boolean;
   weather: boolean;
+  // From this instant the private beta page stops taking applications.
+  betaApplicationsCloseAt: Date;
   // Set only when SENTRY_CLIENT_DSN is set; absent means the relay is off.
   sentryRelay?: SentryRelayTarget;
 }
@@ -155,12 +157,29 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     throw new ConfigError('SENTRY_CLIENT_DSN must be a Sentry DSN (https://<key>@<host>/<project id>).');
   }
 
+  // Names the variable, never echoes the value.
+  const closeAtValue = read(env, 'BETA_APPLICATIONS_CLOSE_AT') ?? '2027-01-01T00:00:00-08:00';
+  const closeAt = new Date(closeAtValue);
+  const day = closeAtValue.slice(0, 10);
+  const dayCheck = new Date(`${day}T00:00:00Z`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(closeAtValue) ||
+    Number.isNaN(closeAt.getTime()) ||
+    Number.isNaN(dayCheck.getTime()) ||
+    dayCheck.toISOString().slice(0, 10) !== day
+  ) {
+    throw new ConfigError(
+      'BETA_APPLICATIONS_CLOSE_AT must be an ISO 8601 date and time with a UTC offset (for example 2027-01-01T00:00:00-08:00).',
+    );
+  }
+
   loaded = {
     billing,
     mail,
     media,
     googleSignIn: Boolean(googleId && googleSecret),
     weather: Boolean(read(env, 'VISUAL_CROSSING_API_KEY')),
+    betaApplicationsCloseAt: closeAt,
     ...(sentryRelay ? { sentryRelay } : {}),
   };
   return loaded;

@@ -2,10 +2,17 @@ import { useState, FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import * as api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
+import { useConfig } from '../context/ConfigContext';
 import AuthFormLayout from '../components/AuthFormLayout';
+import BetaTermsCheckbox from '../components/BetaTermsCheckbox';
+
+// Final text from General Counsel.
+const VERIFY_NOTICE =
+  'Please verify your email address. Until you do, whoever controls this address can take over this account or have it removed.';
 
 export default function RegisterPage() {
-  const { isGuest, refetch } = useAuth();
+  const { isGuest, refetchAfterSignIn } = useAuth();
+  const { betaGate } = useConfig();
   const navigate = useNavigate();
 
   const [email, setEmail] = useState('');
@@ -18,6 +25,13 @@ export default function RegisterPage() {
   const [alreadyExists, setAlreadyExists] = useState(false);
 
   const title = isGuest ? 'Save your garden' : 'Create your account';
+
+  // The server asked for the terms, so the gate is on whatever the config said
+  // (it went stale or failed to load).
+  const [betaTermsDemanded, setBetaTermsDemanded] = useState(false);
+
+  // Once the form has swapped to signing in, nothing is being created.
+  const showBetaTerms = (betaGate || betaTermsDemanded) && !alreadyExists;
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -32,7 +46,7 @@ export default function RegisterPage() {
       // Swapped action: sign in with the existing account
       try {
         await api.post('/api/auth/login', { email, password });
-        await refetch();
+        await refetchAfterSignIn();
         navigate('/', { replace: true });
       } catch (err) {
         if (err instanceof api.ApiError && err.status === 401) {
@@ -47,15 +61,22 @@ export default function RegisterPage() {
     }
 
     try {
-      await api.post('/api/auth/register', { email, password });
-      await refetch();
+      await api.post('/api/auth/register', {
+        email,
+        password,
+        ...(showBetaTerms ? { acceptBetaTerms: true } : {}),
+      });
+      await refetchAfterSignIn();
       navigate('/', { replace: true });
     } catch (err) {
       if (err instanceof api.ApiError) {
         if (err.status === 409) {
           setAlreadyExists(true);
           setError('');
+        } else if (err.status === 403 && api.apiErrorCode(err) === 'not_invited') {
+          navigate('/private-beta', { state: { refused: true } });
         } else {
+          if (api.apiErrorCode(err) === 'beta_terms_required') setBetaTermsDemanded(true);
           const body = err.body as { error?: string } | null;
           setError(body?.error ?? 'Something went wrong. Please try again.');
         }
@@ -92,8 +113,14 @@ export default function RegisterPage() {
             autoComplete="email"
             value={email}
             onChange={e => setEmail(e.target.value)}
+            aria-describedby={alreadyExists ? undefined : 'email-verify-notice'}
             style={inputStyle}
           />
+          {!alreadyExists && (
+            <p id="email-verify-notice" style={{ margin: '0.25rem 0 0', fontSize: '0.75rem', color: 'var(--c-text-2)' }}>
+              {VERIFY_NOTICE}
+            </p>
+          )}
         </div>
 
         <div style={{ marginBottom: '1rem' }}>
@@ -124,6 +151,12 @@ export default function RegisterPage() {
             </p>
           )}
         </div>
+
+        {showBetaTerms && (
+          <div style={{ marginBottom: '1rem' }}>
+            <BetaTermsCheckbox />
+          </div>
+        )}
 
         {error && <p style={errorStyle}>{error}</p>}
 

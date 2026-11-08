@@ -512,6 +512,7 @@ export default function ModerationPage() {
             onChange={(e) => setNote(e.target.value)}
             maxLength={NOTE_MAX}
             rows={4}
+            aria-describedby="moderation-note-hint"
             style={{
               boxSizing: 'border-box',
               width: '100%',
@@ -526,8 +527,20 @@ export default function ModerationPage() {
             }}
           />
         </label>
-        <div style={{ marginTop: 'var(--sp-1)', fontSize: 12, color: 'var(--c-text-3)', textAlign: 'right' }}>
-          {note.length} / {NOTE_MAX}
+        <div
+          style={{
+            marginTop: 'var(--sp-1)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 'var(--sp-2)',
+            fontSize: 12,
+            color: 'var(--c-text-3)',
+          }}
+        >
+          <span id="moderation-note-hint">Don&rsquo;t include email addresses or other personal details.</span>
+          <span style={{ flexShrink: 0 }}>
+            {note.length} / {NOTE_MAX}
+          </span>
         </div>
       </ConfirmDialog>
     </div>

@@ -1,7 +1,10 @@
 import type { PoolClient } from 'pg';
 
-export type AdminAction = 'account.role' | 'account.tier' | 'moderation.resolve' | 'feedback.status';
-export type AdminTarget = 'account' | 'moderation_item' | 'feedback';
+export type AdminAction =
+  | 'account.role' | 'account.tier' | 'moderation.resolve' | 'feedback.status'
+  | 'beta.setting' | 'beta.invite.add' | 'beta.invite.remove' | 'beta.invite.cleanup';
+export type AdminTarget =
+  'account' | 'moderation_item' | 'feedback' | 'beta_settings' | 'beta_invite';
 
 export interface AdminAuditEntry {
   adminId: number;

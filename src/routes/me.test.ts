@@ -1375,6 +1375,18 @@ describe('POST /api/me/verify-email/resend', () => {
       expect(res.body.data.sent).toBe(true);
       expect(sendMailMock).toHaveBeenCalledWith(expect.objectContaining({ to: email }));
     }
+    // The email explains verifying and carries a "This wasn't me" link with the same token.
+    const notice =
+      "Verifying keeps this account tied to you. Didn't sign up for Vernal? Use the 'This wasn't me' link below and we'll remove the account.";
+    const { text, html } = sendMailMock.mock.calls[0][0];
+    expect(text).toContain(notice);
+    expect(html).toContain(`<p>${notice}</p>`);
+    const token = text.match(/verify-email\?token=([a-f0-9]+)/)![1];
+    expect(text).toMatch(/This wasn't me: \S+\/not-me\?token=[a-f0-9]+$/);
+    expect(text.endsWith(`/not-me?token=${token}`)).toBe(true);
+    expect(html).toContain(`/verify-email?token=${token}">`);
+    expect(html).toContain(`/not-me?token=${token}">This wasn't me</a>`);
+    expect(text).not.toContain('you can ignore this email');
     const { rows } = await pool.query(
       'SELECT 1 FROM email_verification_tokens WHERE account_id = $1 AND used_at IS NULL',
       [accountId],

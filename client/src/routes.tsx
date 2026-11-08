@@ -11,7 +11,11 @@ import RegisterPage from './pages/RegisterPage';
 import OnboardingPage from './pages/OnboardingPage';
 import SessionExpiredPage from './pages/SessionExpiredPage';
 import ConnectionProblemPage from './pages/ConnectionProblemPage';
+import PrivateBetaPage from './pages/PrivateBetaPage';
+import BetaTermsPage from './pages/BetaTermsPage';
 import ResetPasswordPage from './pages/ResetPasswordPage';
+import ClaimAccountPage from './pages/ClaimAccountPage';
+import NotMePage from './pages/NotMePage';
 import MyGardensPage from './pages/MyGardensPage';
 import SeedCataloguePage from './pages/SeedCataloguePage';
 import PlantingGuidePage from './pages/PlantingGuidePage';
@@ -37,6 +41,7 @@ import AdminShell from './components/admin/AdminShell';
 const AdminSeedsPage = lazy(() => import('./pages/admin/SeedsPage'));
 const AdminModerationPage = lazy(() => import('./pages/admin/ModerationPage'));
 const AdminUsersPage = lazy(() => import('./pages/admin/UsersPage'));
+const AdminBetaPage = lazy(() => import('./pages/admin/BetaPage'));
 const AdminFeaturesPage = lazy(() => import('./pages/admin/FeaturesPage'));
 const AdminFeedbackPage = lazy(() => import('./pages/admin/FeedbackPage'));
 const AdminSystemPage = lazy(() => import('./pages/admin/SystemPage'));
@@ -119,6 +124,8 @@ const shellRoutes: RouteObject[] = [
       </AccountRoute>
     ),
   },
+  // Where Stripe returns people from checkout and the billing portal (STRIPE_SUCCESS_URL, STRIPE_CANCEL_URL).
+  { path: '/account/billing', element: <Navigate to="/account?section=subscription" replace /> },
   {
     path: '/garden/:gardenId/soil',
     element: (
@@ -171,6 +178,7 @@ const routes: RouteObject[] = [
           { path: 'seeds', element: <AdminSeedsPage /> },
           { path: 'moderation', element: <AdminModerationPage /> },
           { path: 'users', element: <AdminUsersPage /> },
+          { path: 'beta', element: <AdminBetaPage /> },
           { path: 'features', element: <AdminFeaturesPage /> },
           { path: 'feedback', element: <AdminFeedbackPage /> },
           { path: 'system', element: <AdminSystemPage /> },
@@ -221,8 +229,28 @@ const routes: RouteObject[] = [
     element: <ConnectionProblemPage />,
   },
   {
+    // No guard: the Google callback redirects here. The page handles accounts itself.
+    path: '/private-beta',
+    element: <PrivateBetaPage />,
+  },
+  {
+    path: '/beta-terms',
+    element: <BetaTermsPage />,
+  },
+  {
     path: '/reset-password',
     element: <ResetPasswordPage />,
+  },
+  {
+    // No guard: the Google callback redirects here when a sign-in matches an
+    // unverified account, and the page asks whether the person created it.
+    path: '/claim-account',
+    element: <ClaimAccountPage />,
+  },
+  {
+    // No guard: the "This wasn't me" link in the verification email.
+    path: '/not-me',
+    element: <NotMePage />,
   },
   {
     path: '/privacy',

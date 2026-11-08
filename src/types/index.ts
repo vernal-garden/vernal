@@ -21,6 +21,9 @@ export interface SessionAccount {
   role: 'user' | 'admin';
   subscriptionTier: 'free' | 'supporter';
   deletionScheduledAt: string | null;
+  betaParticipant: boolean;
+  betaTermsPending: boolean;  // participant who has not accepted the current beta terms
+  termsPending: boolean;      // account claimed (claimed_at) and the Terms not accepted since
 }
 
 declare global {

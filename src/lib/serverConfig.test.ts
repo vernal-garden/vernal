@@ -28,6 +28,7 @@ describe('loadServerConfig', () => {
       media: 's3',
       googleSignIn: false,
       weather: false,
+      betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
     });
   });
 
@@ -219,9 +220,39 @@ describe('secureCookies', () => {
   });
 });
 
+describe('BETA_APPLICATIONS_CLOSE_AT', () => {
+  it('defaults to 2027-01-01 Pacific, and treats blank as unset', () => {
+    expect(loadServerConfig(base).betaApplicationsCloseAt.toISOString()).toBe('2027-01-01T08:00:00.000Z');
+    expect(loadServerConfig({ ...base, BETA_APPLICATIONS_CLOSE_AT: '  ' }).betaApplicationsCloseAt.toISOString()).toBe(
+      '2027-01-01T08:00:00.000Z',
+    );
+  });
+
+  it('reads a date with an offset', () => {
+    const cfg = loadServerConfig({ ...base, BETA_APPLICATIONS_CLOSE_AT: '2026-12-01T00:00:00Z' });
+    expect(cfg.betaApplicationsCloseAt.toISOString()).toBe('2026-12-01T00:00:00.000Z');
+  });
+
+  it.each(['1', 'soonish 12', 'Dec 1', '2027-01-01T00:00:00', '2027-01-01', '2026-02-31T00:00:00Z'])(
+    'rejects %s',
+    (value) => {
+      const run = () => loadServerConfig({ ...base, BETA_APPLICATIONS_CLOSE_AT: value });
+      expect(run).toThrow(ConfigError);
+      expect(run).toThrow('BETA_APPLICATIONS_CLOSE_AT must be an ISO 8601');
+    },
+  );
+
+  it('rejects an unparseable value, naming the variable but not echoing it', () => {
+    const run = () => loadServerConfig({ ...base, BETA_APPLICATIONS_CLOSE_AT: 'soonish' });
+    expect(run).toThrow(ConfigError);
+    expect(run).toThrow('BETA_APPLICATIONS_CLOSE_AT');
+    expect(run).not.toThrow(/soonish/);
+  });
+});
+
 describe('setServerConfigForTests', () => {
   it('replaces the loaded config', () => {
-    const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true };
+    const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date(0) };
     setServerConfigForTests(custom);
     expect(getServerConfig()).toBe(custom);
   });

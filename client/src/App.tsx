@@ -3,6 +3,7 @@ import * as Sentry from '@sentry/react';
 import { RouterProvider } from 'react-router-dom';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 import { AuthProvider } from './context/AuthContext';
+import { ConfigGate, ConfigProvider } from './context/ConfigContext';
 import { CanvasPresenceProvider } from './context/CanvasPresenceContext';
 import MergePrompt from './components/MergePrompt';
 import FeedbackWidget from './components/FeedbackWidget';
@@ -82,17 +83,21 @@ export default function App() {
 
   return (
     <Sentry.ErrorBoundary fallback={<p className="p-4 text-red-500">Something went wrong. Please refresh.</p>}>
-      <AuthProvider>
-        <CanvasPresenceProvider>
-          {/* v6 behaviour: no startTransition around router state. With it, the
-              guard redirects (e.g. AccountRoute → /login) win the race against
-              useSignOut's navigate('/') after the auth state flips to guest. */}
-          <RouterProvider router={router} useTransitions={false} />
-          <FeedbackWidget bottomOffset={deletionBannerHeight + (needRefresh ? bannerHeight : 0)} />
-        </CanvasPresenceProvider>
-        <MergePrompt />
-        <PendingDeletionBanner onHeightChange={setDeletionBannerHeight} />
-      </AuthProvider>
+      <ConfigProvider>
+        <AuthProvider>
+          <ConfigGate>
+            <CanvasPresenceProvider>
+              {/* v6 behaviour: no startTransition around router state. With it, the
+                  guard redirects (e.g. AccountRoute → /login) win the race against
+                  useSignOut's navigate('/') after the auth state flips to guest. */}
+              <RouterProvider router={router} useTransitions={false} />
+              <FeedbackWidget bottomOffset={deletionBannerHeight + (needRefresh ? bannerHeight : 0)} />
+            </CanvasPresenceProvider>
+            <MergePrompt />
+            <PendingDeletionBanner onHeightChange={setDeletionBannerHeight} />
+          </ConfigGate>
+        </AuthProvider>
+      </ConfigProvider>
       {needRefresh && (
         <UpdateBanner
           offset={deletionBannerHeight}

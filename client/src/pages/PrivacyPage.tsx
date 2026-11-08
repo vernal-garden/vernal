@@ -152,9 +152,29 @@ export default function PrivacyPage() {
             <strong>Email-change records:</strong> they hold email addresses, so they are deleted after 30 days.
           </li>
           <li>
+            <strong>Invite list:</strong> while Vernal is in private beta, we keep a list of the email addresses
+            we&rsquo;ve invited. If you create an account, your address stays on the list until you delete your
+            account, and then it&rsquo;s removed in the same 30-day purge as the rest of your data. If you never
+            create an account, we delete your address when the beta ends or 180 days after we invited you, whichever
+            comes first. Our admin records note when an invite was added or removed, but they don&rsquo;t keep your
+            email address.
+          </li>
+          <li>
             <strong>Deleting your account:</strong> deletion is scheduled for 30 days later, and you can cancel it
             until then. After that, your account and its data are removed, including your photos, exports,
             feedback, usage events and seed ratings.
+          </li>
+          <li>
+            <strong>Unverified accounts:</strong> if an account&rsquo;s email address is never verified, the next
+            person to prove they control that address, by verifying it, resetting the password, or signing in with
+            Google, is asked whether they created the account. If they say yes, the account stays as it is. If they
+            say no, or use the &ldquo;This wasn&rsquo;t me&rdquo; link in the verification email, we treat the
+            account as created by someone else and delete it after 30 days. Someone who says no while signing in
+            gets a new account of their own. Questions about an account removed this way can go to{' '}
+            <a href="mailto:hello@vernal.garden" style={legalLinkStyle}>
+              hello@vernal.garden
+            </a>{' '}
+            during that period.
           </li>
           <li>
             <strong>Payment records:</strong> Stripe keeps these under its own policy.

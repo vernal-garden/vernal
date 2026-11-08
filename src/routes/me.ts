@@ -2,6 +2,8 @@ import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { db } from '../lib/db';
 import { effectiveTier } from '../lib/tier';
+import { BETA_TERMS_VERSION, TERMS_VERSION } from '../lib/legal';
+import { getBetaSettings, betaAccessApplies, type BetaSettings } from '../lib/beta';
 import { requireAuth } from '../middleware/auth';
 import { requireMail } from '../middleware/requireMail';
 import { clearSessionCookie, makeSessionCookie, revokeAccountSessions, rotateLiveSessionToken } from '../lib/sessions';
@@ -39,6 +41,7 @@ interface AccountRow {
   first_fall_frost_date: string | null;
   role: string;
   subscription_tier: string;
+  beta_participant_at: Date | null;
   preferences: Record<string, unknown>;
   deletion_scheduled_at: string | null;
   supporter_prompt_shown: boolean;
@@ -50,11 +53,11 @@ interface AccountRow {
 const ACCOUNT_SELECT = `
   id::text, email, pending_email, display_name, avatar_url, email_verified, zone,
   zone_location_label, last_spring_frost_date::text, first_fall_frost_date::text,
-  role, subscription_tier, preferences, deletion_scheduled_at, supporter_prompt_shown,
+  role, subscription_tier, beta_participant_at, preferences, deletion_scheduled_at, supporter_prompt_shown,
   (password_hash IS NOT NULL) AS is_password_account, created_at, updated_at
 `;
 
-function formatAccount(row: AccountRow) {
+function formatAccount(row: AccountRow, beta: BetaSettings) {
   return {
     id: row.id,
     email: row.email,
@@ -67,7 +70,10 @@ function formatAccount(row: AccountRow) {
     lastSpringFrostDate: row.last_spring_frost_date,
     firstFallFrostDate: row.first_fall_frost_date,
     role: row.role,
-    subscriptionTier: effectiveTier(row.subscription_tier as 'free' | 'supporter'),
+    subscriptionTier: effectiveTier(
+      row.subscription_tier as 'free' | 'supporter',
+      betaAccessApplies(row.beta_participant_at, beta),
+    ),
     preferences: row.preferences ?? {},
     deletionScheduledAt: row.deletion_scheduled_at,
     supporterPromptShown: row.supporter_prompt_shown,
@@ -89,7 +95,7 @@ router.get('/', async (req, res) => {
       clearSessionCookie(res);
       return res.status(401).json({ error: 'Account not found' });
     }
-    res.json({ data: formatAccount(rows[0]) });
+    res.json({ data: formatAccount(rows[0], await getBetaSettings()) });
   } catch (err) {
     logger.error('GET /me failed', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -197,7 +203,7 @@ router.patch('/', writeLimiter, locationChangeLimiter, async (req, res) => {
     }
     // Location and frost dates feed the metrics dashboard.
     invalidateMetrics(req.session!.account!.id);
-    res.json({ data: formatAccount(rows[0]) });
+    res.json({ data: formatAccount(rows[0], await getBetaSettings()) });
   } catch (err) {
     logger.error('PATCH /me failed', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -687,6 +693,51 @@ router.post('/cancel-deletion', writeLimiter, async (req, res) => {
     res.json({ data: { deletionScheduledAt: null } });
   } catch (err) {
     logger.error('POST /me/cancel-deletion failed', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/me/terms
+// Records acceptance of the current Terms, which lifts the hold after a claim.
+// The body names the version shown (from GET /api/auth/session), so a screen
+// left open across a Terms change can't accept text it never showed.
+router.post('/terms', writeLimiter, async (req, res) => {
+  if (req.body?.accept !== true) {
+    return res.status(400).json({ error: 'Accept the Terms to continue.', code: 'terms_required' });
+  }
+  if (req.body?.version !== TERMS_VERSION) {
+    return res.status(409).json({ error: 'The Terms have changed. Please review them and try again.', code: 'terms_version_changed' });
+  }
+  const accountId = req.session!.account!.id;
+
+  try {
+    await db.query(
+      'UPDATE accounts SET terms_version = $2, terms_accepted_at = NOW(), updated_at = NOW() WHERE id = $1',
+      [accountId, TERMS_VERSION],
+    );
+    res.status(204).end();
+  } catch (err) {
+    logger.error('POST /me/terms failed', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/me/beta-terms
+// Records acceptance of the current beta terms version. Idempotent.
+router.post('/beta-terms', writeLimiter, async (req, res) => {
+  if (req.body?.accept !== true) {
+    return res.status(400).json({ error: 'Accept the beta terms to continue.', code: 'beta_terms_required' });
+  }
+  const accountId = req.session!.account!.id;
+
+  try {
+    await db.query(
+      'UPDATE accounts SET beta_terms_version = $2, beta_terms_accepted_at = NOW(), updated_at = NOW() WHERE id = $1 AND beta_terms_version IS DISTINCT FROM $2',
+      [accountId, BETA_TERMS_VERSION],
+    );
+    res.status(204).end();
+  } catch (err) {
+    logger.error('POST /me/beta-terms failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -58,6 +58,17 @@ describe('GET /api/subscription', () => {
     expect(res.body.periodEnd).toBeNull();
     expect(res.body.cancelledAt).toBeNull();
     expect(res.body.hasCustomer).toBe(false);
+    expect(res.body.emailVerified).toBe(true);
+  });
+
+  it('reports an unverified email address', async () => {
+    const id = await createUser('sub-get-unverified@example.com');
+    await pool.query('UPDATE accounts SET email_verified = false WHERE id = $1', [id]);
+    const agent = await loginAgent('sub-get-unverified@example.com');
+
+    const res = await agent.get('/api/subscription');
+    expect(res.status).toBe(200);
+    expect(res.body.emailVerified).toBe(false);
   });
 
   it('returns 401 with no session', async () => {
@@ -153,6 +164,36 @@ describe('POST /api/subscription/checkout — guards', () => {
     expect(res.body).toEqual({ error: "You're already a supporter.", code: 'already_supporter' });
     expect(listSubs).toHaveBeenCalledWith({ customer: 'cus_live', status: 'all', limit: 10 });
     expect(sessionsCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(['monthly', 'annual', 'lifetime'] as const)(
+    'returns 403 email_unverified for an unverified account (%s) before touching Stripe',
+    async (interval) => {
+      const email = `co-unverified-${interval}@example.com`;
+      const id = await createUser(email);
+      await pool.query('UPDATE accounts SET email_verified = false WHERE id = $1', [id]);
+      const agent = await loginAgent(email);
+
+      const res = await agent.post('/api/subscription/checkout').send({ interval });
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({
+        error: 'Verify your email address before buying Supporter.',
+        code: 'email_unverified',
+      });
+      expect(customersCreate).not.toHaveBeenCalled();
+      expect(sessionsCreate).not.toHaveBeenCalled();
+      const { rows } = await pool.query('SELECT stripe_customer_id FROM accounts WHERE id = $1', [id]);
+      expect(rows[0].stripe_customer_id).toBeNull();
+    },
+  );
+
+  it('lets a verified account start checkout', async () => {
+    await createUser('co-verified@example.com', { stripeCustomerId: 'cus_verified' });
+    const agent = await loginAgent('co-verified@example.com');
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'annual' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ url: 'https://checkout.test/session' });
+    expect(sessionsCreate).toHaveBeenCalledTimes(1);
   });
 
   it('uses the stored customer when a concurrent request saved one first', async () => {

@@ -35,7 +35,9 @@ import { ConfigError, getServerConfig } from './lib/serverConfig';
 import { dbSslMode } from './lib/dbSsl';
 import { storage } from './lib/storage';
 import { sessionMiddleware } from './middleware/session';
+import { makeSameOriginGuard } from './middleware/sameOrigin';
 import { blockWhilePendingDeletion } from './middleware/pendingDeletion';
+import { termsGate } from './middleware/betaTerms';
 import { dbBackpressure } from './middleware/dbBackpressure';
 import { apiLimiters } from './middleware/rateLimiters';
 import { sentryRelayRouter } from './routes/sentryRelay';
@@ -54,6 +56,8 @@ app.set('trust proxy', 1);
 
 const PORT = Number(process.env.PORT) || 3000;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+// The browser origins this API serves: CORS and the cross-site guard share it.
+const ALLOWED_ORIGINS = [FRONTEND_URL];
 
 // ── Security ─────────────────────────────────────────────────────────────────
 // This server returns JSON only — it never serves HTML, so there's nothing for
@@ -76,7 +80,7 @@ app.use(
 );
 app.use(
   cors({
-    origin: FRONTEND_URL,
+    origin: ALLOWED_ORIGINS,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   }),
@@ -85,6 +89,10 @@ app.use(
 // Request timing for the admin System page — ahead of the Stripe webhook so
 // every /api route is covered.
 app.use(requestMetricsMiddleware);
+
+// Refuses cross-site state-changing requests (login CSRF). Ahead of everything
+// that reads a body or a session; the Stripe webhook is exempt by path.
+app.use('/api', makeSameOriginGuard(ALLOWED_ORIGINS));
 
 // ── Stripe webhook ───────────────────────────────────────────────────────────
 // Must be mounted before express.json() — Stripe signature verification
@@ -125,6 +133,7 @@ app.use('/api/relay', sentryRelayRouter);
 app.use('/api', dbBackpressure);
 app.use(sessionMiddleware);
 app.use('/api', blockWhilePendingDeletion);
+app.use('/api', termsGate);
 initPassport();
 app.use(passport.initialize());
 

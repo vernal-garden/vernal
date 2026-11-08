@@ -13,7 +13,9 @@ export default function ProtectedRoute({ children, requireOnboarding = false }: 
   if (state.kind === 'loading') return null;
   if (state.kind === 'expired') return <Navigate to="/session-expired" replace />;
   if (state.kind === 'unreachable') return <Navigate to="/connection-problem" replace />;
-  // gardenCount is null only for loading/expired/unreachable, all already handled above
+  if (state.kind === 'private_beta') return <Navigate to="/private-beta" replace />;
+  if (state.kind === 'beta_terms') return <Navigate to="/beta-terms" replace />;
+  // gardenCount is null only for the states already handled above
   if (requireOnboarding && gardenCount === 0) return <Navigate to="/onboarding" replace />;
   return <>{children}</>;
 }

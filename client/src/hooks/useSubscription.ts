@@ -5,10 +5,14 @@ import { get } from '../lib/api';
 export interface SubscriptionData {
   tier: 'free' | 'supporter';
   isSupporter: boolean;
+  /** Supporter access from beta participation; the stored tier is still free. */
+  betaAccess: boolean;
   interval: 'monthly' | 'annual' | 'lifetime' | null;
   periodEnd: string | null;
   cancelledAt: string | null;
   hasCustomer: boolean;
+  /** Checkout is refused until the account's email address is verified. */
+  emailVerified: boolean;
 }
 
 export function useSubscription() {

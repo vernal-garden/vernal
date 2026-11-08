@@ -80,3 +80,26 @@ export async function sendPasswordChangedNotice(to: string): Promise<void> {
     logger.error('Password-changed notice failed to send', err);
   }
 }
+
+// Sent after a Google sign-in claimed an account that had a password
+// (resolveAccount.ts): the password was removed and every session revoked.
+export async function sendPasswordRemovedNotice(to: string): Promise<void> {
+  const loginUrl = `${frontendUrl()}/login`;
+  const removed =
+    'The password on your Vernal account was just removed, because you signed in with Google. Your other devices were signed out too.';
+  const why =
+    'This makes sure only the person who controls this email address can get into your account. Your gardens, seeds and records are all still there.';
+  const ifNot =
+    "If you didn't sign in with Google just now, someone else may be using your Google account. Change your Google password first, then email";
+  const support = 'robert@vernal.garden';
+  try {
+    await sendMail({
+      to,
+      subject: 'Your Vernal password was removed',
+      text: `${removed}\n\n${why}\n\nFrom now on, sign in with "Continue with Google". If you'd like a password as well, open ${loginUrl} and choose "Forgot password?" to set one.\n\n${ifNot} ${support}.`,
+      html: `<p>${removed}</p><p>${why}</p><p>From now on, sign in with "Continue with Google". If you'd like a password as well, open <a href="${loginUrl}">${loginUrl}</a> and choose "Forgot password?" to set one.</p><p>${ifNot} <a href="mailto:${support}">${support}</a>.</p>`,
+    });
+  } catch (err) {
+    logger.error('Password-removed notice failed to send', err);
+  }
+}

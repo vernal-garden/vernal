@@ -13,7 +13,7 @@ const OAUTH_ERRORS: Record<string, string> = {
 };
 
 export default function LoginPage() {
-  const { refetch } = useAuth();
+  const { refetchAfterSignIn } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const returnTo =
@@ -44,7 +44,7 @@ export default function LoginPage() {
     setError('');
     try {
       await api.post('/api/auth/login', { email, password });
-      await refetch();
+      await refetchAfterSignIn();
       navigate(returnTo, { replace: true });
     } catch (err) {
       if (err instanceof api.ApiError) {

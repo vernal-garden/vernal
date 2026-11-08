@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { SessionData, SessionAccount } from '../types';
 import { hashToken } from './tokens';
 import { effectiveTier } from './tier';
+import { getBetaSettings, betaAccessApplies, betaTermsPending } from './beta';
 import { secureCookies } from './serverConfig';
 
 const SESSION_DAYS = parseInt(process.env.SESSION_DAYS ?? '7', 10);
@@ -238,11 +239,17 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
     role: string | null;
     subscription_tier: string | null;
     deletion_scheduled_at: string | null;
+    beta_participant_at: Date | null;
+    beta_terms_version: string | null;
+    terms_pending: boolean | null;
     authenticated_at: Date | null;
   }>(
     `SELECT
        gs.id, gs.token_hash AS token, gs.expires_at, gs.account_id,
        a.email, a.role, a.subscription_tier, a.deletion_scheduled_at,
+       a.beta_participant_at, a.beta_terms_version,
+       a.claimed_at IS NOT NULL
+         AND (a.terms_accepted_at IS NULL OR a.terms_accepted_at < a.claimed_at) AS terms_pending,
        gs.authenticated_at
      FROM guest_sessions gs
      LEFT JOIN accounts a ON a.id = gs.account_id
@@ -254,13 +261,24 @@ export async function findSession(signedToken: string): Promise<SessionData | nu
   if (rows.length === 0) return null;
 
   const row = rows[0];
+  // Only participants need the settings, so guests and everyone else pay nothing.
+  const betaAccess =
+    row.beta_participant_at !== null &&
+    betaAccessApplies(row.beta_participant_at, await getBetaSettings());
   const account: SessionAccount | null = row.account_id
     ? {
         id: row.account_id,
         email: row.email!,
         role: (row.role as 'user' | 'admin'),
-        subscriptionTier: effectiveTier(row.subscription_tier as 'free' | 'supporter'),
+        subscriptionTier: effectiveTier(
+          row.subscription_tier as 'free' | 'supporter',
+          betaAccess,
+        ),
         deletionScheduledAt: row.deletion_scheduled_at,
+        betaParticipant: row.beta_participant_at !== null,
+        betaTermsPending: betaTermsPending(row.beta_participant_at, row.beta_terms_version),
+        // Only a claimed account is held; NULL Terms alone (older or Google-linked accounts) is not.
+        termsPending: row.terms_pending === true,
       }
     : null;
 

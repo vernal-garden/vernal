@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useConfig } from '../context/ConfigContext';
 import * as api from '../lib/api';
 
 const BUTTON_BASE: CSSProperties = {
@@ -50,6 +51,7 @@ const PAGE_STYLE: CSSProperties = {
 
 export default function SessionExpiredPage() {
   const { state, refetch } = useAuth();
+  const { guestMode } = useConfig();
   const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
   const [startProblem, setStartProblem] = useState<null | 'busy' | 'failed'>(null);
@@ -128,6 +130,13 @@ export default function SessionExpiredPage() {
       await refetch();
       navigate('/onboarding', { replace: true });
     } catch (err) {
+      // The config was stale or failed to load: guest mode is off after all.
+      // `starting` stays set so the redirect above can't race this navigate.
+      if (api.apiErrorCode(err) === 'guest_mode_off') {
+        await refetch().catch(() => {});
+        navigate('/private-beta', { replace: true });
+        return;
+      }
       setStartProblem(err instanceof api.ApiError && err.status === 429 ? 'busy' : 'failed');
       setStarting(false);
     }
@@ -166,7 +175,9 @@ export default function SessionExpiredPage() {
 
       {!recoverable && (
         <p style={{ margin: 0, maxWidth: 420, fontSize: 16, lineHeight: 1.5, color: 'var(--c-text-2)' }}>
-          Guest sessions don't last forever. Start a new garden, or create a free account to keep your gardens.
+          {guestMode
+            ? "Guest sessions don't last forever. Start a new garden, or create a free account to keep your gardens."
+            : 'Create a free account to save your gardens in future.'}
         </p>
       )}
 
@@ -185,15 +196,17 @@ export default function SessionExpiredPage() {
           </Link>
         ) : (
           <>
-            <button
-              type="button"
-              data-testid="session-expired-start"
-              onClick={startNewGarden}
-              disabled={starting}
-              style={{ ...PRIMARY_BUTTON, opacity: starting ? 0.6 : 1, cursor: starting ? 'default' : 'pointer' }}
-            >
-              Start a new garden
-            </button>
+            {guestMode && (
+              <button
+                type="button"
+                data-testid="session-expired-start"
+                onClick={startNewGarden}
+                disabled={starting}
+                style={{ ...PRIMARY_BUTTON, opacity: starting ? 0.6 : 1, cursor: starting ? 'default' : 'pointer' }}
+              >
+                Start a new garden
+              </button>
+            )}
             <Link
               to="/register"
               data-testid="session-expired-register"
@@ -202,7 +215,7 @@ export default function SessionExpiredPage() {
               onClick={(e) => {
                 if (starting) e.preventDefault();
               }}
-              style={{ ...SECONDARY_BUTTON, ...(starting ? { pointerEvents: 'none', opacity: 0.6 } : {}) }}
+              style={{ ...(guestMode ? SECONDARY_BUTTON : PRIMARY_BUTTON), ...(starting ? { pointerEvents: 'none', opacity: 0.6 } : {}) }}
             >
               Create an account
             </Link>

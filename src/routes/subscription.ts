@@ -6,6 +6,7 @@ import { logger } from '../lib/logger';
 import { getStripe } from '../lib/stripe';
 import { getServerConfig } from '../lib/serverConfig';
 import { effectiveTier } from '../lib/tier';
+import { getBetaSettings, betaAccessApplies } from '../lib/beta';
 import { requireAuth } from '../middleware/auth';
 import { checkoutLimiter } from '../middleware/rateLimiters';
 
@@ -42,10 +43,12 @@ function requireBilling(_req: Request, res: Response, next: NextFunction) {
 
 interface SubscriptionRow {
   subscription_tier: 'free' | 'supporter';
+  beta_participant_at: Date | null;
   subscription_interval: string | null;
   subscription_period_end: string | null;
   subscription_cancelled_at: string | null;
   stripe_customer_id: string | null;
+  email_verified: boolean;
 }
 
 // GET /api/subscription
@@ -53,8 +56,8 @@ router.get('/', async (req, res) => {
   try {
     const accountId = req.session!.account!.id;
     const { rows } = await db.query<SubscriptionRow>(
-      `SELECT subscription_tier, subscription_interval, subscription_period_end,
-              subscription_cancelled_at, stripe_customer_id
+      `SELECT subscription_tier, beta_participant_at, subscription_interval, subscription_period_end,
+              subscription_cancelled_at, stripe_customer_id, email_verified
        FROM accounts WHERE id = $1`,
       [accountId],
     );
@@ -63,14 +66,19 @@ router.get('/', async (req, res) => {
     }
     const row = rows[0];
     const tier = effectiveTier(row.subscription_tier);
+    const beta = await getBetaSettings();
     res.json({
       billing: getServerConfig().billing === 'stripe',
       tier,
       isSupporter: tier === 'supporter',
+      // Supporter access granted by beta participation, not by payment.
+      betaAccess: betaAccessApplies(row.beta_participant_at, beta) && row.subscription_tier === 'free',
       interval: row.subscription_interval,
       periodEnd: row.subscription_period_end,
       cancelledAt: row.subscription_cancelled_at,
       hasCustomer: !!row.stripe_customer_id,
+      // Checkout needs a verified email address.
+      emailVerified: row.email_verified,
     });
   } catch (err) {
     logger.error('GET /subscription failed', err);
@@ -97,9 +105,10 @@ router.post('/checkout', requireBilling, checkoutLimiter, async (req, res) => {
       deletion_scheduled_at: string | null;
       subscription_tier: 'free' | 'supporter';
       subscription_interval: string | null;
+      email_verified: boolean;
     }>(
       `SELECT email, display_name, stripe_customer_id, deletion_scheduled_at,
-              subscription_tier, subscription_interval
+              subscription_tier, subscription_interval, email_verified
        FROM accounts WHERE id = $1`,
       [accountId],
     );
@@ -121,6 +130,14 @@ router.post('/checkout', requireBilling, checkoutLimiter, async (req, res) => {
       (current.subscription_interval === 'lifetime' || interval !== 'lifetime')
     ) {
       return res.status(409).json({ error: "You're already a supporter.", code: 'already_supporter' });
+    }
+
+    // An unverified address can be claimed by its owner, which deletes this
+    // account, so no payment until the address is verified.
+    if (!current.email_verified) {
+      return res
+        .status(403)
+        .json({ error: 'Verify your email address before buying Supporter.', code: 'email_unverified' });
     }
 
     let customerId = rows[0].stripe_customer_id;

@@ -1,3 +1,5 @@
+import os from 'os';
+import path from 'path';
 import { defineConfig, devices } from '@playwright/test';
 
 // Two webServer entries because the app is split across two processes in every
@@ -14,6 +16,7 @@ import { defineConfig, devices } from '@playwright/test';
 // process on these E2E-only ports can never be mistaken for a fresh one.
 export default defineConfig({
   testDir: './tests/e2e',
+  globalSetup: './tests/e2e/global-setup.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
@@ -58,6 +61,9 @@ export default defineConfig({
         VISUAL_CROSSING_BASE_URL: 'http://127.0.0.1:9',
         VISUAL_CROSSING_API_KEY: 'e2e-dummy',
         NOMINATIM_BASE_URL: 'http://127.0.0.1:9',
+        // Unset, this falls through to root .env and writes to the real R2 buckets.
+        MEDIA_STORAGE: 'local',
+        MEDIA_DIR: path.join(os.tmpdir(), 'vernal-e2e-media'),
       },
     },
     {

@@ -22,7 +22,7 @@ interface Props {
   onUpdate: (patch: Partial<AccountData>) => void;
 }
 
-function DeleteAccountDialog({ onClose, onDeleted }: { onClose: () => void; onDeleted: () => void }) {
+export function DeleteAccountDialog({ onClose, onDeleted }: { onClose: () => void; onDeleted: () => void }) {
   const [confirmText, setConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,7 +122,7 @@ const EXPORT_COPY: Record<RequestableKind, { text: string; button: string }> = {
   failed: { text: "That export didn't finish. Try again.", button: 'Request export' },
 };
 
-function ExportDataCard() {
+export function ExportDataCard() {
   const [view, setView] = useState<ExportView>({ kind: 'loading' });
   const [error, setError] = useState<string | null>(null);
 

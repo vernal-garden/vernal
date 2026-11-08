@@ -3,12 +3,16 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import * as api from '../lib/api';
 import AuthFormLayout from '../components/AuthFormLayout';
 import { getUrlToken } from '../instrument';
+import BetaScreenLayout from '../components/BetaScreenLayout';
+import { TakeoverConfirm, TakeoverQuestion } from '../components/TakeoverSteps';
+import { TAKEOVER_MISC_COPY, TAKEOVER_REPLACE_COPY } from '../lib/takeoverCopy';
 
-function ExpiredMessage() {
+// The server's message when it gave a specific reason (e.g. nearly expired).
+function ExpiredMessage({ message }: { message?: string }) {
   return (
     <>
       <p style={{ color: '#374151', fontSize: '0.9375rem', marginBottom: '1rem' }}>
-        This link has expired or is invalid. Request a new one.
+        {message || 'This link has expired or is invalid. Request a new one.'}
       </p>
       <Link to="/login" style={{ color: '#4f7c3f', fontWeight: 500, fontSize: '0.9375rem' }}>
         Back to sign in
@@ -16,6 +20,12 @@ function ExpiredMessage() {
     </>
   );
 }
+
+type Choice = 'mine' | 'not_mine';
+// Unverified accounts ask first whether the person created the account.
+type Step = 'checking' | 'question' | 'confirm' | 'form';
+
+const INVALID_RESET = 'Invalid or expired reset token';
 
 export default function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
@@ -27,13 +37,42 @@ export default function ResetPasswordPage() {
     if (searchParams.has('token')) navigate(location.pathname, { replace: true });
   }, [searchParams, navigate, location.pathname]);
 
+  const [step, setStep] = useState<Step>(token ? 'checking' : 'form');
+  const [choice, setChoice] = useState<Choice | null>(null);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [expired, setExpired] = useState(false);
+  // Set on success; newAccount is what the server did, not what was asked (an
+  // account verified since the question gets a plain reset).
+  const [success, setSuccess] = useState<{ newAccount: boolean } | null>(null);
+  // null: not expired; '' : the usual message; otherwise the server's own.
+  const [expired, setExpired] = useState<string | null>(null);
   const [error, setError] = useState('');
+  // The link's address, shown with the question.
+  const [email, setEmail] = useState<string | null>(null);
+
+  // Read-only: never consumes the token.
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    api
+      .post<{ data: { unverifiedAccount: boolean; email?: string } }>('/api/auth/reset-password/inspect', { token })
+      .then((res) => {
+        if (cancelled) return;
+        setEmail(res?.data.email ?? null);
+        setStep(res?.data.unverifiedAccount ? 'question' : 'form');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof api.ApiError && err.status === 400) setExpired('');
+        // Otherwise the reset itself asks for a choice when one is needed.
+        else setStep('form');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
 
   if (!token) {
     return (
@@ -45,9 +84,16 @@ export default function ResetPasswordPage() {
 
   if (success) {
     return (
-      <AuthFormLayout title="Reset password">
+      // Its own key so the heading takes focus (a screen reader hears the result)
+      // even though the password step's layout already had focusHeading set.
+      <AuthFormLayout
+        key="success"
+        title={success.newAccount ? TAKEOVER_MISC_COPY.newAccountDoneHeading : 'Reset password'}
+        focusHeading
+        signInOptions={!success.newAccount}
+      >
         <p style={{ color: '#374151', fontSize: '0.9375rem', marginBottom: '1rem' }}>
-          Password updated — sign in to continue.
+          {success.newAccount ? TAKEOVER_MISC_COPY.newAccountDone : 'Password updated — sign in to continue.'}
         </p>
         <Link to="/login" style={{ color: '#4f7c3f', fontWeight: 500, fontSize: '0.9375rem' }}>
           Go to sign in
@@ -56,11 +102,53 @@ export default function ResetPasswordPage() {
     );
   }
 
-  if (expired) {
+  if (expired !== null) {
     return (
       <AuthFormLayout title="Reset password">
-        <ExpiredMessage />
+        <ExpiredMessage message={expired} />
       </AuthFormLayout>
+    );
+  }
+
+  if (step === 'checking') {
+    return (
+      <BetaScreenLayout testId="reset-password-checking">
+        <p style={{ margin: 0, color: 'var(--c-text-3)' }}>{TAKEOVER_MISC_COPY.checking}</p>
+      </BetaScreenLayout>
+    );
+  }
+
+  if (step === 'question') {
+    return (
+      <BetaScreenLayout testId="reset-password-question">
+        <TakeoverQuestion
+          email={email}
+          busy={false}
+          error={error}
+          onYes={() => {
+            setChoice('mine');
+            setStep('form');
+          }}
+          onNo={() => setStep('confirm')}
+        />
+      </BetaScreenLayout>
+    );
+  }
+
+  if (step === 'confirm') {
+    return (
+      <BetaScreenLayout testId="reset-password-confirm">
+        <TakeoverConfirm
+          copy={TAKEOVER_REPLACE_COPY}
+          busy={false}
+          error={error}
+          onRemove={() => {
+            setChoice('not_mine');
+            setStep('form');
+          }}
+          onBack={() => setStep('question')}
+        />
+      </BetaScreenLayout>
     );
   }
 
@@ -77,11 +165,22 @@ export default function ResetPasswordPage() {
     setLoading(true);
     setError('');
     try {
-      await api.post('/api/auth/reset-password', { token, password });
-      setSuccess(true);
+      const res = await api.post<{ data?: { newAccount?: boolean } }>(
+        '/api/auth/reset-password',
+        choice ? { token, password, choice } : { token, password },
+      );
+      setSuccess({ newAccount: res?.data?.newAccount === true });
     } catch (err) {
-      if (err instanceof api.ApiError && err.status === 400) {
-        setExpired(true);
+      if (api.apiErrorCode(err) === 'takeover_choice_required') {
+        // The account turned out to be unverified: ask now. The fields keep their values.
+        setChoice(null);
+        setStep('question');
+      } else if (err instanceof api.ApiError && err.status === 400) {
+        const message = api.apiErrorMessage(err, INVALID_RESET);
+        setExpired(message === INVALID_RESET ? '' : message);
+      } else if (err instanceof api.ApiError && (err.status < 500 || err.status === 502)) {
+        // Not invited (403), changed mid-reset (409), billing unreachable (502).
+        setError(api.apiErrorMessage(err, 'Something went wrong. Please try again.'));
       } else {
         setError('Something went wrong. Please try again.');
       }
@@ -90,8 +189,15 @@ export default function ResetPasswordPage() {
     }
   }
 
+  const forNewAccount = choice === 'not_mine';
+
   return (
-    <AuthFormLayout title="Reset password">
+    // Arriving from the question or its confirmation (choice set): focus the
+    // heading so a screen reader hears the password step.
+    <AuthFormLayout
+      title={forNewAccount ? TAKEOVER_MISC_COPY.newAccountPasswordTitle : 'Reset password'}
+      focusHeading={choice !== null}
+    >
       <form onSubmit={handleSubmit}>
         <div style={{ marginBottom: '1rem' }}>
           <label htmlFor="new-password" style={labelStyle}>New password</label>
@@ -136,7 +242,7 @@ export default function ResetPasswordPage() {
         {error && <p style={errorStyle}>{error}</p>}
 
         <button type="submit" disabled={loading} style={primaryBtn}>
-          {loading ? 'Updating…' : 'Update password'}
+          {forNewAccount ? TAKEOVER_MISC_COPY.newAccountSubmit : loading ? 'Updating…' : 'Update password'}
         </button>
       </form>
     </AuthFormLayout>

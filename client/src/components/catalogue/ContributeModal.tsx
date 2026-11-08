@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { post } from '../../lib/api';
 import { track } from '../../lib/track';
+import Switch from '../Switch';
 import type { PersonalSeedDetail } from '../../types/catalogue';
 
 interface Props {
@@ -107,31 +108,11 @@ export default function ContributeModal({ seed, photoCount, onClose, onContribut
               <span id="contribute-photos-label" style={{ fontSize: 14, color: 'var(--c-text)' }}>
                 Your photos are optional — include them?
               </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={includePhotos}
-                aria-labelledby="contribute-photos-label"
+              <Switch
+                checked={includePhotos}
+                labelledBy="contribute-photos-label"
                 onClick={() => setIncludePhotos(v => !v)}
-                style={{
-                  flexShrink: 0, minWidth: 44, minHeight: 44, padding: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                }}
-              >
-                <span style={{
-                  position: 'relative', width: 40, height: 24, borderRadius: 'var(--r-full)',
-                  background: includePhotos ? 'var(--c-primary)' : 'var(--c-border)',
-                  transition: 'background 0.15s',
-                }}>
-                  <span style={{
-                    position: 'absolute', top: 3, left: includePhotos ? 19 : 3,
-                    width: 18, height: 18, borderRadius: 'var(--r-full)',
-                    background: 'var(--c-surface)', boxShadow: 'var(--shadow-sm)',
-                    transition: 'left 0.15s',
-                  }} />
-                </span>
-              </button>
+              />
             </div>
             {includePhotos && (
               <p style={{ margin: 'var(--sp-1) 0 0', fontSize: 13, color: 'var(--c-text-2)' }}>

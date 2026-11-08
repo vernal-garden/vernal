@@ -252,6 +252,8 @@ export async function purgeExpiredGuests(
   const verificationResult = await db.query(
     `DELETE FROM email_verification_tokens WHERE expires_at < NOW()`,
   );
+  // Held Google sign-ins live 15 minutes; they hold an address and encrypted provider tokens.
+  const takeoverResult = await db.query(`DELETE FROM pending_takeovers WHERE expires_at < NOW()`);
   // Email-change tokens are kept after use or cancel (the per-recipient
   // cooldown counts them by created_at over 24h), but they hold email
   // addresses, so drop them after 30 days.
@@ -268,6 +270,7 @@ export async function purgeExpiredGuests(
       guestsAffected +
       (tokensResult.rowCount ?? 0) +
       (verificationResult.rowCount ?? 0) +
+      (takeoverResult.rowCount ?? 0) +
       (emailChangeResult.rowCount ?? 0) +
       (emailRevertResult.rowCount ?? 0),
   };
@@ -307,7 +310,8 @@ export async function purgeOldUsageEvents(): Promise<{ affected: number }> {
 // Deletes accounts 30 days past their scheduled deletion. Stripe is torn down
 // first; if that fails the account is kept for tomorrow. Its R2 folders (every
 // seed, garden and harvest it owns, and its exports) are queued in the same
-// transaction as the delete, so the drain owns them from then on.
+// transaction as the delete, so the drain owns them from then on. The beta
+// invite for the account's email goes in the same transaction.
 export async function purgeScheduledAccounts(): Promise<{ affected: number; failed: number }> {
   const { rows } = await db.query<{
     id: number;
@@ -373,6 +377,11 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number; fail
       await deleteAccountRatings(client, id);
       // Cascades the sessions' guest gardens and seeds.
       await client.query('DELETE FROM guest_sessions WHERE account_id = $1', [id]);
+      // Invites are stored lowercased; the invite must not outlive the account.
+      await client.query(
+        'DELETE FROM beta_invites WHERE email = (SELECT lower(email) FROM accounts WHERE id = $1)',
+        [id],
+      );
       await client.query('DELETE FROM accounts WHERE id = $1', [id]);
       await client.query('COMMIT');
       affected += 1;
@@ -386,6 +395,18 @@ export async function purgeScheduledAccounts(): Promise<{ affected: number; fail
     }
   }
   return { affected, failed };
+}
+
+// Deletes invites over 180 days old that no account uses. The backstop behind
+// the Admin "remove unused invites" cleanup, so the Privacy page promise holds
+// even if nobody runs it.
+export async function purgeStaleBetaInvites(): Promise<{ affected: number }> {
+  const result = await db.query(
+    `DELETE FROM beta_invites i
+      WHERE i.added_at < NOW() - INTERVAL '180 days'
+        AND NOT EXISTS (SELECT 1 FROM accounts a WHERE lower(a.email) = i.email)`,
+  );
+  return { affected: result.rowCount ?? 0 };
 }
 
 // Lifetime accounts have subscription_interval = 'lifetime', excluded by the
@@ -501,6 +522,7 @@ async function runNightlyTasks(): Promise<void> {
     ['purgeStripeEvents', purgeStripeEvents],
     ['purgeOldUsageEvents', purgeOldUsageEvents],
     ['purgeScheduledAccounts', purgeScheduledAccounts],
+    ['purgeStaleBetaInvites', purgeStaleBetaInvites],
     ['checkSubscriptionDowngrades', checkSubscriptionDowngrades],
     ['purgeExpiredExports', purgeExpiredExports],
     // Last: drains what tonight's purges queued.

@@ -25,6 +25,7 @@ async function loadMailer(mail: 'smtp' | 'off' = 'smtp') {
     media: 's3',
     googleSignIn: false,
     weather: false,
+    betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
   });
   const mailer = await import('./mailer');
   const { logger } = await import('./logger');

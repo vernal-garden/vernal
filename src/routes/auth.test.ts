@@ -265,13 +265,15 @@ describe('sessionMiddleware — last_active_at', () => {
     const res = await agent.get('/api/auth/session');
     expect(res.status).toBe(200);
 
-    await vi.waitFor(async () => expect(await lastActiveAt(accountId)).not.toBeNull());
+    await vi.waitFor(async () => expect(await lastActiveAt(accountId)).not.toBeNull(), { timeout: 5000 });
   });
 
   it('does not issue a second UPDATE within the hour', async () => {
     // The previous test bumped this account. Clear the column: a second UPDATE
     // would pass the SQL guard and set it, so it staying NULL proves the
-    // in-memory throttle skipped the query.
+    // in-memory throttle skipped the query. The previous test's bump must have
+    // landed first, or a late write would set the column after it is cleared.
+    await vi.waitFor(async () => expect(await lastActiveAt(accountId)).not.toBeNull(), { timeout: 5000 });
     await clearLastActiveAt(accountId);
 
     const res = await agent.get('/api/auth/session');
