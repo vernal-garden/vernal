@@ -16,6 +16,7 @@ import { mediaUrl } from '../lib/media';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { ImageBusyError, ImageRejectedError, processPhoto } from '../lib/imageProcessing';
 import { logger } from '../lib/logger';
+import { csvCell } from '../lib/csv';
 import type { SessionData } from '../types';
 
 const router = Router();
@@ -556,14 +557,6 @@ const CSV_HEADER = [
   'Photos',
   'Linked sowing',
 ];
-
-// RFC 4180 quoting, plus a leading quote on anything a spreadsheet would read
-// as a formula.
-function csvCell(v: string | number | null): string {
-  let s = v === null ? '' : String(v);
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
 
 router.get('/export.csv', async (req: Request, res: Response) => {
   const session = req.session as SessionData;

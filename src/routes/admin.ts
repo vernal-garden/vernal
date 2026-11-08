@@ -4,7 +4,9 @@ import { db } from '../lib/db';
 import { requireAdmin } from '../middleware/auth';
 import { adminRoleChangeLimiter } from '../middleware/rateLimiters';
 import { escapeLike, isNumericId, isValidEmail } from '../lib/validation';
-import { invalidateBetaSettings, readBetaSettings } from '../lib/beta';
+import { invalidateBetaSettings, isUsStateCode, readBetaSettings } from '../lib/beta';
+import { getServerConfig } from '../lib/serverConfig';
+import { csvRow } from '../lib/csv';
 import { logger } from '../lib/logger';
 import { recordAdminAction } from '../lib/adminAudit';
 import { EVENT_KEYS, MICRO_FEEDBACK_TRIGGERS } from '../lib/eventKeys';
@@ -1450,7 +1452,8 @@ router.post('/beta/invites', async (req, res) => {
     // Every valid email with an account, listed already or not: this heals an
     // invite whose account appeared later.
     const promoted = await client.query<{ email: string }>(
-      `UPDATE accounts SET beta_participant_at = COALESCE(beta_participant_at, now()), updated_at = now()
+      `UPDATE accounts SET beta_participant_at = COALESCE(beta_participant_at, now()),
+                           beta_joined_via = COALESCE(beta_joined_via, 'invite'), updated_at = now()
        WHERE email = ANY($1::text[]) AND beta_participant_at IS NULL
        RETURNING email`,
       [valid],
@@ -1567,6 +1570,244 @@ router.delete('/beta/invites/:id', async (req, res) => {
     sendServerError(res, 'DELETE /admin/beta/invites/:id', err);
   } finally {
     client.release();
+  }
+});
+
+// Survey credits: Robert records that a participant answered survey 1 or 2.
+
+router.post('/beta/survey-credits', async (req, res) => {
+  const body = (req.body ?? {}) as { accountId?: unknown; survey?: unknown };
+  const accountId =
+    typeof body.accountId === 'number' && Number.isInteger(body.accountId) &&
+    body.accountId >= 1 && body.accountId <= PG_INT_MAX
+      ? body.accountId
+      : null;
+  const survey = body.survey === 1 || body.survey === 2 ? body.survey : null;
+  if (accountId === null || survey === null) {
+    res.status(400).json({ error: 'Send accountId as a positive integer and survey as 1 or 2' });
+    return;
+  }
+
+  let client;
+  try {
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'POST /admin/beta/survey-credits', err);
+    return;
+  }
+
+  try {
+    const adminId = req.session!.account!.id;
+    await client.query('BEGIN');
+    const participant = await client.query(
+      'SELECT 1 FROM accounts WHERE id = $1 AND beta_participant_at IS NOT NULL',
+      [accountId],
+    );
+    if (participant.rowCount === 0) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    const inserted = await client.query<{ credited_at: Date }>(
+      `INSERT INTO beta_survey_credits (account_id, survey, credited_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING
+       RETURNING credited_at`,
+      [accountId, survey, adminId],
+    );
+    if (inserted.rowCount === 0) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'That survey is already credited' });
+      return;
+    }
+    await recordAdminAction(client, {
+      adminId,
+      action: 'beta.survey_credit.add',
+      targetType: 'account',
+      targetId: accountId,
+      before: null,
+      after: { survey },
+    });
+    await client.query('COMMIT');
+    res.status(201).json({ accountId, survey, creditedAt: inserted.rows[0].credited_at });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    sendServerError(res, 'POST /admin/beta/survey-credits', err);
+  } finally {
+    client.release();
+  }
+});
+
+router.delete('/beta/survey-credits/:accountId/:survey', async (req, res) => {
+  const accountId = parseIdParam(req.params.accountId as string);
+  const rawSurvey = req.params.survey as string;
+  const survey = rawSurvey === '1' ? 1 : rawSurvey === '2' ? 2 : null;
+  if (accountId === null || survey === null) {
+    res.status(400).json({ error: 'Invalid account id or survey' });
+    return;
+  }
+
+  let client;
+  try {
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'DELETE /admin/beta/survey-credits/:accountId/:survey', err);
+    return;
+  }
+
+  try {
+    await client.query('BEGIN');
+    const deleted = await client.query(
+      'DELETE FROM beta_survey_credits WHERE account_id = $1 AND survey = $2 RETURNING survey',
+      [accountId, survey],
+    );
+    if (deleted.rowCount === 0) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    await recordAdminAction(client, {
+      adminId: req.session!.account!.id,
+      action: 'beta.survey_credit.remove',
+      targetType: 'account',
+      targetId: accountId,
+      before: { survey },
+      after: null,
+    });
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    sendServerError(res, 'DELETE /admin/beta/survey-credits/:accountId/:survey', err);
+  } finally {
+    client.release();
+  }
+});
+
+// Cutover: who qualifies for the lifetime tier. Activity and feedback count
+// only inside the window [beta_participant_at, BETA_ENDS_AT); survey credits
+// count whenever they were entered.
+
+const LIFETIME_CSV_HEADER = [
+  'accountId',
+  'email',
+  'participantAt',
+  'joinedVia',
+  'activeWeeks',
+  'activeWeekCount',
+  'feedbackNotes',
+  'feedbackQuickAnswers',
+  'feedbackSurveys',
+  'feedbackTotal',
+  'qualifies',
+  'borderline',
+  'residenceState',
+  'residenceStateConfirmedAt',
+  'grantEligible',
+];
+
+const PACIFIC_DATE = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+router.get('/beta/lifetime', async (req, res) => {
+  const format = req.query.format;
+  if (format !== undefined && format !== 'csv' && format !== 'json') {
+    res.status(400).json({ error: 'format must be csv or json' });
+    return;
+  }
+
+  try {
+    const endsAt = getServerConfig().betaEndsAt;
+    const result = await db.query<{
+      id: number;
+      email: string;
+      beta_participant_at: Date;
+      beta_joined_via: 'invite' | 'guest' | null;
+      residence_state: string | null;
+      residence_state_confirmed_at: Date | null;
+      active_weeks: string[];
+      notes: number;
+      quick_answers: number;
+      surveys: number;
+    }>(
+      `SELECT a.id, a.email, a.beta_participant_at, a.beta_joined_via,
+              a.residence_state, a.residence_state_confirmed_at,
+              COALESCE((SELECT array_agg(to_char(w.week_start, 'YYYY-MM-DD') ORDER BY w.week_start)
+                          FROM beta_active_weeks w
+                         WHERE w.account_id = a.id AND w.first_active_at < $1), '{}') AS active_weeks,
+              (SELECT COUNT(*)::int FROM feedback_submissions f
+                WHERE f.user_id = a.id
+                  AND f.created_at >= a.beta_participant_at AND f.created_at < $1) AS notes,
+              (SELECT COUNT(*)::int FROM micro_feedback_responses m
+                WHERE m.account_id = a.id
+                  AND m.created_at >= a.beta_participant_at AND m.created_at < $1) AS quick_answers,
+              (SELECT COUNT(*)::int FROM beta_survey_credits s
+                WHERE s.account_id = a.id) AS surveys
+         FROM accounts a
+        WHERE a.beta_participant_at IS NOT NULL
+        ORDER BY a.beta_participant_at DESC, a.id DESC`,
+      [endsAt],
+    );
+
+    const rows = result.rows.map((r) => {
+      const activeWeekCount = r.active_weeks.length;
+      const total = r.notes + r.quick_answers + r.surveys;
+      const qualifies = activeWeekCount >= 3 && total >= 3;
+      return {
+        accountId: r.id,
+        email: r.email,
+        participantAt: r.beta_participant_at,
+        joinedVia: r.beta_joined_via,
+        activeWeeks: r.active_weeks,
+        activeWeekCount,
+        feedback: { notes: r.notes, quickAnswers: r.quick_answers, surveys: r.surveys, total },
+        qualifies,
+        borderline: activeWeekCount === 2 && total === 2,
+        residenceState: r.residence_state,
+        residenceStateConfirmedAt: r.residence_state_confirmed_at,
+        grantEligible: qualifies && isUsStateCode(r.residence_state),
+      };
+    });
+
+    if (format !== 'csv') {
+      res.json({ endsAt, rows });
+      return;
+    }
+
+    const lines = [csvRow(LIFETIME_CSV_HEADER)];
+    for (const r of rows) {
+      lines.push(
+        csvRow([
+          r.accountId,
+          r.email,
+          r.participantAt.toISOString(),
+          r.joinedVia,
+          r.activeWeeks.join(';'),
+          r.activeWeekCount,
+          r.feedback.notes,
+          r.feedback.quickAnswers,
+          r.feedback.surveys,
+          r.feedback.total,
+          r.qualifies,
+          r.borderline,
+          r.residenceState,
+          r.residenceStateConfirmedAt === null ? null : r.residenceStateConfirmedAt.toISOString(),
+          r.grantEligible,
+        ]),
+      );
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="lifetime-tier-${PACIFIC_DATE.format(new Date())}.csv"`,
+    );
+    res.send(lines.join('\r\n') + '\r\n');
+  } catch (err) {
+    sendServerError(res, 'GET /admin/beta/lifetime', err);
   }
 });
 

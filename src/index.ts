@@ -38,6 +38,7 @@ import { sessionMiddleware } from './middleware/session';
 import { makeSameOriginGuard } from './middleware/sameOrigin';
 import { blockWhilePendingDeletion } from './middleware/pendingDeletion';
 import { termsGate } from './middleware/betaTerms';
+import { trackBetaActivity } from './middleware/betaActivity';
 import { dbBackpressure } from './middleware/dbBackpressure';
 import { apiLimiters } from './middleware/rateLimiters';
 import { sentryRelayRouter } from './routes/sentryRelay';
@@ -134,6 +135,8 @@ app.use('/api', dbBackpressure);
 app.use(sessionMiddleware);
 app.use('/api', blockWhilePendingDeletion);
 app.use('/api', termsGate);
+// After both gates, so a refused write is never counted.
+app.use('/api', trackBetaActivity);
 initPassport();
 app.use(passport.initialize());
 

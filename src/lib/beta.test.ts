@@ -126,17 +126,34 @@ describe('getBetaSettings failure and races', () => {
 });
 
 describe('decideSignup', () => {
-  it('gate off, invited: participant', async () => {
+  it('gate off, invited: participant via invite', async () => {
     await invite('a@example.com');
-    expect(await decide('a@example.com', null)).toEqual({ allowed: true, participant: true });
+    expect(await decide('a@example.com', null)).toEqual({ allowed: true, participant: true, via: 'invite' });
   });
   it('gate off, not invited: allowed, not a participant', async () => {
     expect(await decide('a@example.com', null)).toEqual({ allowed: true, participant: false });
   });
-  it('gate on, invited: participant', async () => {
+  it('gate on, invited: participant via invite', async () => {
     await setGate(true, switchOn);
     await invite('a@example.com');
-    expect(await decide('a@example.com', null)).toEqual({ allowed: true, participant: true });
+    expect(await decide('a@example.com', null)).toEqual({ allowed: true, participant: true, via: 'invite' });
+  });
+  it('gate on, invited with a qualifying guest session: via invite', async () => {
+    await setGate(true, switchOn);
+    await invite('a@example.com');
+    const id = await makeGuest({
+      createdAt: new Date(switchOn.getTime() - DAY),
+      expiresAt: new Date(Date.now() + DAY),
+    });
+    expect(await decide('a@example.com', id)).toEqual({ allowed: true, participant: true, via: 'invite' });
+  });
+  it('gate off, not invited, qualifying-looking guest session: not a participant', async () => {
+    await setGate(false, switchOn);
+    const id = await makeGuest({
+      createdAt: new Date(switchOn.getTime() - DAY),
+      expiresAt: new Date(Date.now() + DAY),
+    });
+    expect(await decide('a@example.com', id)).toEqual({ allowed: true, participant: false });
   });
   it('gate on, not invited: refused', async () => {
     await setGate(true, switchOn);
@@ -146,12 +163,12 @@ describe('decideSignup', () => {
   describe('gate on, not invited, guest session', () => {
     beforeEach(() => setGate(true, switchOn));
 
-    it('created before and open at switch-on: allowed as participant', async () => {
+    it('created before and open at switch-on: allowed as participant via guest', async () => {
       const id = await makeGuest({
         createdAt: new Date(switchOn.getTime() - DAY),
         expiresAt: new Date(Date.now() + DAY),
       });
-      expect(await decide('a@example.com', id)).toEqual({ allowed: true, participant: true });
+      expect(await decide('a@example.com', id)).toEqual({ allowed: true, participant: true, via: 'guest' });
     });
     it('created before but expired at switch-on: refused', async () => {
       const id = await makeGuest({

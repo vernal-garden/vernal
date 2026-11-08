@@ -22,6 +22,8 @@ export interface ServerConfig {
   weather: boolean;
   // From this instant the private beta page stops taking applications.
   betaApplicationsCloseAt: Date;
+  // The private beta ends at this instant; activity after it is not tracked.
+  betaEndsAt: Date;
   // Set only when SENTRY_CLIENT_DSN is set; absent means the relay is off.
   sentryRelay?: SentryRelayTarget;
 }
@@ -39,6 +41,24 @@ function choice<T extends string>(env: NodeJS.ProcessEnv, key: string, allowed: 
   if (value === undefined) return fallback;
   if ((allowed as readonly string[]).includes(value)) return value as T;
   throw new ConfigError(`${key} must be one of: ${allowed.join(', ')} (got "${value}").`);
+}
+
+// An ISO 8601 instant with a UTC offset and a real calendar day. Names the
+// variable, never echoes the value.
+function readOffsetInstant(env: NodeJS.ProcessEnv, key: string, fallback: string, example: string): Date {
+  const value = read(env, key) ?? fallback;
+  const instant = new Date(value);
+  const day = value.slice(0, 10);
+  const dayCheck = new Date(`${day}T00:00:00Z`);
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(value) ||
+    Number.isNaN(instant.getTime()) ||
+    Number.isNaN(dayCheck.getTime()) ||
+    dayCheck.toISOString().slice(0, 10) !== day
+  ) {
+    throw new ConfigError(`${key} must be an ISO 8601 date and time with a UTC offset (for example ${example}).`);
+  }
+  return instant;
 }
 
 // Relaxes security defaults for console mail only; unset counts as production.
@@ -157,21 +177,8 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     throw new ConfigError('SENTRY_CLIENT_DSN must be a Sentry DSN (https://<key>@<host>/<project id>).');
   }
 
-  // Names the variable, never echoes the value.
-  const closeAtValue = read(env, 'BETA_APPLICATIONS_CLOSE_AT') ?? '2027-01-01T00:00:00-08:00';
-  const closeAt = new Date(closeAtValue);
-  const day = closeAtValue.slice(0, 10);
-  const dayCheck = new Date(`${day}T00:00:00Z`);
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(closeAtValue) ||
-    Number.isNaN(closeAt.getTime()) ||
-    Number.isNaN(dayCheck.getTime()) ||
-    dayCheck.toISOString().slice(0, 10) !== day
-  ) {
-    throw new ConfigError(
-      'BETA_APPLICATIONS_CLOSE_AT must be an ISO 8601 date and time with a UTC offset (for example 2027-01-01T00:00:00-08:00).',
-    );
-  }
+  const closeAt = readOffsetInstant(env, 'BETA_APPLICATIONS_CLOSE_AT', '2027-01-01T00:00:00-08:00', '2027-01-01T00:00:00-08:00');
+  const endsAt = readOffsetInstant(env, 'BETA_ENDS_AT', '2027-01-30T00:00:00-08:00', '2027-01-30T00:00:00-08:00');
 
   loaded = {
     billing,
@@ -180,6 +187,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     googleSignIn: Boolean(googleId && googleSecret),
     weather: Boolean(read(env, 'VISUAL_CROSSING_API_KEY')),
     betaApplicationsCloseAt: closeAt,
+    betaEndsAt: endsAt,
     ...(sentryRelay ? { sentryRelay } : {}),
   };
   return loaded;

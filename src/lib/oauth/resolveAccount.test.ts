@@ -622,11 +622,15 @@ describe('resolveOAuthAccount — an unverified account asks first', () => {
 
     const result = await completeOAuthTakeover(token, browser, 'not_mine');
     expect(result.accountId).not.toBe(oldId);
-    const { rows } = await pool.query<{ beta_participant_at: Date | null; beta_terms_version: string | null }>(
-      'SELECT beta_participant_at, beta_terms_version FROM accounts WHERE id = $1',
-      [result.accountId],
-    );
+    const { rows } = await pool.query<{
+      beta_participant_at: Date | null;
+      beta_joined_via: string | null;
+      beta_terms_version: string | null;
+    }>('SELECT beta_participant_at, beta_joined_via, beta_terms_version FROM accounts WHERE id = $1', [
+      result.accountId,
+    ]);
     expect(rows[0].beta_participant_at).not.toBeNull();
+    expect(rows[0].beta_joined_via).toBe('invite');
     expect(rows[0].beta_terms_version).toBeNull();
   });
 

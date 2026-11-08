@@ -2,7 +2,8 @@ import type { PoolClient } from 'pg';
 
 export type AdminAction =
   | 'account.role' | 'account.tier' | 'moderation.resolve' | 'feedback.status'
-  | 'beta.setting' | 'beta.invite.add' | 'beta.invite.remove' | 'beta.invite.cleanup';
+  | 'beta.setting' | 'beta.invite.add' | 'beta.invite.remove' | 'beta.invite.cleanup'
+  | 'beta.survey_credit.add' | 'beta.survey_credit.remove';
 export type AdminTarget =
   'account' | 'moderation_item' | 'feedback' | 'beta_settings' | 'beta_invite';
 

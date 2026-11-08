@@ -42,12 +42,18 @@ async function invite(email: string) {
 
 async function accountRow(email: string) {
   const { rows } = await pool.query(
-    `SELECT id, beta_participant_at, beta_terms_version, beta_terms_accepted_at
+    `SELECT id, beta_participant_at, beta_joined_via, beta_terms_version, beta_terms_accepted_at
        FROM accounts WHERE email = $1`,
     [email],
   );
   return rows[0] as
-    | { id: number; beta_participant_at: Date | null; beta_terms_version: string | null; beta_terms_accepted_at: Date | null }
+    | {
+        id: number;
+        beta_participant_at: Date | null;
+        beta_joined_via: 'invite' | 'guest' | null;
+        beta_terms_version: string | null;
+        beta_terms_accepted_at: Date | null;
+      }
     | undefined;
 }
 
@@ -137,6 +143,7 @@ describe('POST /api/auth/register, invite gate', () => {
     expect(res.status).toBe(201);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
     expect(row.beta_terms_version).toBe(BETA_TERMS_VERSION);
     expect(row.beta_terms_accepted_at).not.toBeNull();
   });
@@ -160,6 +167,7 @@ describe('POST /api/auth/register, invite gate', () => {
     expect(res.status).toBe(201);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
     expect(row.beta_terms_version).toBeNull();
     expect(row.beta_terms_accepted_at).toBeNull();
   });
@@ -169,6 +177,7 @@ describe('POST /api/auth/register, invite gate', () => {
     expect((await register(request(app), { acceptBetaTerms: true })).status).toBe(201);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
     expect(row.beta_terms_version).toBe(BETA_TERMS_VERSION);
     expect(row.beta_terms_accepted_at).not.toBeNull();
   });
@@ -178,6 +187,7 @@ describe('POST /api/auth/register, invite gate', () => {
     expect(res.status).toBe(201);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).toBeNull();
+    expect(row.beta_joined_via).toBeNull();
     expect(row.beta_terms_version).toBeNull();
     expect(row.beta_terms_accepted_at).toBeNull();
   });
@@ -197,9 +207,21 @@ describe('POST /api/auth/register, invite gate', () => {
     expect(res.status).toBe(201);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('guest');
     expect(row.beta_terms_version).toBe(BETA_TERMS_VERSION);
     const { rows } = await pool.query('SELECT 1 FROM gardens WHERE owner_id = $1', [row.id]);
     expect(rows).toHaveLength(1);
+  });
+
+  it('gate on, invited and a qualifying live guest session: joined via invite', async () => {
+    await setGate(true, FIRST_ON);
+    await invite(email);
+    const { agent, sessionId } = await guestAgentWithGarden();
+    await makeGuestLive(agent, sessionId, FIRST_ON);
+    expect((await register(agent, { acceptBetaTerms: true })).status).toBe(201);
+    const row = (await accountRow(email))!;
+    expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
   });
 
   it('gate on, qualifying guest but no acceptBetaTerms: 400, garden stays with the guest', async () => {
@@ -222,6 +244,7 @@ describe('POST /api/auth/register, invite gate', () => {
     expect(res.status).toBe(201);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('guest');
     const { rows } = await pool.query('SELECT 1 FROM gardens WHERE owner_id = $1', [row.id]);
     expect(rows).toHaveLength(1);
   });
@@ -324,6 +347,7 @@ describe('resolveOAuthAccount, invite gate', () => {
     expect(result.isNew).toBe(true);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
     expect(row.beta_terms_version).toBeNull();
     expect(row.beta_terms_accepted_at).toBeNull();
     expect(await identityCount(email)).toBe(1);
@@ -332,12 +356,16 @@ describe('resolveOAuthAccount, invite gate', () => {
   it('gate off, invited: created with beta_participant_at', async () => {
     await invite(email);
     await resolveOAuthAccount(googleUser('g-3', email));
-    expect((await accountRow(email))!.beta_participant_at).not.toBeNull();
+    const row = (await accountRow(email))!;
+    expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
   });
 
   it('gate off, not invited: created without it', async () => {
     await resolveOAuthAccount(googleUser('g-4', email));
-    expect((await accountRow(email))!.beta_participant_at).toBeNull();
+    const row = (await accountRow(email))!;
+    expect(row.beta_participant_at).toBeNull();
+    expect(row.beta_joined_via).toBeNull();
   });
 
   it('gate on, qualifying guest session: created as participant, garden migrated', async () => {
@@ -348,8 +376,20 @@ describe('resolveOAuthAccount, invite gate', () => {
     expect(result.isNew).toBe(true);
     const row = (await accountRow(email))!;
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('guest');
     const { rows } = await pool.query('SELECT 1 FROM gardens WHERE owner_id = $1', [row.id]);
     expect(rows).toHaveLength(1);
+  });
+
+  it('gate on, invited and a qualifying guest session: joined via invite', async () => {
+    await setGate(true, FIRST_ON);
+    await invite(email);
+    const { agent, sessionId } = await guestAgentWithGarden();
+    await makeGuestLive(agent, sessionId, FIRST_ON);
+    await resolveOAuthAccount(googleUser('g-5b', email), sessionId);
+    const row = (await accountRow(email))!;
+    expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
   });
 
   it('gate on, guest session created after switch-on: refused', async () => {
@@ -493,6 +533,7 @@ describe('claiming an account, beta terms acceptance', () => {
     const row = (await accountRow(email))!;
     expect(row.id).not.toBe(before.id);
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
     expect(row.beta_terms_version).toBeNull();
     const held = await request(app).get('/api/gardens').set('Cookie', cookies);
     expect(held.status).toBe(403);
@@ -508,6 +549,7 @@ describe('claiming an account, beta terms acceptance', () => {
     expect(row.beta_terms_version).toBeNull();
     expect(row.beta_terms_accepted_at).toBeNull();
     expect(row.beta_participant_at).toEqual(before.beta_participant_at);
+    expect(row.beta_joined_via).toBe(before.beta_joined_via);
 
     const gardens = await request(app).get('/api/gardens').set('Cookie', cookies);
     expect(gardens.status).toBe(403);
@@ -524,6 +566,7 @@ describe('claiming an account, beta terms acceptance', () => {
     const row = (await accountRow(email))!;
     expect(row.id).not.toBe(before.id);
     expect(row.beta_participant_at).not.toBeNull();
+    expect(row.beta_joined_via).toBe('invite');
     expect(row.beta_terms_version).toBeNull();
 
     const agent = await loginWithNewPassword();
@@ -540,6 +583,7 @@ describe('claiming an account, beta terms acceptance', () => {
     const row = (await accountRow(email))!;
     expect(row.id).not.toBe(before.id);
     expect(row.beta_participant_at).toBeNull();
+    expect(row.beta_joined_via).toBeNull();
   });
 
   it('a reset on a verified account keeps the acceptance', async () => {

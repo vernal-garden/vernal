@@ -67,7 +67,37 @@ export function betaTermsPending(
   return participantAt !== null && acceptedVersion !== BETA_TERMS_VERSION;
 }
 
-export type SignupDecision = { allowed: false } | { allowed: true; participant: boolean };
+// The 50 US states, for a participant's state record and grant eligibility.
+// DC and the territories pending General Counsel (2026-11-06).
+export const US_STATE_CODES: readonly string[] = [
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
+  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
+  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
+  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
+  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+];
+
+const US_STATE_SET: ReadonlySet<string> = new Set(US_STATE_CODES);
+
+export function isUsStateCode(value: unknown): value is string {
+  return typeof value === 'string' && US_STATE_SET.has(value);
+}
+
+// The residence_state value for a participant who lives outside the US.
+export const OUTSIDE_US = 'OUTSIDE_US';
+
+// How a participant joined: an invited email, or a guest session that qualified.
+export type BetaJoinedVia = 'invite' | 'guest';
+
+export type SignupDecision =
+  | { allowed: false }
+  | { allowed: true; participant: false }
+  | { allowed: true; participant: true; via: BetaJoinedVia };
+
+// The beta_joined_via value to write with beta_participant_at: null for a non-participant.
+export function joinedVia(decision: { participant: false } | { participant: true; via: BetaJoinedVia }): BetaJoinedVia | null {
+  return decision.participant ? decision.via : null;
+}
 
 // Whether this email may create an account now. The email is already lowercased
 // by the caller. Settings are read fresh (not cached), so a sign-up never races
@@ -82,8 +112,9 @@ export async function decideSignup(
   const { rowCount } = await client.query('SELECT 1 FROM beta_invites WHERE email = $1', [email]);
   const invited = (rowCount ?? 0) > 0;
 
-  if (!s.gateOn) return { allowed: true, participant: invited };
-  if (invited) return { allowed: true, participant: true };
+  if (!s.gateOn) return invited ? { allowed: true, participant: true, via: 'invite' } : { allowed: true, participant: false };
+  // An invite wins over a qualifying guest session.
+  if (invited) return { allowed: true, participant: true, via: 'invite' };
 
   // Gate on, not invited: a guest whose session was open when the gate first
   // went on keeps the right to claim their garden.
@@ -94,7 +125,7 @@ export async function decideSignup(
           AND created_at < $2 AND expires_at > $2`,
       [guestSessionId, s.gateFirstOnAt],
     );
-    if ((guestCount ?? 0) > 0) return { allowed: true, participant: true };
+    if ((guestCount ?? 0) > 0) return { allowed: true, participant: true, via: 'guest' };
   }
   return { allowed: false };
 }
