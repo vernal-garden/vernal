@@ -17,6 +17,9 @@ function makeAccount(overrides: Partial<SessionAccount> = {}): SessionAccount {
     role: 'user',
     subscriptionTier: 'free',
     deletionScheduledAt: null,
+    betaParticipant: false,
+    betaTermsPending: false,
+    termsPending: false,
     ...overrides,
   };
 }
@@ -73,6 +76,8 @@ describe('blockWhilePendingDeletion', () => {
     ['DELETE', '/api/me'],
     ['POST', '/api/me/export'],
     ['POST', '/api/events/batch'],
+    ['POST', '/api/me/terms'],
+    ['POST', '/api/me/beta-terms'],
     ['POST', '/api/me/cancel-deletion?x=1'],
     ['POST', '/api/me/cancel-deletion/'],
     ['DELETE', '/api/ME'],

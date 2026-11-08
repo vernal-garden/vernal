@@ -3,7 +3,8 @@ import bcrypt from 'bcrypt';
 import { db } from '../lib/db';
 import { requireAdmin } from '../middleware/auth';
 import { adminRoleChangeLimiter } from '../middleware/rateLimiters';
-import { escapeLike, isNumericId } from '../lib/validation';
+import { escapeLike, isNumericId, isValidEmail } from '../lib/validation';
+import { invalidateBetaSettings, readBetaSettings } from '../lib/beta';
 import { logger } from '../lib/logger';
 import { recordAdminAction } from '../lib/adminAudit';
 import { EVENT_KEYS, MICRO_FEEDBACK_TRIGGERS } from '../lib/eventKeys';
@@ -1247,6 +1248,323 @@ router.patch('/feedback/:id', async (req, res) => {
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
     sendServerError(res, 'PATCH /admin/feedback/:id', err);
+  } finally {
+    client.release();
+  }
+});
+
+// ── Beta access ──────────────────────────────────────────────────────────────
+
+// Request key → column. Request text never reaches the SQL.
+const BETA_SETTING_COLUMNS: Record<string, string> = {
+  gateOn: 'gate_on',
+  guestModeOn: 'guest_mode_on',
+  supporterAccessOn: 'supporter_access_on',
+};
+
+// The GET /beta shape, read straight from the table (not the 30s cache) so the
+// admin sees the truth. PATCH returns the same shape.
+async function readBetaOverview() {
+  const [settings, counts] = await Promise.all([
+    readBetaSettings(db),
+    db.query<{ invited: number; have_accounts: number; participants: number }>(`
+      SELECT
+        (SELECT COUNT(*)::int FROM beta_invites) AS invited,
+        (SELECT COUNT(*)::int FROM beta_invites i
+          WHERE EXISTS (SELECT 1 FROM accounts a WHERE a.email = i.email)) AS have_accounts,
+        (SELECT COUNT(*)::int FROM accounts WHERE beta_participant_at IS NOT NULL) AS participants
+    `),
+  ]);
+  const c = counts.rows[0];
+  return {
+    gateOn: settings.gateOn,
+    gateFirstOnAt: settings.gateFirstOnAt,
+    guestModeOn: settings.guestModeOn,
+    supporterAccessOn: settings.supporterAccessOn,
+    counts: { invited: c.invited, haveAccounts: c.have_accounts, participants: c.participants },
+  };
+}
+
+router.get('/beta', async (_req, res) => {
+  try {
+    res.json(await readBetaOverview());
+  } catch (err) {
+    sendServerError(res, 'GET /admin/beta', err);
+  }
+});
+
+router.patch('/beta/settings', async (req, res) => {
+  const body = req.body;
+  const keys =
+    body !== null && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body) : [];
+  const key = keys[0];
+  if (
+    keys.length !== 1 ||
+    lookup(BETA_SETTING_COLUMNS, key) === undefined ||
+    typeof (body as Record<string, unknown>)[key] !== 'boolean'
+  ) {
+    res
+      .status(400)
+      .json({ error: 'Send exactly one of gateOn, guestModeOn, supporterAccessOn as a boolean' });
+    return;
+  }
+  const column = BETA_SETTING_COLUMNS[key];
+  const value = (body as Record<string, boolean>)[key];
+
+  let client;
+  try {
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'PATCH /admin/beta/settings', err);
+    return;
+  }
+
+  // The response is read after the client is released, so a failed read can't
+  // 500 a committed change while holding a connection.
+  let changed = false;
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query<Record<string, boolean>>(
+      `SELECT ${column} FROM beta_settings WHERE id = 1 FOR UPDATE`,
+    );
+    const before = existing.rows[0][column];
+    if (before === value) {
+      await client.query('ROLLBACK');
+    } else {
+
+      // Turning the gate on records when it first went on; later toggles keep it.
+      const firstOn =
+        column === 'gate_on' && value ? ', gate_first_on_at = COALESCE(gate_first_on_at, now())' : '';
+      await client.query(
+        `UPDATE beta_settings SET ${column} = $1${firstOn}, updated_at = now() WHERE id = 1`,
+        [value],
+      );
+      await recordAdminAction(client, {
+        adminId: req.session!.account!.id,
+        action: 'beta.setting',
+        targetType: 'beta_settings',
+        targetId: 1,
+        before: { [key]: before },
+        after: { [key]: value },
+      });
+      await client.query('COMMIT');
+      invalidateBetaSettings();
+      changed = true;
+    }
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    sendServerError(res, 'PATCH /admin/beta/settings', err);
+    return;
+  } finally {
+    client.release();
+  }
+
+  if (changed) {
+    logger.info('admin beta setting', { setting: key, value, adminId: req.session!.account!.id });
+  }
+  try {
+    res.json(await readBetaOverview());
+  } catch (err) {
+    sendServerError(res, 'PATCH /admin/beta/settings', err);
+  }
+});
+
+router.get('/beta/invites', async (_req, res) => {
+  try {
+    const result = await db.query<{
+      id: number;
+      email: string;
+      added_at: Date;
+      account_created_at: Date | null;
+    }>(`
+      SELECT i.id, i.email, i.added_at, a.created_at AS account_created_at
+      FROM beta_invites i
+      LEFT JOIN accounts a ON a.email = i.email
+      ORDER BY i.added_at DESC, i.id DESC
+    `);
+    res.json({
+      data: result.rows.map((r) => ({
+        id: r.id,
+        email: r.email,
+        addedAt: r.added_at,
+        accountCreatedAt: r.account_created_at,
+      })),
+    });
+  } catch (err) {
+    sendServerError(res, 'GET /admin/beta/invites', err);
+  }
+});
+
+const MAX_BETA_INVITES_PER_REQUEST = 500;
+
+router.post('/beta/invites', async (req, res) => {
+  const { emails } = (req.body ?? {}) as { emails?: unknown };
+  if (typeof emails !== 'string') {
+    res.status(400).json({ error: 'emails must be a string' });
+    return;
+  }
+
+  // Split on commas and whitespace. Valid addresses are lowercased; invalid
+  // ones are echoed back as typed. Both are de-duplicated, in input order.
+  const tokens = emails.split(/[\s,]+/).filter((t) => t !== '');
+  if (tokens.length > MAX_BETA_INVITES_PER_REQUEST) {
+    res
+      .status(400)
+      .json({ error: `emails must contain ${MAX_BETA_INVITES_PER_REQUEST} addresses or fewer` });
+    return;
+  }
+  const validSet = new Set<string>();
+  const invalidSet = new Set<string>();
+  for (const token of tokens) {
+    const email = token.toLowerCase();
+    if (isValidEmail(email)) validSet.add(email);
+    else invalidSet.add(token);
+  }
+  const valid = [...validSet];
+  const invalid = [...invalidSet];
+
+  if (valid.length === 0) {
+    res.json({ added: [], alreadyListed: [], newParticipants: [], invalid });
+    return;
+  }
+
+  let client;
+  try {
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'POST /admin/beta/invites', err);
+    return;
+  }
+
+  try {
+    const adminId = req.session!.account!.id;
+    await client.query('BEGIN');
+    const inserted = await client.query<{ id: number; email: string }>(
+      `INSERT INTO beta_invites (email, added_by)
+       SELECT e, $2 FROM unnest($1::text[]) AS e
+       ON CONFLICT (email) DO NOTHING
+       RETURNING id, email`,
+      // Sorted so overlapping requests take unique-index locks in the same order.
+      [[...valid].sort(), adminId],
+    );
+    // Every valid email with an account, listed already or not: this heals an
+    // invite whose account appeared later.
+    const promoted = await client.query<{ email: string }>(
+      `UPDATE accounts SET beta_participant_at = COALESCE(beta_participant_at, now()), updated_at = now()
+       WHERE email = ANY($1::text[]) AND beta_participant_at IS NULL
+       RETURNING email`,
+      [valid],
+    );
+    // The audit row keeps who, what and when, never the address: it would
+    // outlive the invite (see the Privacy page).
+    for (const row of inserted.rows) {
+      await recordAdminAction(client, {
+        adminId,
+        action: 'beta.invite.add',
+        targetType: 'beta_invite',
+        targetId: row.id,
+        before: null,
+        after: null,
+      });
+    }
+    await client.query('COMMIT');
+
+    const addedSet = new Set(inserted.rows.map((r) => r.email));
+    const promotedSet = new Set(promoted.rows.map((r) => r.email));
+    const added = valid.filter((e) => addedSet.has(e));
+    const newParticipants = valid.filter((e) => promotedSet.has(e));
+    logger.info('admin beta invites added', {
+      adminId,
+      added: added.length,
+      newParticipants: newParticipants.length,
+    });
+    res.json({
+      added,
+      alreadyListed: valid.filter((e) => !addedSet.has(e)),
+      newParticipants,
+      invalid,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    sendServerError(res, 'POST /admin/beta/invites', err);
+  } finally {
+    client.release();
+  }
+});
+
+// "Beta ended" cleanup: deletes every invite no account uses. One audit row
+// records the count only. The nightly purgeStaleBetaInvites is the backstop.
+router.post('/beta/invites/cleanup', async (req, res) => {
+  let client;
+  try {
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'POST /admin/beta/invites/cleanup', err);
+    return;
+  }
+
+  try {
+    const adminId = req.session!.account!.id;
+    await client.query('BEGIN');
+    const deleted = await client.query(
+      `DELETE FROM beta_invites i
+        WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE lower(a.email) = i.email)`,
+    );
+    const removed = deleted.rowCount ?? 0;
+    await recordAdminAction(client, {
+      adminId,
+      action: 'beta.invite.cleanup',
+      targetType: 'beta_settings',
+      targetId: 1,
+      before: null,
+      after: { removed },
+    });
+    await client.query('COMMIT');
+    logger.info('admin beta invites cleaned up', { adminId, removed });
+    res.json({ removed });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    sendServerError(res, 'POST /admin/beta/invites/cleanup', err);
+  } finally {
+    client.release();
+  }
+});
+
+// Removes the invite row only; accounts are never touched.
+router.delete('/beta/invites/:id', async (req, res) => {
+  const id = parseIdParam(req.params.id);
+  if (id === null) return sendInvalidId(res);
+
+  let client;
+  try {
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'DELETE /admin/beta/invites/:id', err);
+    return;
+  }
+
+  try {
+    await client.query('BEGIN');
+    const deleted = await client.query('DELETE FROM beta_invites WHERE id = $1', [id]);
+    if (deleted.rowCount === 0) {
+      await client.query('ROLLBACK');
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    // No address in the audit row, as for beta.invite.add.
+    await recordAdminAction(client, {
+      adminId: req.session!.account!.id,
+      action: 'beta.invite.remove',
+      targetType: 'beta_invite',
+      targetId: id,
+      before: null,
+      after: null,
+    });
+    await client.query('COMMIT');
+    res.status(204).end();
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    sendServerError(res, 'DELETE /admin/beta/invites/:id', err);
   } finally {
     client.release();
   }

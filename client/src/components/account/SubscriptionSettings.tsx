@@ -4,7 +4,9 @@ import { useSearchParams } from 'react-router-dom';
 import { post, ApiError } from '../../lib/api';
 import { useMicroFeedback } from '../../lib/microFeedback';
 import { useSubscription, type SubscriptionData } from '../../hooks/useSubscription';
+import { useResendVerification } from '../../hooks/useResendVerification';
 import { PRICING, PRICING_ORDER, type Interval } from '../../config/pricing';
+import { SUBSCRIPTION_BETA_COPY } from '../../lib/betaCopy';
 
 const SUPPORTER_FEATURES = [
   'Soil readings — track pH and nutrients per bed over time',
@@ -92,6 +94,11 @@ const errorTextSt: React.CSSProperties = {
   color: 'var(--c-danger)',
 };
 
+const disabledSt: React.CSSProperties = {
+  opacity: 0.5,
+  cursor: 'not-allowed',
+};
+
 function intervalOptionSt(active: boolean, distinct: boolean): React.CSSProperties {
   return {
     flex: 1,
@@ -115,9 +122,11 @@ function formatDate(iso: string | null): string {
 function IntervalSelector({
   selected,
   onSelect,
+  disabled,
 }: {
   selected: Interval;
   onSelect: (i: Interval) => void;
+  disabled: boolean;
 }) {
   return (
     <div style={{ display: 'flex', gap: 'var(--sp-2)', margin: 'var(--sp-3) 0' }}>
@@ -129,7 +138,8 @@ function IntervalSelector({
             key={key}
             type="button"
             onClick={() => onSelect(key)}
-            style={intervalOptionSt(active, key === 'lifetime')}
+            disabled={disabled}
+            style={{ ...intervalOptionSt(active, key === 'lifetime'), ...(disabled ? disabledSt : {}) }}
           >
             {opt.badge && (
               <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--c-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
@@ -150,12 +160,24 @@ function IntervalSelector({
 
 // ── Free tier ─────────────────────────────────────────────────────────────────
 
-function FreeView({ onAlreadySupporter }: { onAlreadySupporter: (message: string) => void }) {
+function FreeView({
+  emailVerified,
+  onAlreadySupporter,
+  onVerified,
+}: {
+  emailVerified: boolean;
+  onAlreadySupporter: (message: string) => void;
+  onVerified: () => void;
+}) {
   const [revealed, setRevealed] = useState(false);
   const [interval, setInterval_] = useState<Interval>('annual');
   const [whyOpen, setWhyOpen] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  // Set when checkout comes back email_unverified although the loaded data said verified.
+  const [refusedUnverified, setRefusedUnverified] = useState(false);
+  const unverified = !emailVerified || refusedUnverified;
+  const verification = useResendVerification(onVerified);
 
   async function handleBecomeSupporter() {
     if (!revealed) {
@@ -172,6 +194,11 @@ function FreeView({ onAlreadySupporter }: { onAlreadySupporter: (message: string
       const body = e instanceof ApiError ? (e.body as { error?: string; code?: string } | null) : null;
       if (body?.code === 'already_supporter') {
         onAlreadySupporter(body.error ?? "You're already a supporter.");
+        return;
+      }
+      if (body?.code === 'email_unverified') {
+        setRefusedUnverified(true);
+        setCheckoutLoading(false);
         return;
       }
       setCheckoutError(body?.error ?? "Couldn't start checkout. Please try again.");
@@ -199,14 +226,15 @@ function FreeView({ onAlreadySupporter }: { onAlreadySupporter: (message: string
           ))}
         </ul>
 
-        {revealed && <IntervalSelector selected={interval} onSelect={setInterval_} />}
+        {revealed && <IntervalSelector selected={interval} onSelect={setInterval_} disabled={unverified} />}
 
         <div style={{ marginTop: 'var(--sp-4)', display: 'flex', alignItems: 'center', gap: 'var(--sp-4)' }}>
           <button
             type="button"
             onClick={handleBecomeSupporter}
-            disabled={checkoutLoading}
-            style={primaryButtonSt}
+            disabled={checkoutLoading || unverified}
+            aria-describedby={unverified ? 'supporter-verify-note' : undefined}
+            style={unverified ? { ...primaryButtonSt, ...disabledSt } : primaryButtonSt}
           >
             {checkoutLoading ? 'Redirecting…' : 'Become a Supporter'}
           </button>
@@ -214,6 +242,31 @@ function FreeView({ onAlreadySupporter }: { onAlreadySupporter: (message: string
             Why support Vernal?
           </button>
         </div>
+
+        {unverified && (
+          <div style={{ marginTop: 'var(--sp-3)' }}>
+            <p id="supporter-verify-note" style={bodyTextSt}>
+              Verify your email address to buy Supporter.
+            </p>
+            {verification.state === 'sent' ? (
+              <p role="status" style={bodyTextSt}>Sent. Check your inbox for the link.</p>
+            ) : (
+              <button
+                type="button"
+                onClick={verification.resend}
+                disabled={verification.state === 'sending'}
+                style={{ ...secondaryButtonSt, marginTop: 'var(--sp-2)' }}
+              >
+                {verification.state === 'sending' ? 'Sending…' : 'Send verification link'}
+              </button>
+            )}
+            {verification.error && (
+              <p role="status" style={errorTextSt}>
+                {verification.error}
+              </p>
+            )}
+          </div>
+        )}
 
         {checkoutError && <p style={errorTextSt}>{checkoutError}</p>}
 
@@ -286,6 +339,17 @@ function SupporterView({ data }: { data: SubscriptionData }) {
       </div>
 
       {portalError && <p style={errorTextSt}>{portalError}</p>}
+    </div>
+  );
+}
+
+// ── Beta participant ──────────────────────────────────────────────────────────
+
+function BetaView() {
+  return (
+    <div style={cardSt}>
+      <h3 style={cardTitleSt}>{SUBSCRIPTION_BETA_COPY.title}</h3>
+      <p style={bodyTextSt}>{SUBSCRIPTION_BETA_COPY.line}</p>
     </div>
   );
 }
@@ -368,8 +432,12 @@ export default function SubscriptionSettings() {
         data &&
         (data.isSupporter ? (
           <SupporterView data={data} />
+        ) : data.betaAccess ? (
+          <BetaView />
         ) : (
           <FreeView
+            emailVerified={data.emailVerified}
+            onVerified={reload}
             onAlreadySupporter={(message) => {
               // The page was stale: reload shows the supporter view and its billing button.
               setNotice(message);

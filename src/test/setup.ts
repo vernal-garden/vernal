@@ -3,6 +3,15 @@ import { loadServerConfig } from '../lib/serverConfig';
 
 dotenv.config();
 
+// Suites provoke errors on purpose, and an unset DSN keeps those out of the real Sentry project.
+process.env.SENTRY_DSN = '';
+
+// .env may hold real storage keys, and a suite that doesn't mock storage would delete from the real buckets.
+// The suites mock the s3 driver, so it stays selected whatever .env says.
+process.env.MEDIA_STORAGE = 's3';
+process.env.R2_ACCESS_KEY_ID = '';
+process.env.R2_SECRET_ACCESS_KEY = '';
+
 // The test config must not depend on the developer's .env; weather-off behavior is tested through setServerConfigForTests.
 process.env.VISUAL_CROSSING_API_KEY ||= 'test-key';
 

@@ -17,6 +17,9 @@ function makeAccount(overrides: Partial<SessionAccount> = {}): SessionAccount {
     role: 'user',
     subscriptionTier: 'free',
     deletionScheduledAt: null,
+    betaParticipant: false,
+    betaTermsPending: false,
+    termsPending: false,
     ...overrides,
   };
 }

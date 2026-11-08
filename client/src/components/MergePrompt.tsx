@@ -3,11 +3,13 @@ import * as api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 
 export default function MergePrompt() {
-  const { isAccount, pendingGuestData, refetch } = useAuth();
+  // pendingGuestData is only ever set for 'account' and 'beta_terms'. Held
+  // accounts need this too: signing out with unmerged data deletes it.
+  const { pendingGuestData, refetch } = useAuth();
   const [loading, setLoading] = useState<'merge' | 'discard' | null>(null);
   const [error, setError] = useState('');
 
-  if (!isAccount || !pendingGuestData) return null;
+  if (!pendingGuestData) return null;
 
   const { gardenName, bedCount, plantCount } = pendingGuestData;
   const beds = `${bedCount} ${bedCount === 1 ? 'bed' : 'beds'}`;
@@ -23,6 +25,7 @@ export default function MergePrompt() {
           : '/api/auth/guest-data/discard';
       await api.post(path);
       await refetch();
+      setLoading(null);
     } catch {
       setError('Something went wrong. Please try again.');
       setLoading(null);

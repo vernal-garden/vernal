@@ -90,9 +90,8 @@ test.describe('signed in as admin', () => {
     await expect(page).toHaveURL('/admin/seeds');
 
     const nav = page.getByRole('navigation', { name: 'Admin' });
-    for (const label of ['Seed DB', 'Moderation', 'Users', 'Features', 'Feedback', 'System']) {
-      await expect(nav.getByRole('link', { name: label, exact: true })).toBeVisible();
-    }
+    // An array checks the order too, so Beta is proven to follow Users.
+    await expect(nav.getByRole('link')).toHaveText(['Seed DB', 'Moderation', 'Users', 'Beta', 'Features', 'Feedback', 'System']);
     await expect(page.getByRole('heading', { level: 1, name: 'Seed DB' })).toBeVisible();
 
     const main = page.getByRole('main');

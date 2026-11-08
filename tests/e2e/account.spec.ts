@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { resetTestDb, createTestUser, closePool } from './helpers/db';
+import { resetTestDb, createTestUser, closePool, markUnverified } from './helpers/db';
 
 test.beforeAll(resetTestDb);
 test.afterAll(closePool);
@@ -60,4 +60,24 @@ test('scheduling account deletion signs the user out', async ({ page }) => {
 
   await expect(page).toHaveURL(SIGNED_OUT_LANDING);
   await expectSignedOut(page);
+});
+
+test('/account/billing, where Stripe sends people back, opens the Subscription section', async ({ page }) => {
+  const user = await createTestUser({ email: 'billing-return@example.com', password: 'Billing123!' });
+  await signIn(page, user.email, user.password);
+
+  await page.goto('/account/billing?success=true');
+  await expect(page).toHaveURL('/account?section=subscription');
+});
+
+test('an unverified account cannot start Supporter checkout', async ({ page }) => {
+  const user = await createTestUser({ email: 'unverified-buyer@example.com', password: 'Unverified123!' });
+  await markUnverified(user.id);
+  await signIn(page, user.email, user.password);
+
+  await page.goto('/account?section=subscription');
+  const buy = page.getByRole('button', { name: 'Become a Supporter' });
+  await expect(buy).toBeDisabled();
+  await expect(page.getByText('Verify your email address to buy Supporter.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Send verification link' })).toBeVisible();
 });

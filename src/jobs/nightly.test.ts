@@ -31,6 +31,7 @@ import {
   purgeStripeEvents,
   purgeOldUsageEvents,
   purgeScheduledAccounts,
+  purgeStaleBetaInvites,
   checkSubscriptionDowngrades,
   purgeExpiredExports,
   runNightlyJob,
@@ -713,6 +714,23 @@ describe('purgeExpiredGuests', () => {
     );
     expect(rows.map((r) => r.token_hash)).toEqual(['nightly-vt-live']);
   });
+
+  it('deletes expired pending Google takeovers and keeps live ones', async () => {
+    const ownerId = await createAccount();
+    await pool.query(
+      `INSERT INTO pending_takeovers (token_hash, account_id, provider, provider_user_id, email, display_name,
+                                      access_token_encrypted, expires_at)
+       VALUES ('nightly-pt-expired', $1, 'google', 'g-1', 'p@example.com', 'P', '\\x00', NOW() - INTERVAL '1 minute'),
+              ('nightly-pt-live', $1, 'google', 'g-2', 'p@example.com', 'P', '\\x00', NOW() + INTERVAL '10 minutes')`,
+      [ownerId],
+    );
+
+    const { affected } = await purgeExpiredGuests();
+
+    expect(affected).toBe(1);
+    const { rows } = await pool.query<{ token_hash: string }>('SELECT token_hash FROM pending_takeovers');
+    expect(rows.map((r) => r.token_hash)).toEqual(['nightly-pt-live']);
+  });
 });
 
 describe('purgeExpiredGuests — empty guests and batching', () => {
@@ -934,6 +952,26 @@ describe('purgeScheduledAccounts', () => {
     expect(teardownCustomerMock).toHaveBeenCalledWith({ subId: 'sub_purge', customerId: 'cus_purge', accountId: id });
   });
 
+  it('purges a displaced account like any other, leaving the owner\'s invite alone', async () => {
+    const id = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    await createGarden(id);
+    await pool.query(
+      `UPDATE accounts SET email = 'displaced-' || id || '@displaced.invalid', displaced_at = deletion_scheduled_at,
+                           stripe_customer_id = 'cus_displaced'
+        WHERE id = $1`,
+      [id],
+    );
+    await pool.query("INSERT INTO beta_invites (email) VALUES ('owner@example.com')");
+
+    const { affected } = await purgeScheduledAccounts();
+    expect(affected).toBe(1);
+    expect(teardownCustomerMock).toHaveBeenCalledWith({ subId: null, customerId: 'cus_displaced', accountId: id });
+    expect(await accountIds()).not.toContain(id);
+    expect((await pool.query('SELECT 1 FROM gardens WHERE owner_id = $1', [id])).rows).toHaveLength(0);
+    expect((await pool.query("SELECT 1 FROM beta_invites WHERE email = 'owner@example.com'")).rows).toHaveLength(1);
+    await pool.query('DELETE FROM beta_invites');
+  });
+
   it('keeps the account when Stripe teardown fails', async () => {
     const id = await createAccount({ deletionScheduledAtDaysAgo: 31 });
     await pool.query("UPDATE accounts SET stripe_customer_id = 'cus_keep' WHERE id = $1", [id]);
@@ -1046,6 +1084,30 @@ describe('purgeScheduledAccounts', () => {
     const ids = await accountIds();
     expect(ids).not.toContain(idPastGrace);
     expect(ids).toContain(idWithinGrace);
+  });
+
+  it("deletes the purged account's beta invite, whatever the case of its stored email", async () => {
+    await pool.query('DELETE FROM beta_invites');
+    const purged = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const mixed = await createAccount({ deletionScheduledAtDaysAgo: 31 });
+    const kept = await createAccount({ deletionScheduledAtDaysAgo: 29 });
+    await pool.query(`UPDATE accounts SET email = 'Mixed-Case@Example.com' WHERE id = $1`, [mixed]);
+    await pool.query(
+      `INSERT INTO beta_invites (email)
+         SELECT lower(email) FROM accounts WHERE id = ANY($1::int[])
+         UNION ALL SELECT 'no-account@example.com'`,
+      [[purged, mixed, kept]],
+    );
+
+    const { affected } = await purgeScheduledAccounts();
+
+    expect(affected).toBe(2);
+    const { rows } = await pool.query<{ email: string }>('SELECT email FROM beta_invites ORDER BY email');
+    const { rows: keptRows } = await pool.query<{ email: string }>(
+      'SELECT email FROM accounts WHERE id = $1',
+      [kept],
+    );
+    expect(rows.map((r) => r.email)).toEqual(['no-account@example.com', keptRows[0].email].sort());
   });
 
   it('queues every folder the account owns in the same transaction as the delete', async () => {
@@ -1175,6 +1237,47 @@ describe('purgeScheduledAccounts', () => {
     expect(rows).toHaveLength(0);
     expect(await seedAggregate(shared)).toEqual({ count: 1, avg: 4 });
     expect(await seedAggregate(solo)).toEqual({ count: 0, avg: null });
+  });
+});
+
+describe('purgeStaleBetaInvites', () => {
+  beforeEach(async () => {
+    await resetDb();
+    await pool.query('DELETE FROM beta_invites');
+  });
+
+  async function invite(email: string, daysAgo: number): Promise<void> {
+    await pool.query(
+      `INSERT INTO beta_invites (email, added_at) VALUES ($1, NOW() - ($2::text || ' days')::interval)`,
+      [email, daysAgo],
+    );
+  }
+
+  it('deletes unused invites over 180 days old and keeps young ones and ones with accounts', async () => {
+    const accountId = await createAccount();
+    const { rows } = await pool.query<{ email: string }>('SELECT email FROM accounts WHERE id = $1', [
+      accountId,
+    ]);
+    await invite('stale@example.com', 181);
+    await invite('young@example.com', 179);
+    await invite(rows[0].email, 400);
+
+    const { affected } = await purgeStaleBetaInvites();
+
+    expect(affected).toBe(1);
+    const { rows: left } = await pool.query<{ email: string }>(
+      'SELECT email FROM beta_invites ORDER BY email',
+    );
+    expect(left.map((r) => r.email)).toEqual([rows[0].email, 'young@example.com'].sort());
+  });
+
+  it('keeps an old invite whose account email differs only in case', async () => {
+    const accountId = await createAccount();
+    await pool.query(`UPDATE accounts SET email = 'Old-Mixed@Example.com' WHERE id = $1`, [accountId]);
+    await invite('old-mixed@example.com', 400);
+
+    expect((await purgeStaleBetaInvites()).affected).toBe(0);
+    expect((await pool.query('SELECT 1 FROM beta_invites')).rowCount).toBe(1);
   });
 });
 

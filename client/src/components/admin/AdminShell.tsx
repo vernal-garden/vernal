@@ -5,6 +5,7 @@ export const ADMIN_SECTIONS = [
   { path: 'seeds', label: 'Seed DB' },
   { path: 'moderation', label: 'Moderation' },
   { path: 'users', label: 'Users' },
+  { path: 'beta', label: 'Beta' },
   { path: 'features', label: 'Features' },
   { path: 'feedback', label: 'Feedback' },
   { path: 'system', label: 'System' },

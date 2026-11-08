@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { patch, del, post } from '../../lib/api';
+import { patch, del } from '../../lib/api';
+import { useResendVerification } from '../../hooks/useResendVerification';
 import type { AccountData } from './types';
 import {
   cardSt,
@@ -26,24 +27,7 @@ function VerifyEmailBanner({
   email: string | null;
   onUpdate: (patch: Partial<AccountData>) => void;
 }) {
-  const [state, setState] = useState<'idle' | 'sending' | 'sent'>('idle');
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleResend() {
-    setError(null);
-    setState('sending');
-    try {
-      const res = await post<{ data?: { sent?: boolean } }>('/api/me/verify-email/resend');
-      if (res?.data?.sent === false) {
-        onUpdate({ emailVerified: true });
-        return;
-      }
-      setState('sent');
-    } catch (err) {
-      setError(apiErrorMessage(err, 'Could not send the verification email.'));
-      setState('idle');
-    }
-  }
+  const { state, error, resend: handleResend } = useResendVerification(() => onUpdate({ emailVerified: true }));
 
   return (
     <div style={cardSt}>

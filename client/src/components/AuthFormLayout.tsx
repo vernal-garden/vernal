@@ -1,5 +1,6 @@
-import { ReactNode } from 'react';
+import { ReactNode, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
+import { googleSignInHref } from '../lib/googleSignIn';
 
 const GoogleG = () => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -13,11 +14,26 @@ const GoogleG = () => (
 interface Props {
   title: string;
   returnTo?: string;
+  // Focus the heading on mount, for a screen reader arriving from another step.
+  focusHeading?: boolean;
+  // The Google button, its Terms line and the "or" divider. Off for a screen
+  // that only reports a result (an account just created).
+  signInOptions?: boolean;
   children: ReactNode;
 }
 
-export default function AuthFormLayout({ title, returnTo = '/', children }: Props) {
-  const googleHref = `/api/auth/oauth/google?returnTo=${encodeURIComponent(returnTo)}`;
+export default function AuthFormLayout({
+  title,
+  returnTo = '/',
+  focusHeading = false,
+  signInOptions = true,
+  children,
+}: Props) {
+  const googleHref = googleSignInHref(returnTo);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (focusHeading) headingRef.current?.focus();
+  }, [focusHeading]);
 
   return (
     <div style={{
@@ -36,61 +52,68 @@ export default function AuthFormLayout({ title, returnTo = '/', children }: Prop
         maxWidth: '400px',
         boxShadow: '0 2px 12px rgba(0,0,0,0.08)',
       }}>
-        <h1 style={{ margin: '0 0 1.5rem', fontSize: '1.5rem', fontWeight: 600, color: '#1a1a1a' }}>
+        <h1
+          ref={headingRef}
+          tabIndex={focusHeading ? -1 : undefined}
+          style={{ margin: '0 0 1.5rem', fontSize: '1.5rem', fontWeight: 600, color: '#1a1a1a' }}>
           {title}
         </h1>
 
-        <a
-          href={googleHref}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem',
-            width: '100%',
-            padding: '0.625rem 1rem',
-            border: '1px solid #d1d5db',
-            borderRadius: '6px',
-            background: '#fff',
-            color: '#374151',
-            fontSize: '0.9375rem',
-            fontWeight: 500,
-            textDecoration: 'none',
-            boxSizing: 'border-box',
-          }}
-        >
-          <GoogleG />
-          Continue with Google
-        </a>
+        {signInOptions && (
+          <>
+            <a
+              href={googleHref}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.5rem',
+                width: '100%',
+                padding: '0.625rem 1rem',
+                border: '1px solid #d1d5db',
+                borderRadius: '6px',
+                background: '#fff',
+                color: '#374151',
+                fontSize: '0.9375rem',
+                fontWeight: 500,
+                textDecoration: 'none',
+                boxSizing: 'border-box',
+              }}
+            >
+              <GoogleG />
+              Continue with Google
+            </a>
 
-        <p
-          data-testid="auth-legal-notice"
-          style={{
-            margin: '0.75rem 0 0',
-            fontSize: '0.75rem',
-            lineHeight: 1.5,
-            color: '#9ca3af',
-            textAlign: 'center',
-          }}
-        >
-          By creating an account or continuing with Google, you agree to the{' '}
-          <Link to="/terms" style={{ color: '#4f7c3f', fontWeight: 500 }}>Terms</Link>
-          {' '}and acknowledge the{' '}
-          <Link to="/privacy" style={{ color: '#4f7c3f', fontWeight: 500 }}>Privacy Policy</Link>.
-        </p>
+            <p
+              data-testid="auth-legal-notice"
+              style={{
+                margin: '0.75rem 0 0',
+                fontSize: '0.75rem',
+                lineHeight: 1.5,
+                color: '#9ca3af',
+                textAlign: 'center',
+              }}
+            >
+              By creating an account or continuing with Google, you agree to the{' '}
+              <Link to="/terms" style={{ color: '#4f7c3f', fontWeight: 500 }}>Terms</Link>
+              {' '}and acknowledge the{' '}
+              <Link to="/privacy" style={{ color: '#4f7c3f', fontWeight: 500 }}>Privacy Policy</Link>.
+            </p>
 
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.75rem',
-          margin: '1.25rem 0',
-          color: '#9ca3af',
-          fontSize: '0.875rem',
-        }}>
-          <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-          or
-          <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-        </div>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              margin: '1.25rem 0',
+              color: '#9ca3af',
+              fontSize: '0.875rem',
+            }}>
+              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+              or
+              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+            </div>
+          </>
+        )}
 
         {children}
       </div>

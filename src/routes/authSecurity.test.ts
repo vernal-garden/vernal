@@ -217,9 +217,10 @@ describe('password reset', () => {
     expect(stale.status).toBe(400);
   });
 
-  it('reset sets the password, verifies the email, revokes all sessions, and is single-use', async () => {
+  // A reset on an unverified account replaces the account instead (terms.test.ts).
+  it('reset sets the password, revokes all sessions, clears a pending change, and is single-use', async () => {
     const email = nextEmail('reset-ok');
-    const accountId = await createUser(email);
+    const accountId = await createUser(email, 'Password123!', true);
     const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123!' });
     const oldCookie = cookiesOf(login);
 
@@ -256,7 +257,7 @@ describe('password reset', () => {
 
   it('emails a password-changed notice after a successful reset', async () => {
     const email = nextEmail('reset-notice');
-    await createUser(email);
+    await createUser(email, 'Password123!', true);
     await request(app).post('/api/auth/forgot-password').send({ email });
     const token = await mailTokenTo(email);
 
@@ -270,7 +271,7 @@ describe('password reset', () => {
 
   it('old cookie after reset is plain unauthenticated, not guestExpired', async () => {
     const email = nextEmail('reset-cold');
-    await createUser(email);
+    await createUser(email, 'Password123!', true);
     const login = await request(app).post('/api/auth/login').send({ email, password: 'Password123!' });
     const oldCookie = cookiesOf(login);
 
@@ -286,7 +287,7 @@ describe('password reset', () => {
 
   it('two concurrent resets with the same token: exactly one succeeds', async () => {
     const email = nextEmail('reset-race');
-    await createUser(email);
+    await createUser(email, 'Password123!', true);
     await request(app).post('/api/auth/forgot-password').send({ email });
     const token = await mailTokenTo(email);
 
@@ -372,11 +373,13 @@ describe('password reset', () => {
 describe('email verification', () => {
   it('register sends a verification link that verifies once', async () => {
     const email = nextEmail('verify');
-    const reg = await request(app).post('/api/auth/register').send({ email, password: 'Password123!' });
+    // Signed in as the account, so the link verifies without asking.
+    const agent = request.agent(app);
+    const reg = await agent.post('/api/auth/register').send({ email, password: 'Password123!' });
     expect(reg.status).toBe(201);
     const token = await mailTokenTo(email);
 
-    const ok = await request(app).post('/api/auth/verify-email').send({ token });
+    const ok = await agent.post('/api/auth/verify-email').send({ token });
     expect(ok.status).toBe(200);
     expect(ok.body.data.verified).toBe(true);
 
@@ -411,8 +414,8 @@ describe('email verification', () => {
     const token2 = await mailTokenTo(email);
     expect(token2).not.toBe(token1);
 
-    expect((await request(app).post('/api/auth/verify-email').send({ token: token1 })).status).toBe(400);
-    expect((await request(app).post('/api/auth/verify-email').send({ token: token2 })).status).toBe(200);
+    expect((await agent.post('/api/auth/verify-email').send({ token: token1 })).status).toBe(400);
+    expect((await agent.post('/api/auth/verify-email').send({ token: token2 })).status).toBe(200);
   });
 
   it('rejects an expired token and a missing token', async () => {
@@ -628,7 +631,7 @@ describe('login limits', () => {
 
   it('a password reset clears the lockout for that address', async () => {
     const email = nextEmail('reset-unlock');
-    await createUser(email);
+    await createUser(email, 'Password123!', true);
     for (let i = 0; i < 20; i++) {
       const res = await request(app)
         .post('/api/auth/login')

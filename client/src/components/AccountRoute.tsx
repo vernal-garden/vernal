@@ -9,6 +9,8 @@ export default function AccountRoute({ children }: { children: React.ReactNode }
   if (state.kind === 'account') return <>{children}</>;
   if (state.kind === 'guest') return <Navigate to="/login" state={{ intent: 'create-account' }} replace />;
   if (state.kind === 'unreachable') return <Navigate to="/connection-problem" replace />;
+  if (state.kind === 'private_beta') return <Navigate to="/private-beta" replace />;
+  if (state.kind === 'beta_terms') return <Navigate to="/beta-terms" replace />;
   // expired
   return <Navigate to="/session-expired" replace />;
 }

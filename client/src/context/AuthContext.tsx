@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import * as api from '../lib/api';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -10,6 +10,10 @@ export interface SessionAccount {
   subscriptionTier: 'free' | 'supporter';
   deletionScheduledAt: string | null;
   supporterPromptShown: boolean;
+  betaParticipant: boolean;
+  betaTermsRequired: boolean;
+  termsRequired: boolean;  // the account was claimed and the Terms not accepted since
+  termsVersion: string;    // the Terms version POST /api/me/terms expects
 }
 
 export interface PendingGuestData {
@@ -25,7 +29,19 @@ export type SessionState =
   // cookiesBlocked: the server issued a session cookie but the browser never sent
   // it back (cookies blocked for this site), so no sign-in can stick.
   | { kind: 'expired'; recoverable: boolean; cookiesBlocked?: boolean }
-  | { kind: 'unreachable'; reason: UnreachableReason };
+  | { kind: 'unreachable'; reason: UnreachableReason }
+  // No session, and guest mode is off, so none can be started.
+  | { kind: 'private_beta' }
+  // Signed in, but held until the main Terms (after a claim) and/or the current
+  // beta terms are accepted.
+  | {
+      kind: 'beta_terms';
+      termsRequired: boolean;
+      termsVersion: string;
+      betaTermsRequired: boolean;
+      pendingGuestData: PendingGuestData | null;
+      deletionScheduledAt: string | null;
+    };
 
 // network: the request never reached the server. server: it answered 5xx.
 // busy: it answered 429 (rate limited — e.g. many new visitors on one network).
@@ -40,6 +56,9 @@ export interface AuthContextValue {
   daysRemaining: number | null;
   gardenCount: number | null;
   refetch: () => Promise<void>;
+  // For after a sign-in that succeeded: an empty session then means the cookie
+  // didn't stick, so it reports that rather than starting a guest session.
+  refetchAfterSignIn: () => Promise<void>;
   markSupporterPromptShown: () => Promise<void>;
 }
 
@@ -84,6 +103,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Authenticated account ─ fetch gardens for requireOnboarding guard
     if (data['authenticated'] === true) {
+      // /api/gardens and /api/me answer 403 until the terms are accepted.
+      const sessionAccount = data['account'] as SessionAccount;
+      if (sessionAccount.termsRequired === true || sessionAccount.betaTermsRequired === true) {
+        setState({
+          kind: 'beta_terms',
+          termsRequired: sessionAccount.termsRequired === true,
+          termsVersion: sessionAccount.termsVersion,
+          betaTermsRequired: sessionAccount.betaTermsRequired === true,
+          pendingGuestData: (data['pendingGuestData'] as PendingGuestData | null) ?? null,
+          deletionScheduledAt: sessionAccount.deletionScheduledAt,
+        });
+        return;
+      }
+
       const [gardens, me] = await Promise.all([
         api.get<{ data: unknown[] }>('/api/gardens'),
         api.get<{ data: { supporterPromptShown: boolean } }>('/api/me'),
@@ -110,7 +143,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // No session, or a cookie whose session row is gone (nothing left to
     // recover) — bootstrap a fresh guest session, then re-resolve
     if (allowBootstrap) {
-      await api.post('/api/auth/guest');
+      try {
+        await api.post('/api/auth/guest');
+      } catch (err) {
+        // Not a failure: this visitor gets the private-beta screen.
+        if (api.apiErrorCode(err) === 'guest_mode_off') {
+          setState({ kind: 'private_beta' });
+          return;
+        }
+        throw err;
+      }
       await resolveSession(false);
       return;
     }
@@ -133,11 +175,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refetch = useCallback(() => resolveSession(), [resolveSession]);
+  const refetchAfterSignIn = useCallback(() => resolveSession(false), [resolveSession]);
 
   useEffect(() => {
     resolveSession().catch((err: unknown) => {
       setState(failureState(err));
     });
+  }, [resolveSession]);
+
+  // An account can be held mid-visit (added to the invite list, the terms
+  // version bumped, or the account claimed), and then every request answers 403. Re-resolving moves the
+  // state to beta_terms and the guards redirect. Only 'account' can be newly
+  // held, and one re-resolve covers a whole batch of failed requests. A failure
+  // leaves the state alone; the next refused request tries again.
+  const stateKind = useRef(state.kind);
+  stateKind.current = state.kind;
+  const recheckingTerms = useRef(false);
+
+  useEffect(() => {
+    api.setTermsRequiredHandler(() => {
+      if (stateKind.current !== 'account' || recheckingTerms.current) return;
+      recheckingTerms.current = true;
+      resolveSession()
+        .catch(() => {})
+        .finally(() => {
+          recheckingTerms.current = false;
+        });
+    });
+    return () => api.setTermsRequiredHandler(null);
   }, [resolveSession]);
 
   // ── Derived context values ────────────────────────────────────────────────
@@ -158,6 +223,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     account = state.account;
     pendingGuestData = state.pendingGuestData;
     gardenCount = state.gardenCount;
+  } else if (state.kind === 'beta_terms') {
+    pendingGuestData = state.pendingGuestData;
   }
 
   return (
@@ -171,6 +238,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         daysRemaining,
         gardenCount,
         refetch,
+        refetchAfterSignIn,
         markSupporterPromptShown,
       }}
     >

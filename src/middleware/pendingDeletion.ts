@@ -9,14 +9,18 @@ const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 // Writes an account pending deletion may still make: sign in and out, undo the
 // deletion, repeat it (COALESCE keeps the date), take its data, and telemetry
-// (deleted at purge anyway). The /api/auth/ prefix below also covers guest-data
-// merge/discard, which is fine: that data is purged with the account or kept
+// (deleted at purge anyway). Accepting the Terms or beta terms is allowed too:
+// the terms gate holds nearly every other request until then, so refusing it would trap
+// the account between the two gates. The /api/auth/ prefix below also covers
+// guest-data merge/discard, which is fine: that data is purged with the account or kept
 // on cancel.
 const ALLOWED = new Set([
   'POST /api/me/cancel-deletion',
   'DELETE /api/me',
   'POST /api/me/export',
   'POST /api/events/batch',
+  'POST /api/me/terms',
+  'POST /api/me/beta-terms',
 ]);
 
 // Freezes an account scheduled for deletion: it can read, but every other

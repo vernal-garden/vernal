@@ -38,6 +38,10 @@ function authRouteLimiter(max: number): RequestHandler {
 export const registerLimiter = authRouteLimiter(10);
 export const forgotPasswordLimiter = authRouteLimiter(10);
 export const verifyEmailLimiter = authRouteLimiter(10);
+export const verifyEmailInspectLimiter = authRouteLimiter(10);
+export const notMeLimiter = authRouteLimiter(10);
+// POST /api/auth/takeover and /api/auth/takeover/inspect (a held Google sign-in).
+export const takeoverLimiter = authRouteLimiter(10);
 
 interface LoginLimiterOptions {
   ipMax: number;
@@ -132,6 +136,17 @@ export const loginLimiters = makeLoginLimiters({
 
 // /api/auth/reset-password — tighter limit, this endpoint burns a reset token per guess
 export const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: byIp,
+  skip: skipInTest,
+  message: { error: 'Too many requests — please try again later' },
+});
+
+// Its own allowance, so asking about a link doesn't use up the reset itself.
+export const passwordResetInspectLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 3,
   standardHeaders: true,

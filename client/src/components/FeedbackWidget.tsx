@@ -22,6 +22,12 @@ const HIDDEN_PATHS = new Set([
   '/reset-password',
   '/session-expired',
   '/connection-problem',
+  '/private-beta',
+  '/beta-terms',
+  '/claim-account',
+  // The verification link and "This wasn't me": the person may not be a Vernal user.
+  '/verify-email',
+  '/not-me',
   '/harvest/print',
 ]);
 

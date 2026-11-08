@@ -1,7 +1,7 @@
 // Types for the admin API (/api/admin, admin role only), shaped exactly as the
 // server returns them. /accounts and /accounts/:id are snake_case; the rest
 // are camelCase.
-import { get, patch } from './api';
+import { del, get, patch, post } from './api';
 
 const BASE = '/api/admin';
 
@@ -314,6 +314,40 @@ export interface SystemReport {
   sentry: { issuesUrl: string | null; performanceUrl: string | null };
 }
 
+// ── Beta access ──────────────────────────────────────────────────────────────
+
+export type BetaSettingKey = 'gateOn' | 'guestModeOn' | 'supporterAccessOn';
+
+/** GET /beta; PATCH /beta/settings returns the same shape. */
+export interface BetaOverview {
+  gateOn: boolean;
+  gateFirstOnAt: string | null;
+  guestModeOn: boolean;
+  supporterAccessOn: boolean;
+  counts: { invited: number; haveAccounts: number; participants: number };
+}
+
+/** A row of GET /beta/invites */
+export interface BetaInvite {
+  id: number;
+  email: string;
+  addedAt: string;
+  accountCreatedAt: string | null;
+}
+
+/** POST /beta/invites. newParticipants can overlap added and alreadyListed. */
+export interface BetaInvitesResult {
+  added: string[];
+  alreadyListed: string[];
+  newParticipants: string[];
+  invalid: string[];
+}
+
+/** POST /beta/invites/cleanup */
+export interface BetaInviteCleanupResult {
+  removed: number;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Builds a query string, dropping undefined / null / empty-string values. */
@@ -361,6 +395,14 @@ export const adminApi = {
 
   usersSummary: () => aget<UsersSummary>('/users/summary'),
   usersCharts: (range: UsersChartRange) => aget<UsersCharts>(`/users/charts${qs({ range })}`),
+
+  betaOverview: () => aget<BetaOverview>('/beta'),
+  setBetaSetting: (key: BetaSettingKey, value: boolean) => apatch<BetaOverview>('/beta/settings', { [key]: value }),
+  betaInvites: () => aget<{ data: BetaInvite[] }>('/beta/invites'),
+  addBetaInvites: async (emails: string) => (await post<BetaInvitesResult>(`${BASE}/beta/invites`, { emails })) as BetaInvitesResult,
+  removeBetaInvite: (id: number) => del<void>(`${BASE}/beta/invites/${id}`),
+  cleanupBetaInvites: async () =>
+    (await post<BetaInviteCleanupResult>(`${BASE}/beta/invites/cleanup`, {})) as BetaInviteCleanupResult,
 
   features: () => aget<FeaturesReport>('/features'),
 
