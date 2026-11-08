@@ -234,6 +234,8 @@ authRouter.delete('/session', async (req: Request, res: Response): Promise<void>
 
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS ?? '12', 10);
 const SUPPORTED_PROVIDERS = new Set(['google']);
+// Same default as the CORS origin in index.ts; serverConfig requires FRONTEND_URL in production.
+const frontendUrl = () => process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
 // POST /api/auth/register
 authRouter.post('/register', registerLimiter, async (req: Request, res: Response): Promise<void> => {
@@ -1050,7 +1052,7 @@ authRouter.get(
   verifyOAuthState,
   passport.authenticate('google', {
     session: false,
-    failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
+    failureRedirect: `${frontendUrl()}/login?error=oauth_failed`,
   }),
   async (req: Request, res: Response) => {
     try {
@@ -1071,23 +1073,23 @@ authRouter.get(
         await discardEmptyGuestGardens(guestSessionId);
       }
 
-      res.redirect(`${process.env.FRONTEND_URL}${returnTo}`);
+      res.redirect(`${frontendUrl()}${returnTo}`);
     } catch (err) {
       if (err instanceof OAuthTakeoverChoiceRequired) {
         res.cookie(TAKEOVER_COOKIE, err.browserToken, { ...TAKEOVER_COOKIE_OPTIONS, maxAge: TAKEOVER_MINUTES * 60 * 1000 });
-        return res.redirect(`${process.env.FRONTEND_URL}/claim-account?token=${err.token}`);
+        return res.redirect(`${frontendUrl()}/claim-account?token=${err.token}`);
       }
       if (err instanceof OAuthUnverifiedEmailError) {
-        return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_unverified`);
+        return res.redirect(`${frontendUrl()}/login?error=oauth_unverified`);
       }
       if (err instanceof OAuthLinkRequiresPasswordError) {
-        return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_link_password`);
+        return res.redirect(`${frontendUrl()}/login?error=oauth_link_password`);
       }
       if (err instanceof OAuthNotInvitedError) {
-        return res.redirect(`${process.env.FRONTEND_URL}/private-beta?refused=1`);
+        return res.redirect(`${frontendUrl()}/private-beta?refused=1`);
       }
       logger.error('GET /auth/oauth/google/callback failed', err);
-      res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_error`);
+      res.redirect(`${frontendUrl()}/login?error=oauth_error`);
     }
   },
 );

@@ -25,7 +25,7 @@ export function verifyOAuthState(req: Request, res: Response, next: NextFunction
   const rawState = req.query.state;
   res.clearCookie(OAUTH_NONCE_COOKIE, OAUTH_NONCE_COOKIE_OPTIONS);
 
-  const fail = () => res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_csrf`);
+  const fail = () => res.redirect(`${process.env.FRONTEND_URL ?? 'http://localhost:5173'}/login?error=oauth_csrf`);
 
   if (typeof rawState !== 'string' || typeof cookieNonce !== 'string' || !NONCE_PATTERN.test(cookieNonce)) {
     fail();
