@@ -602,8 +602,10 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
   const contributionStatusLabel: Partial<Record<ContributionStatus, string>> = {
     pending: 'Submitted, under review',
     approved: 'Published to Cambium',
-    rejected: 'Returned, not published',
+    rejected: 'Returned, not published.',
   };
+  // A returned seed shows both its status line and the contribute action.
+  const statusLabel = detail.origin === 'user_created' ? contributionStatusLabel[contributionStatus] : undefined;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}>
@@ -776,13 +778,14 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
               Delete
             </button>
           </div>
-          {canContribute ? (
+          {statusLabel !== undefined && (
+            <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>
+              {statusLabel}
+            </span>
+          )}
+          {canContribute && (
             <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>
               {DESKTOP_MESSAGES.contribute}
-            </span>
-          ) : detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (
-            <span style={{ fontSize: 13, color: 'var(--c-text-3)' }}>
-              {contributionStatusLabel[contributionStatus]}
             </span>
           )}
         </div>
@@ -812,9 +815,9 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
             Contribute to Cambium
           </button>
         )}
-        {!canContribute && detail.origin === 'user_created' && contributionStatusLabel[contributionStatus] !== undefined && (
+        {statusLabel !== undefined && (
           <span style={{ fontSize: 13, color: 'var(--c-text-3)', alignSelf: 'center', padding: '0 var(--sp-2)' }}>
-            {contributionStatusLabel[contributionStatus]}
+            {statusLabel}
           </span>
         )}
         <button
