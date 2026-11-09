@@ -6,7 +6,7 @@ import { logger } from '../logger';
 import { migrateGuestData, revokeAccountSessions } from '../sessions';
 import { LOCATION_NOT_SET } from '../constants';
 import { TERMS_VERSION } from '../legal';
-import { decideSignup } from '../beta';
+import { decideSignup, joinedVia } from '../beta';
 import { generateRawToken, hashToken } from '../tokens';
 import { sendPasswordRemovedNotice } from '../accountSecurity';
 import {
@@ -278,9 +278,10 @@ async function resolveWithin(client: PoolClient, login: ProviderLogin, opts: Res
     // Beta terms are not recorded here; the terms gate holds a new participant until they accept.
     const newAccount = await client.query<{ id: string }>(
       `INSERT INTO accounts (email, display_name, email_verified, zone, zone_location_label, terms_version, terms_accepted_at,
-                             beta_participant_at)
-       VALUES ($1, $2, true, 'unknown', $3, $4, NOW(), CASE WHEN $5::boolean THEN NOW() END) RETURNING id`,
-      [email, displayName, LOCATION_NOT_SET, TERMS_VERSION, decision.participant],
+                             beta_participant_at, beta_joined_via)
+       VALUES ($1, $2, true, 'unknown', $3, $4, NOW(), CASE WHEN $5::boolean THEN NOW() END,
+               CASE WHEN $5::boolean THEN $6::text END) RETURNING id`,
+      [email, displayName, LOCATION_NOT_SET, TERMS_VERSION, decision.participant, joinedVia(decision)],
     );
     accountId = Number(newAccount.rows[0].id);
   }

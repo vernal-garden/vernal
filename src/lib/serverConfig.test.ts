@@ -29,6 +29,7 @@ describe('loadServerConfig', () => {
       googleSignIn: false,
       weather: false,
       betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
+      betaEndsAt: new Date('2027-01-30T08:00:00Z'),
     });
   });
 
@@ -250,9 +251,34 @@ describe('BETA_APPLICATIONS_CLOSE_AT', () => {
   });
 });
 
+describe('BETA_ENDS_AT', () => {
+  it('defaults to the end of 2027-01-29 Pacific, and treats blank as unset', () => {
+    expect(loadServerConfig(base).betaEndsAt.toISOString()).toBe('2027-01-30T08:00:00.000Z');
+    expect(loadServerConfig({ ...base, BETA_ENDS_AT: '  ' }).betaEndsAt.toISOString()).toBe('2027-01-30T08:00:00.000Z');
+  });
+
+  it('reads a date with an offset', () => {
+    const cfg = loadServerConfig({ ...base, BETA_ENDS_AT: '2027-02-01T00:00:00Z' });
+    expect(cfg.betaEndsAt.toISOString()).toBe('2027-02-01T00:00:00.000Z');
+  });
+
+  it.each(['1', 'Jan 30', '2027-01-30T00:00:00', '2027-01-30', '2026-02-31T00:00:00Z'])('rejects %s', (value) => {
+    const run = () => loadServerConfig({ ...base, BETA_ENDS_AT: value });
+    expect(run).toThrow(ConfigError);
+    expect(run).toThrow('BETA_ENDS_AT must be an ISO 8601');
+  });
+
+  it('rejects an unparseable value, naming the variable but not echoing it', () => {
+    const run = () => loadServerConfig({ ...base, BETA_ENDS_AT: 'soonish' });
+    expect(run).toThrow(ConfigError);
+    expect(run).toThrow('BETA_ENDS_AT');
+    expect(run).not.toThrow(/soonish/);
+  });
+});
+
 describe('setServerConfigForTests', () => {
   it('replaces the loaded config', () => {
-    const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date(0) };
+    const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date(0), betaEndsAt: new Date(0) };
     setServerConfigForTests(custom);
     expect(getServerConfig()).toBe(custom);
   });

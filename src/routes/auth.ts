@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcrypt';
 import { effectiveTier } from '../lib/tier';
-import { getBetaSettings, betaAccessApplies, decideSignup } from '../lib/beta';
+import { getBetaSettings, betaAccessApplies, decideSignup, joinedVia } from '../lib/beta';
 import crypto from 'crypto';
 import {
   createGuestSession,
@@ -318,13 +318,23 @@ authRouter.post('/register', registerLimiter, async (req: Request, res: Response
 
     const { rows } = await client.query<{ id: number }>(
       `INSERT INTO accounts (email, password_hash, zone, zone_location_label, terms_version, terms_accepted_at,
-                             beta_participant_at, beta_terms_version, beta_terms_accepted_at)
+                             beta_participant_at, beta_joined_via, beta_terms_version, beta_terms_accepted_at)
        VALUES ($1, $2, 'unknown', $3, $4, NOW(),
                CASE WHEN $5::boolean THEN NOW() END,
+               CASE WHEN $5::boolean THEN $8::text END,
                CASE WHEN $6::boolean THEN $7::text END,
                CASE WHEN $6::boolean THEN NOW() END)
        RETURNING id`,
-      [email.toLowerCase(), passwordHash, LOCATION_NOT_SET, TERMS_VERSION, participant, acceptedBeta, BETA_TERMS_VERSION],
+      [
+        email.toLowerCase(),
+        passwordHash,
+        LOCATION_NOT_SET,
+        TERMS_VERSION,
+        participant,
+        acceptedBeta,
+        BETA_TERMS_VERSION,
+        joinedVia(decision),
+      ],
     );
     const accountId = rows[0].id;
 
@@ -683,9 +693,10 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
         // acceptance holds them at the Terms screen until they do.
         await client.query(
           `INSERT INTO accounts (email, password_hash, email_verified, zone, zone_location_label, claimed_at,
-                                 beta_participant_at)
-           VALUES ($1, $2, true, 'unknown', $3, now(), CASE WHEN $4::boolean THEN now() END)`,
-          [current.email, newHash, LOCATION_NOT_SET, decision.participant],
+                                 beta_participant_at, beta_joined_via)
+           VALUES ($1, $2, true, 'unknown', $3, now(), CASE WHEN $4::boolean THEN now() END,
+                   CASE WHEN $4::boolean THEN $5::text END)`,
+          [current.email, newHash, LOCATION_NOT_SET, decision.participant, joinedVia(decision)],
         );
         displaced = true;
       } else {

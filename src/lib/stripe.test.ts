@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Stripe from 'stripe';
 import type { ServerConfig } from './serverConfig';
 
-const base: ServerConfig = { billing: 'stripe', mail: 'off', media: 'local', googleSignIn: false, weather: false, betaApplicationsCloseAt: new Date(0) };
+const base: ServerConfig = { billing: 'stripe', mail: 'off', media: 'local', googleSignIn: false, weather: false, betaApplicationsCloseAt: new Date(0), betaEndsAt: new Date(0) };
 
 // Fresh modules each time so the cached Stripe client never leaks between cases.
 async function load(billing: ServerConfig['billing'], key: string) {

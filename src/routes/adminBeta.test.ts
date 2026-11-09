@@ -91,6 +91,8 @@ describe('admin beta routes require an admin', () => {
     ['post', '/api/admin/beta/invites', { emails: 'a@example.com' }],
     ['delete', '/api/admin/beta/invites/1'],
     ['post', '/api/admin/beta/invites/cleanup'],
+    ['post', '/api/admin/beta/survey-credits', { accountId: 1, survey: 1 }],
+    ['delete', '/api/admin/beta/survey-credits/1/1'],
   ];
   for (const [method, path, body] of routes) {
     it(`${method.toUpperCase()} ${path}: 403 for a non-admin account, a guest and no session`, async () => {
@@ -367,9 +369,10 @@ describe('POST /api/admin/beta/invites', () => {
     expect(res.body.newParticipants).toEqual(['existing@example.com']);
 
     const first = await pool.query(
-      `SELECT beta_participant_at FROM accounts WHERE email = 'existing@example.com'`,
+      `SELECT beta_participant_at, beta_joined_via FROM accounts WHERE email = 'existing@example.com'`,
     );
     expect(first.rows[0].beta_participant_at).toBeInstanceOf(Date);
+    expect(first.rows[0].beta_joined_via).toBe('invite');
 
     await new Promise((r) => setTimeout(r, 15));
     const again = await adminAgent.post('/api/admin/beta/invites').send({ emails: 'existing@example.com' });
@@ -378,9 +381,10 @@ describe('POST /api/admin/beta/invites', () => {
     expect(again.body.newParticipants).toEqual([]);
 
     const second = await pool.query(
-      `SELECT beta_participant_at FROM accounts WHERE email = 'existing@example.com'`,
+      `SELECT beta_participant_at, beta_joined_via FROM accounts WHERE email = 'existing@example.com'`,
     );
     expect(second.rows[0].beta_participant_at).toEqual(first.rows[0].beta_participant_at);
+    expect(second.rows[0].beta_joined_via).toBe('invite');
   });
 
   it('heals a listed email whose account appeared later', async () => {
@@ -389,6 +393,8 @@ describe('POST /api/admin/beta/invites', () => {
     const res = await adminAgent.post('/api/admin/beta/invites').send({ emails: 'late@example.com' });
     expect(res.body.alreadyListed).toEqual(['late@example.com']);
     expect(res.body.newParticipants).toEqual(['late@example.com']);
+    const { rows } = await pool.query(`SELECT beta_joined_via FROM accounts WHERE email = 'late@example.com'`);
+    expect(rows[0].beta_joined_via).toBe('invite');
   });
 
   it('leaves an account that is already a participant out of newParticipants', async () => {
@@ -397,6 +403,18 @@ describe('POST /api/admin/beta/invites', () => {
     const res = await adminAgent.post('/api/admin/beta/invites').send({ emails: 'already@example.com' });
     expect(res.body.added).toEqual(['already@example.com']);
     expect(res.body.newParticipants).toEqual([]);
+  });
+
+  it("doesn't change how an existing participant joined", async () => {
+    const id = await createUser('guestjoined@example.com');
+    await pool.query(
+      `UPDATE accounts SET beta_participant_at = '2026-05-05', beta_joined_via = 'guest' WHERE id = $1`,
+      [id],
+    );
+    await adminAgent.post('/api/admin/beta/invites').send({ emails: 'guestjoined@example.com' });
+    const { rows } = await pool.query('SELECT beta_participant_at, beta_joined_via FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].beta_participant_at).toEqual(new Date('2026-05-05'));
+    expect(rows[0].beta_joined_via).toBe('guest');
   });
 
   it('a new participant is held by the terms gate until they accept', async () => {
@@ -518,6 +536,123 @@ describe('POST /api/admin/beta/invites/cleanup', () => {
     expect((await userAgent.post('/api/admin/beta/invites/cleanup')).status).toBe(403);
     expect((await pool.query('SELECT 1 FROM beta_invites')).rowCount).toBe(1);
     expect(await audit('beta.invite.cleanup')).toHaveLength(0);
+  });
+});
+
+describe('survey credits', () => {
+  async function createParticipant(email: string): Promise<number> {
+    const id = await createUser(email);
+    await pool.query('UPDATE accounts SET beta_participant_at = now() WHERE id = $1', [id]);
+    return id;
+  }
+
+  async function credits(accountId: number) {
+    const { rows } = await pool.query(
+      'SELECT survey, credited_by FROM beta_survey_credits WHERE account_id = $1 ORDER BY survey',
+      [accountId],
+    );
+    return rows;
+  }
+
+  it('adds a credit with credited_by, audits it, and returns 201', async () => {
+    const id = await createParticipant('survey@example.com');
+    const res = await adminAgent.post('/api/admin/beta/survey-credits').send({ accountId: id, survey: 1 });
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ accountId: id, survey: 1, creditedAt: expect.any(String) });
+    expect(await credits(id)).toEqual([{ survey: 1, credited_by: adminId }]);
+
+    expect(await audit('beta.survey_credit.add')).toEqual([
+      {
+        admin_id: adminId,
+        action: 'beta.survey_credit.add',
+        target_type: 'account',
+        target_id: id,
+        before: null,
+        after: { survey: 1 },
+      },
+    ]);
+  });
+
+  it('409 for a duplicate, without a second audit row; the other survey is separate', async () => {
+    const id = await createParticipant('survey@example.com');
+    await adminAgent.post('/api/admin/beta/survey-credits').send({ accountId: id, survey: 2 });
+    const dup = await adminAgent.post('/api/admin/beta/survey-credits').send({ accountId: id, survey: 2 });
+    expect(dup.status).toBe(409);
+    expect(await audit('beta.survey_credit.add')).toHaveLength(1);
+
+    const other = await adminAgent.post('/api/admin/beta/survey-credits').send({ accountId: id, survey: 1 });
+    expect(other.status).toBe(201);
+    expect((await credits(id)).map((r) => r.survey)).toEqual([1, 2]);
+  });
+
+  it('removes a credit (204), audits it, 404 on removing again, and re-adds (201)', async () => {
+    const id = await createParticipant('survey@example.com');
+    await adminAgent.post('/api/admin/beta/survey-credits').send({ accountId: id, survey: 1 });
+
+    const removed = await adminAgent.delete(`/api/admin/beta/survey-credits/${id}/1`);
+    expect(removed.status).toBe(204);
+    expect(await credits(id)).toEqual([]);
+    expect(await audit('beta.survey_credit.remove')).toEqual([
+      {
+        admin_id: adminId,
+        action: 'beta.survey_credit.remove',
+        target_type: 'account',
+        target_id: id,
+        before: { survey: 1 },
+        after: null,
+      },
+    ]);
+
+    const again = await adminAgent.delete(`/api/admin/beta/survey-credits/${id}/1`);
+    expect(again.status).toBe(404);
+    expect(await audit('beta.survey_credit.remove')).toHaveLength(1);
+
+    const readd = await adminAgent.post('/api/admin/beta/survey-credits').send({ accountId: id, survey: 1 });
+    expect(readd.status).toBe(201);
+    expect(await credits(id)).toHaveLength(1);
+  });
+
+  it('404 for a non-participant or a missing account, writing nothing', async () => {
+    const id = await createUser('not-participant@example.com');
+    for (const accountId of [id, 999999]) {
+      const res = await adminAgent.post('/api/admin/beta/survey-credits').send({ accountId, survey: 1 });
+      expect(res.status).toBe(404);
+    }
+    expect((await pool.query('SELECT 1 FROM beta_survey_credits')).rowCount).toBe(0);
+    expect(await audit('beta.survey_credit.add')).toHaveLength(0);
+  });
+
+  it('400 for a bad survey or account id', async () => {
+    const id = await createParticipant('survey@example.com');
+    const bodies = [
+      { accountId: id, survey: 3 },
+      { accountId: id, survey: '1' },
+      { accountId: id, survey: 0 },
+      { accountId: id },
+      { accountId: String(id), survey: 1 },
+      { accountId: 0, survey: 1 },
+      { accountId: 1.5, survey: 1 },
+      { accountId: 2_147_483_648, survey: 1 },
+    ];
+    for (const body of bodies) {
+      const res = await adminAgent.post('/api/admin/beta/survey-credits').send(body);
+      expect(res.status).toBe(400);
+    }
+    for (const path of [`${id}/3`, `${id}/01`, `abc/1`, `0/1`]) {
+      const res = await adminAgent.delete(`/api/admin/beta/survey-credits/${path}`);
+      expect(res.status).toBe(400);
+    }
+    expect((await pool.query('SELECT 1 FROM beta_survey_credits')).rowCount).toBe(0);
+  });
+
+  it('changes nothing for a non-admin', async () => {
+    const id = await createParticipant('survey@example.com');
+    await pool.query('INSERT INTO beta_survey_credits (account_id, survey) VALUES ($1, 2)', [id]);
+    const add = await userAgent.post('/api/admin/beta/survey-credits').send({ accountId: id, survey: 1 });
+    const del = await userAgent.delete(`/api/admin/beta/survey-credits/${id}/2`);
+    expect(add.status).toBe(403);
+    expect(del.status).toBe(403);
+    expect((await credits(id)).map((r) => r.survey)).toEqual([2]);
   });
 });
 

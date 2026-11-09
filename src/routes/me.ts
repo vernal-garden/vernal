@@ -3,7 +3,7 @@ import bcrypt from 'bcrypt';
 import { db } from '../lib/db';
 import { effectiveTier } from '../lib/tier';
 import { BETA_TERMS_VERSION, TERMS_VERSION } from '../lib/legal';
-import { getBetaSettings, betaAccessApplies, type BetaSettings } from '../lib/beta';
+import { getBetaSettings, betaAccessApplies, isUsStateCode, OUTSIDE_US, type BetaSettings } from '../lib/beta';
 import { requireAuth } from '../middleware/auth';
 import { requireMail } from '../middleware/requireMail';
 import { clearSessionCookie, makeSessionCookie, revokeAccountSessions, rotateLiveSessionToken } from '../lib/sessions';
@@ -42,6 +42,8 @@ interface AccountRow {
   role: string;
   subscription_tier: string;
   beta_participant_at: Date | null;
+  residence_state: string | null;
+  residence_state_confirmed_at: Date | null;
   preferences: Record<string, unknown>;
   deletion_scheduled_at: string | null;
   supporter_prompt_shown: boolean;
@@ -53,11 +55,13 @@ interface AccountRow {
 const ACCOUNT_SELECT = `
   id::text, email, pending_email, display_name, avatar_url, email_verified, zone,
   zone_location_label, last_spring_frost_date::text, first_fall_frost_date::text,
-  role, subscription_tier, beta_participant_at, preferences, deletion_scheduled_at, supporter_prompt_shown,
+  role, subscription_tier, beta_participant_at, residence_state, residence_state_confirmed_at, preferences, deletion_scheduled_at, supporter_prompt_shown,
   (password_hash IS NOT NULL) AS is_password_account, created_at, updated_at
 `;
 
 function formatAccount(row: AccountRow, beta: BetaSettings) {
+  // The state record is for beta testers only; a stored value is hidden from anyone else.
+  const participant = row.beta_participant_at !== null;
   return {
     id: row.id,
     email: row.email,
@@ -74,6 +78,8 @@ function formatAccount(row: AccountRow, beta: BetaSettings) {
       row.subscription_tier as 'free' | 'supporter',
       betaAccessApplies(row.beta_participant_at, beta),
     ),
+    residenceState: participant ? row.residence_state : null,
+    residenceStateConfirmedAt: participant ? row.residence_state_confirmed_at : null,
     preferences: row.preferences ?? {},
     deletionScheduledAt: row.deletion_scheduled_at,
     supporterPromptShown: row.supporter_prompt_shown,
@@ -738,6 +744,31 @@ router.post('/beta-terms', writeLimiter, async (req, res) => {
     res.status(204).end();
   } catch (err) {
     logger.error('POST /me/beta-terms failed', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PUT /api/me/residence-state
+// A beta tester's US state (or OUTSIDE_US), confirmed now. A later call replaces both.
+router.put('/residence-state', writeLimiter, async (req, res) => {
+  if (!req.session!.account!.betaParticipant) {
+    return res.status(403).json({ error: 'Only beta testers can set this.' });
+  }
+  const state = req.body?.state;
+  if (!isUsStateCode(state) && state !== OUTSIDE_US) {
+    return res.status(400).json({ error: `state must be a two-letter US state code or ${OUTSIDE_US}` });
+  }
+  const accountId = req.session!.account!.id;
+
+  try {
+    await db.query(
+      `UPDATE accounts SET residence_state = $2, residence_state_confirmed_at = NOW(), updated_at = NOW()
+        WHERE id = $1`,
+      [accountId, state],
+    );
+    res.status(204).end();
+  } catch (err) {
+    logger.error('PUT /me/residence-state failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
