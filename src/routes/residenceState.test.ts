@@ -58,11 +58,12 @@ afterAll(async () => {
 });
 
 describe('US_STATE_CODES', () => {
-  it('is the 50 states, without DC', () => {
-    expect(US_STATE_CODES).toHaveLength(50);
-    expect(new Set(US_STATE_CODES).size).toBe(50);
-    expect(US_STATE_CODES).not.toContain('DC');
-    expect(US_STATE_CODES).not.toContain('PR');
+  it('is the 50 states, DC and the five territories', () => {
+    expect(US_STATE_CODES).toHaveLength(56);
+    expect(new Set(US_STATE_CODES).size).toBe(56);
+    for (const code of ['DC', 'PR', 'GU', 'VI', 'AS', 'MP']) {
+      expect(US_STATE_CODES).toContain(code);
+    }
   });
 });
 
@@ -112,7 +113,17 @@ describe('PUT /api/me/residence-state', () => {
     expect(me.body.data.residenceState).toBe('OUTSIDE_US');
   });
 
-  it.each([['DC'], ['XX'], ['wa'], [''], [' WA'], ['outside_us']])(
+  it('a participant can set DC or a territory', async () => {
+    const id = await createUser({ participant: true });
+    const agent = await loginAgent();
+    for (const state of ['DC', 'PR']) {
+      const res = await agent.put('/api/me/residence-state').send({ state });
+      expect(res.status).toBe(204);
+      expect((await stateRow(id)).residence_state).toBe(state);
+    }
+  });
+
+  it.each([['PRI'], ['XX'], ['wa'], [''], [' WA'], ['outside_us']])(
     'refuses %j with 400 and stores nothing',
     async (state) => {
       const id = await createUser({ participant: true });

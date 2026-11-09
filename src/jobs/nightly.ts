@@ -307,6 +307,47 @@ export async function purgeOldUsageEvents(): Promise<{ affected: number }> {
   }
 }
 
+// Feedback sent without an account (guests) is kept 12 months (privacy
+// policy v2.2). An account's own feedback goes with the account at the
+// purge, so user_id NULL here means guest feedback.
+export async function purgeOldGuestFeedback(): Promise<{ affected: number }> {
+  let affected = 0;
+  for (;;) {
+    const result = await db.query(
+      `DELETE FROM feedback_submissions WHERE id IN (
+         SELECT id FROM feedback_submissions
+          WHERE user_id IS NULL AND created_at < NOW() - INTERVAL '12 months'
+          LIMIT 10000)`,
+    );
+    affected += result.rowCount ?? 0;
+    if ((result.rowCount ?? 0) < 10000) return { affected };
+  }
+}
+
+// Beta participants' active weeks and survey credits, kept until General
+// Counsel's period after the beta ends (BETA_RECORDS_RETENTION_DAYS). Off
+// while the setting is blank. The state record stays on the account and goes
+// with it at the purge.
+export async function purgeBetaRecords(now: Date = new Date()): Promise<{ affected: number }> {
+  const { betaEndsAt, betaRecordsRetentionDays } = getServerConfig();
+  if (betaRecordsRetentionDays === null) return { affected: 0 };
+  const cutoff = new Date(betaEndsAt.getTime() + betaRecordsRetentionDays * 24 * 60 * 60 * 1000);
+  if (now < cutoff) return { affected: 0 };
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const weeks = await client.query('DELETE FROM beta_active_weeks');
+    const credits = await client.query('DELETE FROM beta_survey_credits');
+    await client.query('COMMIT');
+    return { affected: (weeks.rowCount ?? 0) + (credits.rowCount ?? 0) };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 // Deletes accounts 30 days past their scheduled deletion. Stripe is torn down
 // first; if that fails the account is kept for tomorrow. Its R2 folders (every
 // seed, garden and harvest it owns, and its exports) are queued in the same
@@ -521,6 +562,8 @@ async function runNightlyTasks(): Promise<void> {
     ['purgeReadNotifications', purgeReadNotifications],
     ['purgeStripeEvents', purgeStripeEvents],
     ['purgeOldUsageEvents', purgeOldUsageEvents],
+    ['purgeOldGuestFeedback', purgeOldGuestFeedback],
+    ['purgeBetaRecords', () => purgeBetaRecords()],
     ['purgeScheduledAccounts', purgeScheduledAccounts],
     ['purgeStaleBetaInvites', purgeStaleBetaInvites],
     ['checkSubscriptionDowngrades', checkSubscriptionDowngrades],

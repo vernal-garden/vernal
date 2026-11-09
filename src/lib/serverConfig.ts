@@ -24,6 +24,9 @@ export interface ServerConfig {
   betaApplicationsCloseAt: Date;
   // The private beta ends at this instant; activity after it is not tracked.
   betaEndsAt: Date;
+  // Days after betaEndsAt to keep beta_active_weeks and
+  // beta_survey_credits. null: never deleted (General Counsel sets this).
+  betaRecordsRetentionDays: number | null;
   // Set only when SENTRY_CLIENT_DSN is set; absent means the relay is off.
   sentryRelay?: SentryRelayTarget;
 }
@@ -180,6 +183,16 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   const closeAt = readOffsetInstant(env, 'BETA_APPLICATIONS_CLOSE_AT', '2027-01-01T00:00:00-08:00', '2027-01-01T00:00:00-08:00');
   const endsAt = readOffsetInstant(env, 'BETA_ENDS_AT', '2027-01-30T00:00:00-08:00', '2027-01-30T00:00:00-08:00');
 
+  // Names the variable, never echoes the value.
+  const retentionRaw = read(env, 'BETA_RECORDS_RETENTION_DAYS');
+  let betaRecordsRetentionDays: number | null = null;
+  if (retentionRaw !== undefined) {
+    if (!/^\d+$/.test(retentionRaw) || Number(retentionRaw) < 1) {
+      throw new ConfigError('BETA_RECORDS_RETENTION_DAYS must be a whole number of days, 1 or more, or left blank.');
+    }
+    betaRecordsRetentionDays = Number(retentionRaw);
+  }
+
   loaded = {
     billing,
     mail,
@@ -188,6 +201,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     weather: Boolean(read(env, 'VISUAL_CROSSING_API_KEY')),
     betaApplicationsCloseAt: closeAt,
     betaEndsAt: endsAt,
+    betaRecordsRetentionDays,
     ...(sentryRelay ? { sentryRelay } : {}),
   };
   return loaded;

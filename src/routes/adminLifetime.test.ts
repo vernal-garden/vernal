@@ -265,6 +265,13 @@ describe('GET /api/admin/beta/lifetime', () => {
     });
   });
 
+  it('a territory counts as a listed state for grantEligible', async () => {
+    const id = await createParticipant('territory@example.com', { state: 'PR' });
+    await addWeeks(id, ['2026-10-05', '2026-10-12', '2026-10-19']);
+    await addNotes(id, 3);
+    expect(await rowFor(id)).toMatchObject({ qualifies: true, grantEligible: true });
+  });
+
   it('lists participants only, newest participant first', async () => {
     const older = await createParticipant('older@example.com', { at: '2026-09-01T00:00:00Z' });
     const newer = await createParticipant('newer@example.com', {

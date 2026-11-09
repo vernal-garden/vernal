@@ -61,12 +61,14 @@ interface NotifyParams {
   id: number;
   category: Category;
   message: string;
-  sender: string;
+  accountId: number | null;
   sourceSurface: string | null;
   appVersion: string | null;
 }
 
+// The email carries the account number and never the sender's email address (privacy policy v2.2).
 function notify(p: NotifyParams): void {
+  const account = p.accountId === null ? 'guest' : String(p.accountId);
   const surface = p.sourceSurface ?? 'unknown';
   const version = p.appVersion ?? 'unknown';
   const subject = `Vernal feedback: ${CATEGORY_LABELS[p.category]} — ${surface}`;
@@ -74,7 +76,7 @@ function notify(p: NotifyParams): void {
   const text = [
     p.message,
     '',
-    `From: ${p.sender}`,
+    `Account: ${account}`,
     `Source surface: ${surface}`,
     `App version: ${version}`,
     `Submission id: ${p.id}`,
@@ -84,7 +86,7 @@ function notify(p: NotifyParams): void {
     <p style="white-space: pre-wrap">${escapeHtml(p.message)}</p>
     <hr>
     <p>
-      From: ${escapeHtml(p.sender)}<br>
+      Account: ${account}<br>
       Source surface: ${escapeHtml(surface)}<br>
       App version: ${escapeHtml(version)}<br>
       Submission id: ${p.id}
@@ -146,7 +148,7 @@ feedbackRouter.post(
         id,
         category: category as Category,
         message: trimmed,
-        sender: account?.email ?? 'Guest (not logged in)',
+        accountId: account?.id ?? null,
         sourceSurface,
         appVersion,
       });

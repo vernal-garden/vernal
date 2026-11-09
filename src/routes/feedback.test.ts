@@ -147,10 +147,31 @@ describe('POST /api/feedback', () => {
     const mail = sendMailMock.mock.calls[0][0];
     expect(mail.to).toBe('owner@example.test');
     expect(mail.subject).toBe('Vernal feedback: Bug — canvas');
-    expect(mail.text).toContain('Guest (not logged in)');
+    expect(mail.text).toContain('Account: guest');
     expect(mail.text).toContain(`Submission id: ${res.body.id}`);
     expect(mail.html).not.toContain('<script>');
     expect(mail.html).toContain('&lt;script&gt;');
+  });
+
+  it('names a signed-in sender by account number, never by email', async () => {
+    process.env.FEEDBACK_NOTIFY_EMAIL = 'owner@example.test';
+    const email = 'notify-sender@example.com';
+    const accountId = await createUser(email);
+    const agent = request.agent(app);
+    await agent.post('/api/auth/guest');
+    await agent.post('/api/auth/login').send({ email, password: 'Password123!' });
+
+    const res = await agent.post('/api/feedback').send(validBody);
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(sendMailMock).toHaveBeenCalledTimes(1));
+    const mail = sendMailMock.mock.calls[0][0];
+    expect(mail.text).toContain(`Account: ${accountId}`);
+    expect(mail.html).toContain(`Account: ${accountId}`);
+    expect(mail.text).not.toContain(email);
+    expect(mail.html).not.toContain(email);
+    expect(mail.text).not.toContain('From:');
+    expect(mail.html).not.toContain('From:');
   });
 
   it('still returns 201 and saves the row when sendMail rejects', async () => {

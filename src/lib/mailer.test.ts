@@ -27,6 +27,7 @@ async function loadMailer(mail: 'smtp' | 'off' = 'smtp') {
     weather: false,
     betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
     betaEndsAt: new Date('2027-01-30T08:00:00Z'),
+    betaRecordsRetentionDays: null,
   });
   const mailer = await import('./mailer');
   const { logger } = await import('./logger');
