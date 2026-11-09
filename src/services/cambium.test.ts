@@ -172,4 +172,118 @@ describe('getCompanionsForSeed', () => {
       expect(c.relationship).toBe('beneficial');
     });
   });
+
+  describe('pair rule', () => {
+    async function makeSeed(name: string, status: 'active' | 'flagged' = 'active'): Promise<number> {
+      const fullName = `__test__pair_${name}`;
+      await pool.query('DELETE FROM cambium.seeds WHERE common_name = $1', [fullName]);
+      const res = await pool.query<{ id: number }>(
+        `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+         VALUES ($1, $2, 'editorial')
+         RETURNING id`,
+        [fullName, status],
+      );
+      insertedIds.push(res.rows[0].id);
+      return res.rows[0].id;
+    }
+
+    async function makeRow(
+      seedId: number,
+      companionSeedId: number,
+      relationship: 'beneficial' | 'antagonistic' | 'neutral',
+      confidence = 80,
+    ): Promise<void> {
+      await pool.query(
+        `INSERT INTO cambium.companions (seed_id, companion_seed_id, relationship, confidence)
+         VALUES ($1, $2, $3, $4)`,
+        [seedId, companionSeedId, relationship, confidence],
+      );
+    }
+
+    async function relationOf(seedId: number, neighbourId: number): Promise<string | undefined> {
+      const list = await getCompanionsForSeed(seedId);
+      return list!.find((c) => c.seed.id === String(neighbourId))?.relationship;
+    }
+
+    it('includes a neighbour that only has a reverse-direction row', async () => {
+      const a = await makeSeed('reverse_a');
+      const b = await makeSeed('reverse_b');
+      await makeRow(b, a, 'beneficial');
+      expect(await relationOf(a, b)).toBe('beneficial');
+    });
+
+    it('resolves a disagreeing pair as antagonistic in both lists', async () => {
+      const a = await makeSeed('disagree_a');
+      const b = await makeSeed('disagree_b');
+      await makeRow(a, b, 'antagonistic');
+      await makeRow(b, a, 'beneficial');
+      expect(await relationOf(a, b)).toBe('antagonistic');
+      expect(await relationOf(b, a)).toBe('antagonistic');
+    });
+
+    it('resolves antagonistic one way and neutral the other as antagonistic', async () => {
+      const a = await makeSeed('antneutral_a');
+      const b = await makeSeed('antneutral_b');
+      await makeRow(a, b, 'antagonistic');
+      await makeRow(b, a, 'neutral');
+      expect(await relationOf(a, b)).toBe('antagonistic');
+      expect(await relationOf(b, a)).toBe('antagonistic');
+    });
+
+    it('resolves neutral both ways as neutral', async () => {
+      const a = await makeSeed('neutralboth_a');
+      const b = await makeSeed('neutralboth_b');
+      await makeRow(a, b, 'neutral');
+      await makeRow(b, a, 'neutral');
+      expect(await relationOf(a, b)).toBe('neutral');
+      expect(await relationOf(b, a)).toBe('neutral');
+    });
+
+    it('resolves beneficial one way and neutral the other as beneficial', async () => {
+      const a = await makeSeed('benneutral_a');
+      const b = await makeSeed('benneutral_b');
+      await makeRow(a, b, 'beneficial');
+      await makeRow(b, a, 'neutral');
+      expect(await relationOf(a, b)).toBe('beneficial');
+      expect(await relationOf(b, a)).toBe('beneficial');
+    });
+
+    it('lists each neighbour once when rows exist in both directions', async () => {
+      const a = await makeSeed('once_a');
+      const b = await makeSeed('once_b');
+      await makeRow(a, b, 'beneficial');
+      await makeRow(b, a, 'beneficial', 60);
+      const listA = await getCompanionsForSeed(a);
+      const listB = await getCompanionsForSeed(b);
+      expect(listA!.filter((c) => c.seed.id === String(b))).toHaveLength(1);
+      expect(listB!.filter((c) => c.seed.id === String(a))).toHaveLength(1);
+    });
+
+    it('ignores a row below the confidence threshold', async () => {
+      const a = await makeSeed('threshold_a');
+      const b = await makeSeed('threshold_b');
+      await makeRow(a, b, 'beneficial', 80);
+      await makeRow(b, a, 'antagonistic', 39);
+      expect(await relationOf(a, b)).toBe('beneficial');
+      expect(await relationOf(b, a)).toBe('beneficial');
+    });
+
+    it('excludes an inactive neighbour on the reverse side', async () => {
+      const a = await makeSeed('inactive_a');
+      const b = await makeSeed('inactive_b', 'flagged');
+      await makeRow(b, a, 'beneficial');
+      expect(await relationOf(a, b)).toBeUndefined();
+    });
+
+    it('applies the relationship filter after resolving the pair', async () => {
+      const a = await makeSeed('filter_a');
+      const b = await makeSeed('filter_b');
+      await makeRow(a, b, 'antagonistic');
+      await makeRow(b, a, 'beneficial');
+      const beneficial = await getCompanionsForSeed(a, { relationship: 'beneficial' });
+      const antagonistic = await getCompanionsForSeed(a, { relationship: 'antagonistic' });
+      expect(beneficial!.some((c) => c.seed.id === String(b))).toBe(false);
+      expect(antagonistic!.some((c) => c.seed.id === String(b))).toBe(true);
+    });
+  });
 });

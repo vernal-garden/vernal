@@ -7,6 +7,7 @@ import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hook
 import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
 import { apiUrl, apiErrorMessage } from '../../lib/api';
+import { conflictLines } from '../../lib/conflicts';
 import FitLine from './FitLine';
 import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
 import { STAGE_NAMES, isHarvestReady } from '../../lib/growthStages';
@@ -119,6 +120,7 @@ interface Props {
   onUpdateQuantity?: (planting: Planting, quantity: number) => Promise<void>;
   // Phase 20: companion indicators
   conflictedIds?: Set<string>;
+  conflictsByPlantingId?: Map<string, Set<string>>;
   conflictedBedIds?: Set<string>;
   latestPlacing?: { id: string; seq: number } | null;
   occupancyByBedId?: Record<string, { consumed: number; capacity: number; over: boolean }>;
@@ -640,7 +642,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   garden, plantingsByBedId, plantingsLoading, armedSeed,
   onConfirmPlacement, onConfirmRemoval, onMarkHarvested, onUpdateQuantity,
   // Phase 20
-  conflictedIds, conflictedBedIds, latestPlacing,
+  conflictedIds, conflictsByPlantingId, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
   plantingsLoadedKey, onStagesDisplayed,
   overlayBeds = EMPTY_BEDS, overlayPlantingsByBedId = EMPTY_PLANTINGS,
@@ -905,14 +907,19 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   // Measure the inspection popover so edge-flipping uses its real height.
   // Re-measures when it opens for a planting or that planting changes
-  // (e.g. "Mark as harvested" removes the button), or the error toggles.
+  // (e.g. "Mark as harvested" removes the button), the error toggles, or its
+  // "Conflicts with" lines change.
   const inspectedPlanting = pendingInspect
     ? (plantingsByBedId[pendingInspect.bedId] ?? []).find(p => p.id === pendingInspect.plantingId) ?? null
     : null;
+  const inspectConflicts = inspectedPlanting && pendingInspect && conflictsByPlantingId && conflictedIds?.has(inspectedPlanting.id)
+    ? conflictLines(inspectedPlanting.id, plantingsByBedId[pendingInspect.bedId] ?? [], conflictsByPlantingId)
+    : { names: [], more: 0 };
+  const inspectConflictsKey = inspectConflicts.names.join('|') + ':' + inspectConflicts.more;
   useLayoutEffect(() => {
     const el = inspectPopoverRef.current;
     if (el && el.offsetHeight !== inspectH) setInspectH(el.offsetHeight);
-  }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH]);
+  }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH, inspectConflictsKey]);
 
   const inspectedBed = pendingBed ? beds.find(b => b.id === pendingBed.bedId) ?? null : null;
   useLayoutEffect(() => {
@@ -2310,6 +2317,39 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             ×
           </button>
         </div>
+
+        {inspectConflicts.names.length > 0 && (
+          <div
+            style={{
+              marginTop: 'var(--sp-1)', marginBottom: 'var(--sp-2)', paddingRight: 'var(--sp-3)',
+              display: 'flex', flexDirection: 'column', gap: 2,
+            }}
+          >
+            {inspectConflicts.names.map(conflictName => (
+              <div
+                key={conflictName}
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 'var(--sp-2)',
+                  fontSize: 13, fontWeight: 600, lineHeight: '18px', color: 'var(--c-text)',
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 8, height: 8, borderRadius: '50%', background: 'var(--c-companion-warn)',
+                    flexShrink: 0, marginTop: 5,
+                  }}
+                />
+                <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{`Conflicts with ${conflictName}`}</span>
+              </div>
+            ))}
+            {inspectConflicts.more > 0 && (
+              <div style={{ fontSize: 13, fontWeight: 400, lineHeight: '18px', color: 'var(--c-text-2)', paddingLeft: 16 }}>
+                {`and ${inspectConflicts.more} more`}
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={{ paddingRight: 'var(--sp-3)' }}>
           {anchored && stage ? (
