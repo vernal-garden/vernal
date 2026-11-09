@@ -189,20 +189,47 @@ export async function getCompanionsForSeed(
   let relationshipClause = '';
   if (relationshipFilter) {
     params.push(relationshipFilter);
-    relationshipClause = `AND c.relationship = $${params.length}`;
+    relationshipClause = `WHERE r.relationship = $${params.length}`;
   }
 
+  // A pair can have a row in each direction, and they can disagree. Read both
+  // directions and resolve each neighbour once: antagonistic wins, then
+  // beneficial, then neutral. Rows below the threshold count as absent. The
+  // filter applies after resolving, so an antagonistic pair never shows up
+  // under relationship=beneficial.
   const result = await db.query(
-    `SELECT c.relationship, c.confidence, c.notes, c.source,
-            s.id, s.common_name, s.scientific_name, s.plant_family,
-            s.illustration_key, s.aggregate_rating, s.rating_count
-     FROM cambium.companions c
-     JOIN cambium.seeds s ON s.id = c.companion_seed_id
-     WHERE c.seed_id = $1
-       AND c.confidence >= $2
-       AND s.moderation_status = 'active'
-       ${relationshipClause}
-     ORDER BY c.relationship, c.confidence DESC`,
+    `WITH pair_rows AS (
+       SELECT c.companion_seed_id AS neighbour_id, TRUE AS own_direction,
+              c.relationship, c.confidence, c.notes, c.source
+       FROM cambium.companions c
+       WHERE c.seed_id = $1 AND c.confidence >= $2
+       UNION ALL
+       SELECT c.seed_id AS neighbour_id, FALSE AS own_direction,
+              c.relationship, c.confidence, c.notes, c.source
+       FROM cambium.companions c
+       WHERE c.companion_seed_id = $1 AND c.confidence >= $2
+     ),
+     resolved AS (
+       SELECT DISTINCT ON (p.neighbour_id)
+              p.relationship, p.confidence, p.notes, p.source,
+              s.id, s.common_name, s.scientific_name, s.plant_family,
+              s.illustration_key, s.aggregate_rating, s.rating_count
+       FROM pair_rows p
+       JOIN cambium.seeds s ON s.id = p.neighbour_id
+       WHERE s.moderation_status = 'active'
+       ORDER BY p.neighbour_id,
+                CASE p.relationship
+                  WHEN 'antagonistic' THEN 0
+                  WHEN 'beneficial' THEN 1
+                  ELSE 2
+                END,
+                p.confidence DESC,
+                p.own_direction DESC
+     )
+     SELECT r.*
+     FROM resolved r
+     ${relationshipClause}
+     ORDER BY r.relationship, r.confidence DESC`,
     params,
   );
 

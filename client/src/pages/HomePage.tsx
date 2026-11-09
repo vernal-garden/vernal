@@ -244,7 +244,7 @@ export default function HomePage() {
 
   const { relationshipBetween, ensureLoaded, cacheVersion } = useCompanions(companionSeedIdsSet);
 
-  const { conflictedIds, conflictedBedIds } = useConflicts({
+  const { conflictedIds, conflictedBedIds, conflictsByPlantingId } = useConflicts({
     beds,
     plantingsByBedId,
     relationshipBetween,
@@ -634,6 +634,7 @@ export default function HomePage() {
         onMarkHarvested={handleMarkHarvested}
         onUpdateQuantity={handleUpdateQuantity}
         conflictedIds={conflictedIds}
+        conflictsByPlantingId={conflictsByPlantingId}
         conflictedBedIds={conflictedBedIds}
         latestPlacing={latestPlacing}
         occupancyByBedId={occupancyByBedId}
