@@ -32,7 +32,7 @@ afterAll(async () => {
 describe('GET /api/config', () => {
   it('reports the loaded switches without auth', async () => {
     setServerConfigForTests({
-      billing: 'stripe', mail: 'smtp', media: 's3', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date('2100-01-01T00:00:00Z'), betaEndsAt: new Date('2100-02-01T00:00:00Z'),
+      billing: 'stripe', mail: 'smtp', media: 's3', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date('2100-01-01T00:00:00Z'), betaEndsAt: new Date('2100-02-01T00:00:00Z'), betaRecordsRetentionDays: null,
     });
     const res = await request(app).get('/api/config');
     expect(res.status).toBe(200);
@@ -50,7 +50,7 @@ describe('GET /api/config', () => {
 
   it('reports everything off', async () => {
     setServerConfigForTests({
-      billing: 'off', mail: 'off', media: 'local', googleSignIn: false, weather: false, betaApplicationsCloseAt: CLOSE_AT, betaEndsAt: new Date('2100-02-01T00:00:00Z'),
+      billing: 'off', mail: 'off', media: 'local', googleSignIn: false, weather: false, betaApplicationsCloseAt: CLOSE_AT, betaEndsAt: new Date('2100-02-01T00:00:00Z'), betaRecordsRetentionDays: null,
     });
     const res = await request(app).get('/api/config');
     expect(res.status).toBe(200);

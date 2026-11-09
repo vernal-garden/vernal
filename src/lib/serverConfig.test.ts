@@ -30,6 +30,7 @@ describe('loadServerConfig', () => {
       weather: false,
       betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
       betaEndsAt: new Date('2027-01-30T08:00:00Z'),
+      betaRecordsRetentionDays: null,
     });
   });
 
@@ -276,9 +277,27 @@ describe('BETA_ENDS_AT', () => {
   });
 });
 
+describe('BETA_RECORDS_RETENTION_DAYS', () => {
+  it('is null when unset or blank', () => {
+    expect(loadServerConfig(base).betaRecordsRetentionDays).toBeNull();
+    expect(loadServerConfig({ ...base, BETA_RECORDS_RETENTION_DAYS: '' }).betaRecordsRetentionDays).toBeNull();
+    expect(loadServerConfig({ ...base, BETA_RECORDS_RETENTION_DAYS: '  ' }).betaRecordsRetentionDays).toBeNull();
+  });
+
+  it('reads a whole number of days', () => {
+    expect(loadServerConfig({ ...base, BETA_RECORDS_RETENTION_DAYS: '30' }).betaRecordsRetentionDays).toBe(30);
+  });
+
+  it.each(['0', '-1', '3.5', 'thirty', '1e2'])('rejects %s without echoing it', (value) => {
+    const run = () => loadServerConfig({ ...base, BETA_RECORDS_RETENTION_DAYS: value });
+    expect(run).toThrow(ConfigError);
+    expect(run).toThrow('BETA_RECORDS_RETENTION_DAYS must be a whole number');
+  });
+});
+
 describe('setServerConfigForTests', () => {
   it('replaces the loaded config', () => {
-    const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date(0), betaEndsAt: new Date(0) };
+    const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date(0), betaEndsAt: new Date(0), betaRecordsRetentionDays: null };
     setServerConfigForTests(custom);
     expect(getServerConfig()).toBe(custom);
   });

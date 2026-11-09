@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { Pool } from 'pg';
 import type { PoolClient } from 'pg';
 import { EventEmitter } from 'node:events';
@@ -30,6 +30,8 @@ import {
   purgeReadNotifications,
   purgeStripeEvents,
   purgeOldUsageEvents,
+  purgeOldGuestFeedback,
+  purgeBetaRecords,
   purgeScheduledAccounts,
   purgeStaleBetaInvites,
   checkSubscriptionDowngrades,
@@ -1596,6 +1598,84 @@ describe('purgeOldUsageEvents', () => {
     expect(affected).toBe(1);
     const { rows } = await pool.query<{ event_key: string }>('SELECT event_key FROM usage_events');
     expect(rows.map((r) => r.event_key)).toEqual(['evt_new']);
+  });
+});
+
+describe('purgeOldGuestFeedback', () => {
+  beforeEach(resetDb);
+
+  it('deletes guest feedback older than 12 months, keeping newer guest feedback and account feedback', async () => {
+    const accountId = await createAccount();
+    const insert = async (userId: number | null, months: number) => {
+      const { rows } = await pool.query<{ id: number }>(
+        `INSERT INTO feedback_submissions (user_id, category, message, created_at)
+         VALUES ($1, 'general', 'msg', NOW() - make_interval(months => $2::int))
+         RETURNING id`,
+        [userId, months],
+      );
+      return rows[0].id;
+    };
+    const oldGuest = await insert(null, 13);
+    const recentGuest = await insert(null, 11);
+    const oldAccount = await insert(accountId, 13);
+
+    const { affected } = await purgeOldGuestFeedback();
+
+    expect(affected).toBe(1);
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM feedback_submissions');
+    const ids = rows.map((r) => r.id);
+    expect(ids).not.toContain(oldGuest);
+    expect(ids).toContain(recentGuest);
+    expect(ids).toContain(oldAccount);
+  });
+});
+
+describe('purgeBetaRecords', () => {
+  beforeEach(resetDb);
+
+  const ENDS_AT = new Date('2027-01-30T08:00:00Z');
+  const DAY = 24 * 60 * 60 * 1000;
+  const original = getServerConfig();
+  afterEach(() => setServerConfigForTests(original));
+
+  async function seedParticipant(): Promise<number> {
+    const id = await createAccount();
+    await pool.query("UPDATE accounts SET residence_state = 'WA' WHERE id = $1", [id]);
+    await pool.query("INSERT INTO beta_active_weeks (account_id, week_start) VALUES ($1, '2027-01-04')", [id]);
+    await pool.query('INSERT INTO beta_survey_credits (account_id, survey) VALUES ($1, 1)', [id]);
+    return id;
+  }
+
+  async function counts(): Promise<[number, number]> {
+    const weeks = await pool.query('SELECT 1 FROM beta_active_weeks');
+    const credits = await pool.query('SELECT 1 FROM beta_survey_credits');
+    return [weeks.rowCount ?? 0, credits.rowCount ?? 0];
+  }
+
+  it('deletes nothing while the retention setting is blank, whatever the date', async () => {
+    await seedParticipant();
+    setServerConfigForTests({ ...original, betaEndsAt: ENDS_AT, betaRecordsRetentionDays: null });
+    const { affected } = await purgeBetaRecords(new Date(ENDS_AT.getTime() + 5 * 365 * DAY));
+    expect(affected).toBe(0);
+    expect(await counts()).toEqual([1, 1]);
+  });
+
+  it('deletes nothing before the retention period is over', async () => {
+    await seedParticipant();
+    setServerConfigForTests({ ...original, betaEndsAt: ENDS_AT, betaRecordsRetentionDays: 30 });
+    const { affected } = await purgeBetaRecords(new Date(ENDS_AT.getTime() + 29 * DAY));
+    expect(affected).toBe(0);
+    expect(await counts()).toEqual([1, 1]);
+  });
+
+  it('deletes both tables once the period is over, leaving the account and its state', async () => {
+    const id = await seedParticipant();
+    setServerConfigForTests({ ...original, betaEndsAt: ENDS_AT, betaRecordsRetentionDays: 30 });
+    const { affected } = await purgeBetaRecords(new Date(ENDS_AT.getTime() + 30 * DAY));
+    expect(affected).toBe(2);
+    expect(await counts()).toEqual([0, 0]);
+    const { rows } = await pool.query('SELECT residence_state FROM accounts WHERE id = $1', [id]);
+    expect(rows[0].residence_state).toBe('WA');
   });
 });
 

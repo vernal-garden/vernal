@@ -67,14 +67,16 @@ export function betaTermsPending(
   return participantAt !== null && acceptedVersion !== BETA_TERMS_VERSION;
 }
 
-// The 50 US states, for a participant's state record and grant eligibility.
-// DC and the territories pending General Counsel (2026-11-06).
+// Where a participant can live for the lifetime tier: the 50 states, DC, and
+// the five inhabited territories (General Counsel, 2026-11-07).
 export const US_STATE_CODES: readonly string[] = [
-  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA',
-  'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD',
-  'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ',
-  'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC',
-  'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY',
+  'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DC', 'DE', 'FL',
+  'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME',
+  'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH',
+  'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI',
+  'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI',
+  'WY',
+  'PR', 'GU', 'VI', 'AS', 'MP',
 ];
 
 const US_STATE_SET: ReadonlySet<string> = new Set(US_STATE_CODES);
