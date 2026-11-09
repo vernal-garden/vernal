@@ -273,6 +273,182 @@ describe('free account — view and delete own connections', () => {
   });
 });
 
+// ── GET /connections/:id/readings ────────────────────────────────────────────
+
+describe('GET /api/weather/connections/:id/readings', () => {
+  const CRED_SECRET = 'readings-secret-credential-value';
+  const FIELDS = [
+    'id',
+    'readingTimestamp',
+    'temperature',
+    'humidity',
+    'windSpeed',
+    'windDirection',
+    'precipitationToday',
+    'uvIndex',
+    'pressure',
+  ];
+  let freeId: number;
+  let supporterId: number;
+  let otherId: number;
+  const connectionIds: number[] = [];
+
+  async function accountIdOf(email: string): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>('SELECT id FROM accounts WHERE email = $1', [email]);
+    return rows[0].id;
+  }
+
+  async function insertConn(accountId: number, stationId: string): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO weather_connections (account_id, provider, credentials, station_id, is_primary)
+       VALUES ($1, 'pws_tempest', $2, $3, false)
+       RETURNING id`,
+      [accountId, JSON.stringify({ enc: CRED_SECRET }), stationId],
+    );
+    connectionIds.push(rows[0].id);
+    return rows[0].id;
+  }
+
+  async function insertReading(connectionId: number, ts: string, temperature: number | null = 10): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO weather_readings (connection_id, reading_timestamp, temperature, humidity, wind_direction)
+       VALUES ($1, $2, $3, 55, 'NW')
+       RETURNING id`,
+      [connectionId, ts, temperature],
+    );
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    freeId = await accountIdOf('weather-free@example.com');
+    supporterId = await accountIdOf('weather-supporter@example.com');
+    otherId = await accountIdOf('weather-other@example.com');
+  });
+
+  afterAll(async () => {
+    if (connectionIds.length > 0) {
+      await pool.query('DELETE FROM weather_connections WHERE id = ANY($1::int[])', [connectionIds]);
+    }
+  });
+
+  it('free account lists its own readings newest first, with exactly the public fields', async () => {
+    const fetchMock = routedFetchMock({});
+    vi.stubGlobal('fetch', fetchMock);
+    const connId = await insertConn(freeId, 'readings-list-1');
+    await insertReading(connId, '2026-07-01T10:00:00Z', 11);
+    await insertReading(connId, '2026-07-01T12:00:00Z', 13);
+    await insertReading(connId, '2026-07-01T11:00:00Z', 12);
+
+    const res = await freeAgent.get(`/api/weather/connections/${connId}/readings`);
+    expect(res.status).toBe(200);
+    expect(res.body.nextCursor).toBeNull();
+    expect(res.body.data.map((r: { temperature: number }) => r.temperature)).toEqual([13, 12, 11]);
+    expect(res.body.data.map((r: { readingTimestamp: string }) => r.readingTimestamp)).toEqual([
+      '2026-07-01T12:00:00.000Z',
+      '2026-07-01T11:00:00.000Z',
+      '2026-07-01T10:00:00.000Z',
+    ]);
+    for (const item of res.body.data) {
+      expect(Object.keys(item).sort()).toEqual([...FIELDS].sort());
+      expect(typeof item.id).toBe('string');
+    }
+    expect(res.body.data[0].humidity).toBe(55);
+    expect(res.body.data[0].windDirection).toBe('NW');
+    expect(JSON.stringify(res.body)).not.toContain(CRED_SECRET);
+    expect(JSON.stringify(res.body)).not.toContain('credentials');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("another account's connection → 404 with no data, for free and supporter agents", async () => {
+    const fetchMock = routedFetchMock({});
+    vi.stubGlobal('fetch', fetchMock);
+    const connId = await insertConn(otherId, 'readings-other-1');
+    await insertReading(connId, '2026-07-02T10:00:00Z');
+
+    for (const agent of [freeAgent, supporterAgent]) {
+      const res = await agent.get(`/api/weather/connections/${connId}/readings`);
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Connection not found' });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('non-numeric id → 404', async () => {
+    const res = await freeAgent.get('/api/weather/connections/abc/readings');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Connection not found' });
+  });
+
+  it('connection with no readings → empty page', async () => {
+    const connId = await insertConn(supporterId, 'readings-empty-1');
+    const res = await supporterAgent.get(`/api/weather/connections/${connId}/readings`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ data: [], nextCursor: null });
+  });
+
+  it('pages with an opaque cursor', async () => {
+    const connId = await insertConn(freeId, 'readings-page-1');
+    const a = await insertReading(connId, '2026-07-03T10:00:00Z');
+    const b = await insertReading(connId, '2026-07-03T11:00:00Z');
+    const c = await insertReading(connId, '2026-07-03T12:00:00Z');
+
+    const first = await freeAgent.get(`/api/weather/connections/${connId}/readings?limit=2`);
+    expect(first.status).toBe(200);
+    expect(first.body.data.map((r: { id: string }) => r.id)).toEqual([String(c), String(b)]);
+    expect(typeof first.body.nextCursor).toBe('string');
+
+    const second = await freeAgent.get(
+      `/api/weather/connections/${connId}/readings?limit=2&cursor=${encodeURIComponent(first.body.nextCursor)}`,
+    );
+    expect(second.status).toBe(200);
+    expect(second.body.data.map((r: { id: string }) => r.id)).toEqual([String(a)]);
+    expect(second.body.nextCursor).toBeNull();
+  });
+
+  it('readings sharing a timestamp come back id DESC with none skipped or repeated across pages', async () => {
+    const connId = await insertConn(freeId, 'readings-tie-1');
+    const ids = [
+      await insertReading(connId, '2026-07-04T09:00:00Z'),
+      await insertReading(connId, '2026-07-04T10:00:00Z'),
+      await insertReading(connId, '2026-07-04T10:00:00Z'),
+      await insertReading(connId, '2026-07-04T10:00:00Z'),
+    ];
+    const expected = [ids[3], ids[2], ids[1], ids[0]].map(String);
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 10; i++) {
+      const qs: string = `limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const res = await freeAgent.get(`/api/weather/connections/${connId}/readings?${qs}`);
+      expect(res.status).toBe(200);
+      seen.push(...res.body.data.map((r: { id: string }) => r.id));
+      cursor = res.body.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(expected);
+  });
+
+  it('rejects a bad limit or cursor with 400', async () => {
+    const connId = await insertConn(freeId, 'readings-bad-1');
+    const base = `/api/weather/connections/${connId}/readings`;
+    for (const limit of ['0', '101', 'abc']) {
+      const res = await freeAgent.get(`${base}?limit=${limit}`);
+      expect(res.status, `limit=${limit}`).toBe(400);
+      expect(res.body).toEqual({ error: 'limit must be an integer from 1 to 100' });
+    }
+    const res = await freeAgent.get(`${base}?cursor=not-a-cursor`);
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'Invalid cursor' });
+  });
+
+  it('guest → 401', async () => {
+    const guest = request.agent(app);
+    await guest.post('/api/auth/guest');
+    const res = await guest.get('/api/weather/connections/1/readings');
+    expect(res.status).toBe(401);
+  });
+});
+
 // ── POST /connections ────────────────────────────────────────────────────────
 
 describe('POST /api/weather/connections', () => {

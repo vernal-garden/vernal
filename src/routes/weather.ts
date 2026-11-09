@@ -247,6 +247,113 @@ weatherRouter.delete('/connections/:id', writeLimiter, async (req: Request, res:
   }
 });
 
+// ── GET /connections/:id/readings ──────────────────────────────────────────────
+
+const READINGS_DEFAULT_LIMIT = 50;
+const READINGS_MAX_LIMIT = 100;
+
+interface ReadingListRow extends WeatherReadingRow {
+  id: number;
+  cursor_ts: string;
+}
+
+function parsePositiveInt(v: unknown): number | null {
+  const n = typeof v === 'string' && isNumericId(v) ? parseInt(v, 10) : v;
+  if (!Number.isInteger(n) || (n as number) <= 0) return null;
+  return n as number;
+}
+
+// Opaque cursor: base64 of [reading_timestamp as an ISO timestamp, id].
+function encodeCursor(row: ReadingListRow): string {
+  return Buffer.from(JSON.stringify([row.cursor_ts, Number(row.id)])).toString('base64');
+}
+
+function decodeCursor(v: string): [string, number] | null {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(v, 'base64').toString('utf8'));
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 2 &&
+      typeof parsed[0] === 'string' &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(parsed[0]) &&
+      !Number.isNaN(Date.parse(parsed[0])) &&
+      Number.isInteger(parsed[1]) &&
+      parsed[1] > 0
+    ) {
+      return [parsed[0], parsed[1]];
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
+weatherRouter.get('/connections/:id/readings', async (req: Request, res: Response): Promise<void> => {
+  const accountId = req.session!.account!.id;
+  const id = req.params.id as string;
+
+  if (!isNumericId(id)) {
+    res.status(404).json({ error: 'Connection not found' });
+    return;
+  }
+
+  let limit = READINGS_DEFAULT_LIMIT;
+  if (req.query.limit !== undefined) {
+    const n = parsePositiveInt(req.query.limit);
+    if (n === null || n > READINGS_MAX_LIMIT) {
+      res.status(400).json({ error: `limit must be an integer from 1 to ${READINGS_MAX_LIMIT}` });
+      return;
+    }
+    limit = n;
+  }
+
+  let cursor: [string, number] | null = null;
+  if (req.query.cursor !== undefined) {
+    cursor = decodeCursor(req.query.cursor as string);
+    if (cursor === null) {
+      res.status(400).json({ error: 'Invalid cursor' });
+      return;
+    }
+  }
+
+  try {
+    const { rowCount } = await db.query(
+      'SELECT 1 FROM weather_connections WHERE id = $1 AND account_id = $2',
+      [id, accountId],
+    );
+    if (rowCount === 0) {
+      res.status(404).json({ error: 'Connection not found' });
+      return;
+    }
+
+    const params: unknown[] = [id];
+    let sql = `SELECT id, reading_timestamp,
+                      to_char(reading_timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_ts,
+                      temperature, humidity, wind_speed, wind_direction,
+                      precipitation_today, uv_index, pressure, created_at
+                 FROM weather_readings
+                WHERE connection_id = $1`;
+    if (cursor) {
+      params.push(cursor[0], cursor[1]);
+      sql += ` AND (reading_timestamp, id) < ($${params.length - 1}::timestamptz, $${params.length}::int)`;
+    }
+    params.push(limit + 1);
+    sql += ` ORDER BY reading_timestamp DESC, id DESC LIMIT $${params.length}`;
+
+    const { rows } = await db.query<ReadingListRow>(sql, params);
+    const page = rows.slice(0, limit);
+    const nextCursor = rows.length > limit ? encodeCursor(page[page.length - 1]) : null;
+
+    res.json({
+      data: page.map((row) => ({ id: String(row.id), ...formatReadingRow(row) })),
+      nextCursor,
+    });
+  } catch (err) {
+    logger.error('GET /weather/connections/:id/readings failed', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ── GET /current ───────────────────────────────────────────────────────────────
 
 weatherRouter.get('/current', requireSupporter, async (req: Request, res: Response): Promise<void> => {
