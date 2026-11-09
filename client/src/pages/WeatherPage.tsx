@@ -10,6 +10,7 @@ import WeatherCredit from '../components/weather/WeatherCredit';
 import GrowingInsights from '../components/weather/GrowingInsights';
 import WeatherSetupCard from '../components/weather/WeatherSetupCard';
 import WeatherStationSection from '../components/weather/WeatherStationSection';
+import SavedReadings from '../components/weather/SavedReadings';
 
 function relativeSync(iso: string | null): string {
   if (!iso) return 'Never';
@@ -86,23 +87,29 @@ export default function WeatherPage() {
               <div
                 key={c.id}
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 'var(--sp-3)',
                   padding: 'var(--sp-3)',
                   border: '1px solid var(--c-border)',
                   borderRadius: 'var(--r-md)',
                   marginBottom: 'var(--sp-2)',
                 }}
               >
-                <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 600, color: 'var(--c-text)' }}>
-                  {providerLabel(c.provider)}
-                  {c.stationId ? ` · Station ${c.stationId}` : ''}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 'var(--sp-3)',
+                  }}
+                >
+                  <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 600, color: 'var(--c-text)' }}>
+                    {providerLabel(c.provider)}
+                    {c.stationId ? ` · Station ${c.stationId}` : ''}
+                  </div>
+                  <button onClick={() => disconnect(c.id)} style={disconnectBtnSt}>
+                    Remove
+                  </button>
                 </div>
-                <button onClick={() => disconnect(c.id)} style={disconnectBtnSt}>
-                  Remove
-                </button>
+                <SavedReadings connectionId={c.id} units={units} />
               </div>
             ))}
           </div>
@@ -253,27 +260,33 @@ export default function WeatherPage() {
             <div
               key={c.id}
               style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
                 padding: 'var(--sp-3)',
                 border: '1px solid var(--c-border)',
                 borderRadius: 'var(--r-md)',
                 marginBottom: 'var(--sp-2)',
               }}
             >
-              <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-text-2)' }}>
-                <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>
-                  {providerLabel(c.provider)}
-                  {c.stationId ? ` · Station ${c.stationId}` : ''}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-text-2)' }}>
+                  <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>
+                    {providerLabel(c.provider)}
+                    {c.stationId ? ` · Station ${c.stationId}` : ''}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--c-text-3)' }}>
+                    Last sync: {relativeSync(c.lastSuccessfulSync)}
+                  </div>
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--c-text-3)' }}>
-                  Last sync: {relativeSync(c.lastSuccessfulSync)}
-                </div>
+                <button onClick={() => disconnect(c.id)} style={disconnectBtnSt}>
+                  Disconnect
+                </button>
               </div>
-              <button onClick={() => disconnect(c.id)} style={disconnectBtnSt}>
-                Disconnect
-              </button>
+              <SavedReadings connectionId={c.id} units={units} />
             </div>
           ))}
         </div>
