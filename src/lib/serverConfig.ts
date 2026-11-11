@@ -27,6 +27,11 @@ export interface ServerConfig {
   // Days after betaEndsAt to keep beta_active_weeks and
   // beta_survey_credits. null: never deleted (General Counsel sets this).
   betaRecordsRetentionDays: number | null;
+  // From this instant, testers who qualify are asked their state.
+  lifetimeStateAskFrom: Date;
+  // When the lifetime grant was applied. null: not yet. From this
+  // instant the state question stops.
+  lifetimeGrantAppliedAt: Date | null;
   // Set only when SENTRY_CLIENT_DSN is set; absent means the relay is off.
   sentryRelay?: SentryRelayTarget;
 }
@@ -62,6 +67,12 @@ function readOffsetInstant(env: NodeJS.ProcessEnv, key: string, fallback: string
     throw new ConfigError(`${key} must be an ISO 8601 date and time with a UTC offset (for example ${example}).`);
   }
   return instant;
+}
+
+// Like readOffsetInstant, but blank or unset means null.
+function readOptionalOffsetInstant(env: NodeJS.ProcessEnv, key: string, example: string): Date | null {
+  if (read(env, key) === undefined) return null;
+  return readOffsetInstant(env, key, example, example);
 }
 
 // Relaxes security defaults for console mail only; unset counts as production.
@@ -193,6 +204,14 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     betaRecordsRetentionDays = Number(retentionRaw);
   }
 
+  const lifetimeStateAskFrom = readOffsetInstant(
+    env,
+    'LIFETIME_STATE_ASK_FROM',
+    '2027-01-11T00:00:00-08:00',
+    '2027-01-11T00:00:00-08:00',
+  );
+  const lifetimeGrantAppliedAt = readOptionalOffsetInstant(env, 'LIFETIME_GRANT_APPLIED_AT', '2027-02-01T00:00:00-08:00');
+
   loaded = {
     billing,
     mail,
@@ -202,6 +221,8 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     betaApplicationsCloseAt: closeAt,
     betaEndsAt: endsAt,
     betaRecordsRetentionDays,
+    lifetimeStateAskFrom,
+    lifetimeGrantAppliedAt,
     ...(sentryRelay ? { sentryRelay } : {}),
   };
   return loaded;

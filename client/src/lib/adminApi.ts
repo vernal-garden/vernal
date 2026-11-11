@@ -335,6 +335,36 @@ export interface BetaInvite {
   accountCreatedAt: string | null;
 }
 
+/** A row of GET /beta/lifetime */
+export interface BetaLifetimeRow {
+  accountId: number;
+  email: string;
+  participantAt: string;
+  joinedVia: 'invite' | 'guest' | null;
+  activeWeeks: string[];
+  activeWeekCount: number;
+  feedback: { notes: number; quickAnswers: number; surveys: number; total: number };
+  surveyCredits: number[];
+  qualifies: boolean;
+  borderline: boolean;
+  residenceState: string | null;
+  residenceStateConfirmedAt: string | null;
+  grantEligible: boolean;
+}
+
+export interface BetaLifetime {
+  endsAt: string;
+  rows: BetaLifetimeRow[];
+}
+
+/** POST /beta/survey-credits/bulk */
+export interface BetaSurveyCreditsResult {
+  credited: string[];
+  alreadyCredited: string[];
+  notParticipants: string[];
+  invalid: string[];
+}
+
 /** POST /beta/invites. newParticipants can overlap added and alreadyListed. */
 export interface BetaInvitesResult {
   added: string[];
@@ -401,6 +431,11 @@ export const adminApi = {
   betaInvites: () => aget<{ data: BetaInvite[] }>('/beta/invites'),
   addBetaInvites: async (emails: string) => (await post<BetaInvitesResult>(`${BASE}/beta/invites`, { emails })) as BetaInvitesResult,
   removeBetaInvite: (id: number) => del<void>(`${BASE}/beta/invites/${id}`),
+  betaLifetime: () => aget<BetaLifetime>('/beta/lifetime'),
+  creditSurveys: async (survey: 1 | 2, emails: string) =>
+    (await post<BetaSurveyCreditsResult>(`${BASE}/beta/survey-credits/bulk`, { survey, emails })) as BetaSurveyCreditsResult,
+  addSurveyCredit: (accountId: number, survey: 1 | 2) => post<unknown>(`${BASE}/beta/survey-credits`, { accountId, survey }),
+  removeSurveyCredit: (accountId: number, survey: 1 | 2) => del<void>(`${BASE}/beta/survey-credits/${accountId}/${survey}`),
   cleanupBetaInvites: async () =>
     (await post<BetaInviteCleanupResult>(`${BASE}/beta/invites/cleanup`, {})) as BetaInviteCleanupResult,
 

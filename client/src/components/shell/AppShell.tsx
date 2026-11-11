@@ -2,6 +2,7 @@ import { useLayoutEffect, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import AppNav from '../AppNav';
 import GuestBanner from '../GuestBanner';
+import LifetimeStateBanner from '../lifetime/LifetimeStateBanner';
 import MicroFeedbackHost from '../MicroFeedbackHost';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import BottomTabBar, { TAB_BAR_HEIGHT } from './BottomTabBar';
@@ -22,6 +23,8 @@ export default function AppShell() {
   const isCanvas = pathname === '/';
 
   const [bannerHeight, setBannerHeight] = useState(0);
+  const [lifetimeBannerHeight, setLifetimeBannerHeight] = useState(0);
+  const bannersHeight = bannerHeight + lifetimeBannerHeight;
 
   // The guest banner is position:fixed on mobile and on the nav-less desktop
   // canvas, so only there does it take space that fixed/padded content must
@@ -34,10 +37,10 @@ export default function AppShell() {
     const base = isMobile ? SHELL_TOP_MOBILE : '0px';
     style.setProperty(
       '--shell-top',
-      bannerFixed && bannerHeight > 0 ? `calc(${base} + ${bannerHeight}px)` : base,
+      bannerFixed && bannersHeight > 0 ? `calc(${base} + ${bannersHeight}px)` : base,
     );
     style.setProperty('--shell-bottom', isMobile ? SHELL_BOTTOM_MOBILE : '0px');
-  }, [isMobile, bannerFixed, bannerHeight]);
+  }, [isMobile, bannerFixed, bannersHeight]);
 
   useLayoutEffect(() => () => {
     const style = document.documentElement.style;
@@ -50,6 +53,7 @@ export default function AppShell() {
       <>
         {!isCanvas && <AppNav />}
         <GuestBanner fixed={isCanvas} top="0px" onHeightChange={setBannerHeight} />
+        <LifetimeStateBanner fixed={isCanvas} top="0px" onHeightChange={setLifetimeBannerHeight} />
         <Outlet />
         {/* Room for the fixed pending-deletion banner so the last content can scroll clear of it. */}
         {!isCanvas && <div aria-hidden="true" style={{ height: 'var(--deletion-banner-h, 0px)' }} />}
@@ -62,6 +66,7 @@ export default function AppShell() {
     <>
       <MobileTopBar />
       <GuestBanner fixed top={SHELL_TOP_MOBILE} onHeightChange={setBannerHeight} />
+      <LifetimeStateBanner fixed top={SHELL_TOP_MOBILE} onHeightChange={setLifetimeBannerHeight} />
       <main
         style={isCanvas ? undefined : {
           paddingTop: 'var(--shell-top)',
