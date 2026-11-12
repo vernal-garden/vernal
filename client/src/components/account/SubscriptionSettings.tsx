@@ -6,7 +6,11 @@ import { useMicroFeedback } from '../../lib/microFeedback';
 import { useSubscription, type SubscriptionData } from '../../hooks/useSubscription';
 import { useResendVerification } from '../../hooks/useResendVerification';
 import { PRICING, PRICING_ORDER, type Interval } from '../../config/pricing';
-import { SUBSCRIPTION_BETA_COPY } from '../../lib/betaCopy';
+import { LIFETIME_STATE_COPY, SUBSCRIPTION_BETA_COPY } from '../../lib/betaCopy';
+import { useAuth } from '../../context/AuthContext';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { OUTSIDE_US, residenceName } from '../../lib/usStates';
+import ResidenceStateForm from '../lifetime/ResidenceStateForm';
 
 const SUPPORTER_FEATURES = [
   'Soil readings — track pH and nutrients per bed over time',
@@ -345,11 +349,91 @@ function SupporterView({ data }: { data: SubscriptionData }) {
 
 // ── Beta participant ──────────────────────────────────────────────────────────
 
+const SAVED_CLEAR_MS = 5000;
+
+// The tester's state for the lifetime tier: the form until answered, then the
+// answer with a Change button.
+function ResidenceStateRow() {
+  const { account, refetch } = useAuth();
+  const isMobile = useIsMobile();
+  const [editing, setEditing] = useState(false);
+  // The just-saved answer, shown until refetch() brings the account up to date.
+  const [savedAnswer, setSavedAnswer] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<number | undefined>(undefined);
+
+  const current = account?.residenceState ?? null;
+  useEffect(() => setSavedAnswer(null), [current]);
+  useEffect(() => () => window.clearTimeout(savedTimer.current), []);
+
+  const answer = savedAnswer ?? current;
+
+  function onSaved(state: string) {
+    setSavedAnswer(state);
+    setEditing(false);
+    setSaved(true);
+    window.clearTimeout(savedTimer.current);
+    savedTimer.current = window.setTimeout(() => setSaved(false), SAVED_CLEAR_MS);
+    refetch().catch(() => {});
+  }
+
+  return (
+    <div style={{ marginTop: 'var(--sp-4)' }}>
+      {answer === null || editing ? (
+        <>
+          <p style={{ ...bodyTextSt, fontSize: 14, fontWeight: 600, color: 'var(--c-text)', marginBottom: 'var(--sp-2)' }}>
+            {LIFETIME_STATE_COPY.rowLabel}
+          </p>
+          <ResidenceStateForm
+            initial={answer}
+            onSaved={onSaved}
+            layout="row"
+            isMobile={isMobile}
+            secondary={
+              // Only when changing an answer: back to it, nothing saved.
+              answer !== null ? (
+                <button
+                  type="button"
+                  onClick={() => setEditing(false)}
+                  style={{
+                    ...linkButtonSt,
+                    minHeight: 44,
+                    minWidth: 44,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '0 var(--sp-3)',
+                    ...(isMobile ? { flex: 1 } : {}),
+                  }}
+                >
+                  {LIFETIME_STATE_COPY.cancel}
+                </button>
+              ) : undefined
+            }
+          />
+        </>
+      ) : (
+        <p style={bodyTextSt}>
+          {answer === OUTSIDE_US ? LIFETIME_STATE_COPY.answeredOutside : LIFETIME_STATE_COPY.answered(residenceName(answer) ?? answer)}{' '}
+          <button type="button" onClick={() => setEditing(true)} style={{ ...linkButtonSt, marginLeft: 'var(--sp-2)' }}>
+            {LIFETIME_STATE_COPY.change}
+          </button>
+        </p>
+      )}
+      <p role="status" style={{ ...bodyTextSt, marginTop: saved ? 'var(--sp-2)' : 0 }}>
+        {saved ? LIFETIME_STATE_COPY.saved : ''}
+      </p>
+    </div>
+  );
+}
+
 function BetaView() {
+  const { account } = useAuth();
   return (
     <div style={cardSt}>
       <h3 style={cardTitleSt}>{SUBSCRIPTION_BETA_COPY.title}</h3>
       <p style={bodyTextSt}>{SUBSCRIPTION_BETA_COPY.line}</p>
+      {account?.lifetimeStateAsk && <ResidenceStateRow />}
     </div>
   );
 }

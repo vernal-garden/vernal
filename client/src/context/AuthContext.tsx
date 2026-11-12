@@ -10,6 +10,8 @@ export interface SessionAccount {
   subscriptionTier: 'free' | 'supporter';
   deletionScheduledAt: string | null;
   supporterPromptShown: boolean;
+  residenceState: string | null;
+  lifetimeStateAsk: boolean;
   betaParticipant: boolean;
   betaTermsRequired: boolean;
   termsRequired: boolean;  // the account was claimed and the Terms not accepted since
@@ -119,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const [gardens, me] = await Promise.all([
         api.get<{ data: unknown[] }>('/api/gardens'),
-        api.get<{ data: { supporterPromptShown: boolean } }>('/api/me'),
+        api.get<{ data: { supporterPromptShown: boolean; residenceState: string | null; lifetimeStateAsk: boolean } }>('/api/me'),
       ]);
       setState({
         kind: 'account',
@@ -127,6 +129,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           ...(data['account'] as SessionAccount),
           id: String((data['account'] as SessionAccount).id),
           supporterPromptShown: me?.data.supporterPromptShown ?? false,
+          residenceState: me?.data.residenceState ?? null,
+          lifetimeStateAsk: me?.data.lifetimeStateAsk ?? false,
         },
         pendingGuestData: (data['pendingGuestData'] as PendingGuestData | null) ?? null,
         gardenCount: gardens?.data.length ?? 0,

@@ -42,6 +42,7 @@ const AdminSeedsPage = lazy(() => import('./pages/admin/SeedsPage'));
 const AdminModerationPage = lazy(() => import('./pages/admin/ModerationPage'));
 const AdminUsersPage = lazy(() => import('./pages/admin/UsersPage'));
 const AdminBetaPage = lazy(() => import('./pages/admin/BetaPage'));
+const AdminLifetimePage = lazy(() => import('./pages/admin/LifetimePage'));
 const AdminFeaturesPage = lazy(() => import('./pages/admin/FeaturesPage'));
 const AdminFeedbackPage = lazy(() => import('./pages/admin/FeedbackPage'));
 const AdminSystemPage = lazy(() => import('./pages/admin/SystemPage'));
@@ -179,6 +180,7 @@ const routes: RouteObject[] = [
           { path: 'moderation', element: <AdminModerationPage /> },
           { path: 'users', element: <AdminUsersPage /> },
           { path: 'beta', element: <AdminBetaPage /> },
+          { path: 'beta/lifetime', element: <AdminLifetimePage /> },
           { path: 'features', element: <AdminFeaturesPage /> },
           { path: 'feedback', element: <AdminFeedbackPage /> },
           { path: 'system', element: <AdminSystemPage /> },

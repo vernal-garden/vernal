@@ -31,6 +31,8 @@ describe('loadServerConfig', () => {
       betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
       betaEndsAt: new Date('2027-01-30T08:00:00Z'),
       betaRecordsRetentionDays: null,
+      lifetimeStateAskFrom: new Date('2027-01-11T08:00:00Z'),
+      lifetimeGrantAppliedAt: null,
     });
   });
 
@@ -295,9 +297,53 @@ describe('BETA_RECORDS_RETENTION_DAYS', () => {
   });
 });
 
+describe('LIFETIME_STATE_ASK_FROM', () => {
+  it('reads a date with an offset', () => {
+    const cfg = loadServerConfig({ ...base, LIFETIME_STATE_ASK_FROM: '2027-01-20T00:00:00Z' });
+    expect(cfg.lifetimeStateAskFrom.toISOString()).toBe('2027-01-20T00:00:00.000Z');
+  });
+
+  it.each(['tomorrow', '2027-02-30T00:00:00-08:00'])('rejects %s, naming the variable but not echoing it', (value) => {
+    const run = () => loadServerConfig({ ...base, LIFETIME_STATE_ASK_FROM: value });
+    expect(run).toThrow(ConfigError);
+    expect(run).toThrow('LIFETIME_STATE_ASK_FROM must be an ISO 8601');
+    expect(run).not.toThrow(value);
+  });
+});
+
+describe('LIFETIME_GRANT_APPLIED_AT', () => {
+  it('is null when unset or blank', () => {
+    expect(loadServerConfig(base).lifetimeGrantAppliedAt).toBeNull();
+    expect(loadServerConfig({ ...base, LIFETIME_GRANT_APPLIED_AT: '  ' }).lifetimeGrantAppliedAt).toBeNull();
+  });
+
+  it('reads a date with an offset', () => {
+    const cfg = loadServerConfig({ ...base, LIFETIME_GRANT_APPLIED_AT: '2027-02-01T00:00:00-08:00' });
+    expect(cfg.lifetimeGrantAppliedAt?.toISOString()).toBe('2027-02-01T08:00:00.000Z');
+  });
+
+  it.each(['tomorrow', '2027-02-30T00:00:00-08:00'])('rejects %s, naming the variable but not echoing it', (value) => {
+    const run = () => loadServerConfig({ ...base, LIFETIME_GRANT_APPLIED_AT: value });
+    expect(run).toThrow(ConfigError);
+    expect(run).toThrow('LIFETIME_GRANT_APPLIED_AT must be an ISO 8601');
+    expect(run).not.toThrow(value);
+  });
+});
+
 describe('setServerConfigForTests', () => {
   it('replaces the loaded config', () => {
-    const custom: ServerConfig = { billing: 'off', mail: 'off', media: 'local', googleSignIn: true, weather: true, betaApplicationsCloseAt: new Date(0), betaEndsAt: new Date(0), betaRecordsRetentionDays: null };
+    const custom: ServerConfig = {
+      billing: 'off',
+      mail: 'off',
+      media: 'local',
+      googleSignIn: true,
+      weather: true,
+      betaApplicationsCloseAt: new Date(0),
+      betaEndsAt: new Date(0),
+      betaRecordsRetentionDays: null,
+      lifetimeStateAskFrom: new Date(0),
+      lifetimeGrantAppliedAt: null,
+    };
     setServerConfigForTests(custom);
     expect(getServerConfig()).toBe(custom);
   });

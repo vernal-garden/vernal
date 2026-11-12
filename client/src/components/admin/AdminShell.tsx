@@ -39,9 +39,12 @@ export default function AdminShell() {
     };
   }, []);
 
+  // The top bar reads "Beta" on both Beta pages; only the tab title names the lifetime page.
+  const title = pathname.startsWith('/admin/beta/lifetime') ? 'Lifetime tier' : section;
+
   useEffect(() => {
-    document.title = `Vernal Admin — ${section}`;
-  }, [section]);
+    document.title = `Vernal Admin — ${title}`;
+  }, [title]);
 
   return (
     <div

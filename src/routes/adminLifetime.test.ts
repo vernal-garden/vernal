@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
+import { BETA_TERMS_VERSION } from '../lib/legal';
 import { getServerConfig, setServerConfigForTests, type ServerConfig } from '../lib/serverConfig';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -38,9 +39,10 @@ async function createParticipant(
   await pool.query(
     `UPDATE accounts SET beta_participant_at = $2, beta_joined_via = $3,
        residence_state = $4::text,
-       residence_state_confirmed_at = CASE WHEN $4::text IS NULL THEN NULL ELSE $5::timestamptz END
+       residence_state_confirmed_at = CASE WHEN $4::text IS NULL THEN NULL ELSE $5::timestamptz END,
+       beta_terms_version = $6, beta_terms_accepted_at = $5::timestamptz
      WHERE id = $1`,
-    [id, opts.at ?? PARTICIPANT_AT, opts.via ?? 'invite', opts.state ?? null, IN_WINDOW],
+    [id, opts.at ?? PARTICIPANT_AT, opts.via ?? 'invite', opts.state ?? null, IN_WINDOW, BETA_TERMS_VERSION],
   );
   return id;
 }
@@ -163,6 +165,7 @@ describe('GET /api/admin/beta/lifetime', () => {
         activeWeeks: ['2026-10-05', '2026-10-12', '2026-10-19'],
         activeWeekCount: 3,
         feedback: { notes: 1, quickAnswers: 1, surveys: 1, total: 3 },
+        surveyCredits: [1],
         qualifies: true,
         borderline: false,
         residenceState: 'WA',
@@ -241,6 +244,14 @@ describe('GET /api/admin/beta/lifetime', () => {
     expect(row.feedback).toEqual({ notes: 1, quickAnswers: 0, surveys: 2, total: 3 });
     expect(row.qualifies).toBe(true);
     expect(row.grantEligible).toBe(true);
+  });
+
+  it('surveyCredits lists both surveys in order', async () => {
+    const id = await createParticipant('both@example.com');
+    await addSurvey(id, 2);
+    await addSurvey(id, 1);
+    const row = await rowFor(id);
+    expect(row.surveyCredits).toEqual([1, 2]);
   });
 
   it('grantEligible needs a listed state: OUTSIDE_US and no state are false', async () => {
@@ -330,5 +341,172 @@ describe('GET /api/admin/beta/lifetime', () => {
         '',
       ].join('\r\n'),
     );
+  });
+});
+
+describe('POST /api/admin/beta/survey-credits/bulk', () => {
+  const BULK = '/api/admin/beta/survey-credits/bulk';
+
+  async function auditRows() {
+    const { rows } = await pool.query<{ target_id: string; action: string; after: unknown }>(
+      `SELECT target_id::text, action, after FROM admin_audit_log
+        WHERE action = 'beta.survey_credit.add' ORDER BY id`,
+    );
+    return rows;
+  }
+
+  async function creditsFor(accountId: number) {
+    const { rows } = await pool.query<{ survey: number }>(
+      'SELECT survey FROM beta_survey_credits WHERE account_id = $1 ORDER BY survey',
+      [accountId],
+    );
+    return rows.map((r) => r.survey);
+  }
+
+  it('403 for a non-admin account, a guest and no session', async () => {
+    for (const agent of [userAgent, guestAgent, request.agent(app)]) {
+      const res = await agent.post(BULK).send({ survey: 1, emails: 'a@example.com' });
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it('400 for survey 3, for emails sent as an array, and for 501 tokens', async () => {
+    const badSurvey = await adminAgent.post(BULK).send({ survey: 3, emails: 'a@example.com' });
+    expect(badSurvey.status).toBe(400);
+    expect(badSurvey.body.error).toBe('Send survey as 1 or 2');
+
+    const notString = await adminAgent.post(BULK).send({ survey: 1, emails: ['a@example.com'] });
+    expect(notString.status).toBe(400);
+    expect(notString.body.error).toBe('emails must be a string');
+
+    const tooMany = Array.from({ length: 501 }, (_, i) => `u${i}@example.com`).join(',');
+    const res = await adminAgent.post(BULK).send({ survey: 1, emails: tooMany });
+    expect(res.status).toBe(400);
+  });
+
+  it('credits participants and reports every group', async () => {
+    await pool.query('DELETE FROM admin_audit_log');
+    const fresh = await createParticipant('fresh@example.com');
+    const held = await createParticipant('held@example.com');
+    await addSurvey(held, 1);
+    const plain = await createUser('plain-account@example.com');
+
+    const res = await adminAgent.post(BULK).send({
+      survey: 1,
+      emails: 'fresh@example.com, held@example.com plain-account@example.com\nunknown@example.com jane@',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      credited: ['fresh@example.com'],
+      alreadyCredited: ['held@example.com'],
+      notParticipants: ['plain-account@example.com', 'unknown@example.com'],
+      invalid: ['jane@'],
+    });
+    expect(await creditsFor(fresh)).toEqual([1]);
+    expect(await creditsFor(held)).toEqual([1]);
+    expect(await creditsFor(plain)).toEqual([]);
+
+    const audit = await auditRows();
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ target_id: String(fresh), after: { survey: 1 } });
+  });
+
+  it('matching ignores case and surrounding space', async () => {
+    const id = await createParticipant('three@example.com');
+    const res = await adminAgent.post(BULK).send({ survey: 2, emails: '  Three@Example.COM ' });
+    expect(res.status).toBe(200);
+    expect(res.body.credited).toEqual(['three@example.com']);
+    expect(await creditsFor(id)).toEqual([2]);
+  });
+});
+
+describe('lifetimeStateAsk on /api/me', () => {
+  const baseConfig = () => ({ ...originalConfig, betaEndsAt: new Date(ENDS_AT) });
+  const HOUR = 3600 * 1000;
+  const past = () => new Date(Date.now() - HOUR);
+  const future = () => new Date(Date.now() + HOUR);
+
+  afterEach(() => {
+    setServerConfigForTests(baseConfig());
+  });
+
+  async function qualifier(email: string, opts: { state?: string } = {}) {
+    const id = await createParticipant(email, opts);
+    await addWeeks(id, ['2026-10-05', '2026-10-12', '2026-10-19']);
+    await addNotes(id, 3);
+    return id;
+  }
+
+  async function askFor(email: string) {
+    const agent = await loginAgent(email);
+    const res = await agent.get('/api/me');
+    expect(res.status).toBe(200);
+    return res.body.data.lifetimeStateAsk;
+  }
+
+  it('is false for a qualifier while lifetimeStateAskFrom is in the future', async () => {
+    await qualifier('q-early@example.com');
+    setServerConfigForTests({ ...baseConfig(), lifetimeStateAskFrom: future() });
+    expect(await askFor('q-early@example.com')).toBe(false);
+  });
+
+  it('is true for a qualifier once lifetimeStateAskFrom is in the past, false for others', async () => {
+    await qualifier('q-now@example.com');
+    const near = await createParticipant('near@example.com');
+    await addWeeks(near, ['2026-10-05', '2026-10-12']);
+    await addNotes(near, 2);
+    await createUser('not-participant@example.com');
+    setServerConfigForTests({ ...baseConfig(), lifetimeStateAskFrom: past() });
+
+    expect(await askFor('q-now@example.com')).toBe(true);
+    expect(await askFor('near@example.com')).toBe(false);
+    expect(await askFor('not-participant@example.com')).toBe(false);
+  });
+
+  it('is still true after the qualifier saves a state, and residenceState is returned', async () => {
+    await qualifier('q-saved@example.com');
+    setServerConfigForTests({ ...baseConfig(), lifetimeStateAskFrom: past() });
+    const agent = await loginAgent('q-saved@example.com');
+
+    const put = await agent.put('/api/me/residence-state').send({ state: 'WA' });
+    expect(put.status).toBeLessThan(300);
+    const res = await agent.get('/api/me');
+    expect(res.body.data.lifetimeStateAsk).toBe(true);
+    expect(res.body.data.residenceState).toBe('WA');
+  });
+
+  it('is false once lifetimeGrantAppliedAt is in the past', async () => {
+    await qualifier('q-applied@example.com');
+    setServerConfigForTests({
+      ...baseConfig(),
+      lifetimeStateAskFrom: new Date(Date.now() - 2 * HOUR),
+      lifetimeGrantAppliedAt: past(),
+    });
+    expect(await askFor('q-applied@example.com')).toBe(false);
+  });
+
+  it('PATCH /api/me returns the same lifetimeStateAsk as GET', async () => {
+    await qualifier('q-patch@example.com');
+    setServerConfigForTests({ ...baseConfig(), lifetimeStateAskFrom: past() });
+    const agent = await loginAgent('q-patch@example.com');
+
+    const get = await agent.get('/api/me');
+    const patch = await agent.patch('/api/me').send({ displayName: 'Patched' });
+    expect(patch.status).toBe(200);
+    expect(patch.body.data.lifetimeStateAsk).toBe(true);
+    expect(patch.body.data.lifetimeStateAsk).toBe(get.body.data.lifetimeStateAsk);
+  });
+
+  it('GET /api/me still answers, with lifetimeStateAsk false, when the lifetime query fails', async () => {
+    await qualifier('q-failing@example.com');
+    const agent = await loginAgent('q-failing@example.com');
+    // An Invalid Date as the window end makes the lifetime SQL reject its parameter.
+    // afterEach restores the config.
+    setServerConfigForTests({ ...baseConfig(), lifetimeStateAskFrom: past(), betaEndsAt: new Date(NaN) });
+
+    const res = await agent.get('/api/me');
+    expect(res.status).toBe(200);
+    expect(res.body.data.email).toBe('q-failing@example.com');
+    expect(res.body.data.lifetimeStateAsk).toBe(false);
   });
 });

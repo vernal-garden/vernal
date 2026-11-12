@@ -4,7 +4,8 @@ import { db } from '../lib/db';
 import { requireAdmin } from '../middleware/auth';
 import { adminRoleChangeLimiter } from '../middleware/rateLimiters';
 import { escapeLike, isNumericId, isValidEmail } from '../lib/validation';
-import { invalidateBetaSettings, isUsStateCode, readBetaSettings } from '../lib/beta';
+import { invalidateBetaSettings, readBetaSettings } from '../lib/beta';
+import { listLifetimeRows } from '../lib/lifetime';
 import { getServerConfig } from '../lib/serverConfig';
 import { csvRow } from '../lib/csv';
 import { logger } from '../lib/logger';
@@ -1399,21 +1400,23 @@ router.get('/beta/invites', async (_req, res) => {
 
 const MAX_BETA_INVITES_PER_REQUEST = 500;
 
-router.post('/beta/invites', async (req, res) => {
-  const { emails } = (req.body ?? {}) as { emails?: unknown };
+// Split on commas and whitespace. Valid addresses are lowercased; invalid
+// ones are echoed back as typed. Both are de-duplicated, in input order.
+// Sends the 400 itself and returns null when emails is unusable.
+function parseBetaEmails(
+  emails: unknown,
+  res: Response,
+): { valid: string[]; invalid: string[] } | null {
   if (typeof emails !== 'string') {
     res.status(400).json({ error: 'emails must be a string' });
-    return;
+    return null;
   }
-
-  // Split on commas and whitespace. Valid addresses are lowercased; invalid
-  // ones are echoed back as typed. Both are de-duplicated, in input order.
   const tokens = emails.split(/[\s,]+/).filter((t) => t !== '');
   if (tokens.length > MAX_BETA_INVITES_PER_REQUEST) {
     res
       .status(400)
       .json({ error: `emails must contain ${MAX_BETA_INVITES_PER_REQUEST} addresses or fewer` });
-    return;
+    return null;
   }
   const validSet = new Set<string>();
   const invalidSet = new Set<string>();
@@ -1422,8 +1425,14 @@ router.post('/beta/invites', async (req, res) => {
     if (isValidEmail(email)) validSet.add(email);
     else invalidSet.add(token);
   }
-  const valid = [...validSet];
-  const invalid = [...invalidSet];
+  return { valid: [...validSet], invalid: [...invalidSet] };
+}
+
+router.post('/beta/invites', async (req, res) => {
+  const { emails } = (req.body ?? {}) as { emails?: unknown };
+  const parsed = parseBetaEmails(emails, res);
+  if (!parsed) return;
+  const { valid, invalid } = parsed;
 
   if (valid.length === 0) {
     res.json({ added: [], alreadyListed: [], newParticipants: [], invalid });
@@ -1638,6 +1647,79 @@ router.post('/beta/survey-credits', async (req, res) => {
   }
 });
 
+// Credit one survey to many testers by email. Only beta participants are
+// credited; the response sorts every address into its group, in input order.
+router.post('/beta/survey-credits/bulk', async (req, res) => {
+  const body = (req.body ?? {}) as { survey?: unknown; emails?: unknown };
+  const survey = body.survey === 1 || body.survey === 2 ? body.survey : null;
+  if (survey === null) {
+    res.status(400).json({ error: 'Send survey as 1 or 2' });
+    return;
+  }
+  const parsed = parseBetaEmails(body.emails, res);
+  if (!parsed) return;
+  const { valid, invalid } = parsed;
+
+  if (valid.length === 0) {
+    res.json({ credited: [], alreadyCredited: [], notParticipants: [], invalid });
+    return;
+  }
+
+  let client;
+  try {
+    client = await db.connect();
+  } catch (err) {
+    sendServerError(res, 'POST /admin/beta/survey-credits/bulk', err);
+    return;
+  }
+
+  try {
+    const adminId = req.session!.account!.id;
+    await client.query('BEGIN');
+    const participants = await client.query<{ id: number; email: string }>(
+      `SELECT id, lower(email) AS email FROM accounts
+        WHERE lower(email) = ANY($1::text[]) AND beta_participant_at IS NOT NULL`,
+      [valid],
+    );
+    const idByEmail = new Map(participants.rows.map((r) => [r.email, Number(r.id)]));
+    const inserted = await client.query<{ account_id: number }>(
+      `INSERT INTO beta_survey_credits (account_id, survey, credited_by)
+       SELECT id, $2, $3 FROM unnest($1::bigint[]) AS id
+       ON CONFLICT DO NOTHING
+       RETURNING account_id`,
+      [[...idByEmail.values()], survey, adminId],
+    );
+    const insertedIds = new Set(inserted.rows.map((r) => Number(r.account_id)));
+    for (const accountId of insertedIds) {
+      await recordAdminAction(client, {
+        adminId,
+        action: 'beta.survey_credit.add',
+        targetType: 'account',
+        targetId: accountId,
+        before: null,
+        after: { survey },
+      });
+    }
+    await client.query('COMMIT');
+
+    const credited: string[] = [];
+    const alreadyCredited: string[] = [];
+    const notParticipants: string[] = [];
+    for (const email of valid) {
+      const id = idByEmail.get(email);
+      if (id === undefined) notParticipants.push(email);
+      else if (insertedIds.has(id)) credited.push(email);
+      else alreadyCredited.push(email);
+    }
+    res.json({ credited, alreadyCredited, notParticipants, invalid });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    sendServerError(res, 'POST /admin/beta/survey-credits/bulk', err);
+  } finally {
+    client.release();
+  }
+});
+
 router.delete('/beta/survey-credits/:accountId/:survey', async (req, res) => {
   const accountId = parseIdParam(req.params.accountId as string);
   const rawSurvey = req.params.survey as string;
@@ -1722,56 +1804,7 @@ router.get('/beta/lifetime', async (req, res) => {
 
   try {
     const endsAt = getServerConfig().betaEndsAt;
-    const result = await db.query<{
-      id: number;
-      email: string;
-      beta_participant_at: Date;
-      beta_joined_via: 'invite' | 'guest' | null;
-      residence_state: string | null;
-      residence_state_confirmed_at: Date | null;
-      active_weeks: string[];
-      notes: number;
-      quick_answers: number;
-      surveys: number;
-    }>(
-      `SELECT a.id, a.email, a.beta_participant_at, a.beta_joined_via,
-              a.residence_state, a.residence_state_confirmed_at,
-              COALESCE((SELECT array_agg(to_char(w.week_start, 'YYYY-MM-DD') ORDER BY w.week_start)
-                          FROM beta_active_weeks w
-                         WHERE w.account_id = a.id AND w.first_active_at < $1), '{}') AS active_weeks,
-              (SELECT COUNT(*)::int FROM feedback_submissions f
-                WHERE f.user_id = a.id
-                  AND f.created_at >= a.beta_participant_at AND f.created_at < $1) AS notes,
-              (SELECT COUNT(*)::int FROM micro_feedback_responses m
-                WHERE m.account_id = a.id
-                  AND m.created_at >= a.beta_participant_at AND m.created_at < $1) AS quick_answers,
-              (SELECT COUNT(*)::int FROM beta_survey_credits s
-                WHERE s.account_id = a.id) AS surveys
-         FROM accounts a
-        WHERE a.beta_participant_at IS NOT NULL
-        ORDER BY a.beta_participant_at DESC, a.id DESC`,
-      [endsAt],
-    );
-
-    const rows = result.rows.map((r) => {
-      const activeWeekCount = r.active_weeks.length;
-      const total = r.notes + r.quick_answers + r.surveys;
-      const qualifies = activeWeekCount >= 3 && total >= 3;
-      return {
-        accountId: r.id,
-        email: r.email,
-        participantAt: r.beta_participant_at,
-        joinedVia: r.beta_joined_via,
-        activeWeeks: r.active_weeks,
-        activeWeekCount,
-        feedback: { notes: r.notes, quickAnswers: r.quick_answers, surveys: r.surveys, total },
-        qualifies,
-        borderline: activeWeekCount === 2 && total === 2,
-        residenceState: r.residence_state,
-        residenceStateConfirmedAt: r.residence_state_confirmed_at,
-        grantEligible: qualifies && isUsStateCode(r.residence_state),
-      };
-    });
+    const rows = await listLifetimeRows(endsAt);
 
     if (format !== 'csv') {
       res.json({ endsAt, rows });

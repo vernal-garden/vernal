@@ -4,6 +4,7 @@ import { db } from '../lib/db';
 import { effectiveTier } from '../lib/tier';
 import { BETA_TERMS_VERSION, TERMS_VERSION } from '../lib/legal';
 import { getBetaSettings, betaAccessApplies, isUsStateCode, OUTSIDE_US, type BetaSettings } from '../lib/beta';
+import { lifetimeStateAsk } from '../lib/lifetime';
 import { requireAuth } from '../middleware/auth';
 import { requireMail } from '../middleware/requireMail';
 import { clearSessionCookie, makeSessionCookie, revokeAccountSessions, rotateLiveSessionToken } from '../lib/sessions';
@@ -89,6 +90,21 @@ function formatAccount(row: AccountRow, beta: BetaSettings) {
   };
 }
 
+// The account as GET and PATCH return it, so the two responses can't drift.
+async function accountResponse(row: AccountRow) {
+  // The ask is extra: if its query fails, /me still answers, without the ask.
+  let ask = false;
+  try {
+    ask = await lifetimeStateAsk(Number(row.id), row.beta_participant_at);
+  } catch (err) {
+    logger.error('lifetimeStateAsk failed', err, { accountId: row.id });
+  }
+  return {
+    ...formatAccount(row, await getBetaSettings()),
+    lifetimeStateAsk: ask,
+  };
+}
+
 // GET /api/me
 router.get('/', async (req, res) => {
   try {
@@ -101,7 +117,7 @@ router.get('/', async (req, res) => {
       clearSessionCookie(res);
       return res.status(401).json({ error: 'Account not found' });
     }
-    res.json({ data: formatAccount(rows[0], await getBetaSettings()) });
+    res.json({ data: await accountResponse(rows[0]) });
   } catch (err) {
     logger.error('GET /me failed', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -209,7 +225,7 @@ router.patch('/', writeLimiter, locationChangeLimiter, async (req, res) => {
     }
     // Location and frost dates feed the metrics dashboard.
     invalidateMetrics(req.session!.account!.id);
-    res.json({ data: formatAccount(rows[0], await getBetaSettings()) });
+    res.json({ data: await accountResponse(rows[0]) });
   } catch (err) {
     logger.error('PATCH /me failed', err);
     res.status(500).json({ error: 'Internal server error' });

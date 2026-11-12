@@ -21,6 +21,7 @@ import {
 import { ApiError } from '../../lib/api';
 import { ADMIN_BETA_COPY as COPY } from '../../lib/betaCopy';
 import Switch from '../../components/Switch';
+import BetaSubnav from '../../components/admin/BetaSubnav';
 import Button from '../../components/admin/Button';
 import ConfirmDialog from '../../components/admin/ConfirmDialog';
 import DataTable, { type DataTableColumn, type SortDirection } from '../../components/admin/DataTable';
@@ -470,6 +471,8 @@ export default function BetaPage() {
         gap: 'var(--sp-6)',
       }}
     >
+      <BetaSubnav />
+
       <Group heading={COPY.accessHeading}>
         <div style={panelStyle}>
           <SettingRow
