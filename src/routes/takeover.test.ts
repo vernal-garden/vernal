@@ -13,6 +13,12 @@ import type { OAuthUser } from '../lib/oauth/providers/google';
 import { logger } from '../lib/logger';
 import { billingSettledNotDisplaced } from '../lib/displacement';
 import { cancelAndRefundUnused, expireOpenCheckoutSessions, forgetCustomerContact, liveSubscriptionIds } from '../lib/billing';
+import * as mailer from '../lib/mailer';
+
+vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
+const sendMailMock = vi.mocked(mailer.sendMail);
+const OWNER = 'owner-alerts@example.test';
+const ownerAlerts = () => sendMailMock.mock.calls.filter(([o]) => o.to === OWNER);
 
 // Stripe is never called: the displacement billing helpers are stand-ins.
 vi.mock('../lib/billing', async (importOriginal) => ({
@@ -25,7 +31,8 @@ vi.mock('../lib/billing', async (importOriginal) => ({
 
 // Asking whether the person created an unverified account before anything
 // changes: Google sign-in (held takeover), the verification link, and the
-// "This wasn't me" link. Password reset is covered in terms.test.ts.
+// "This wasn't me" link. Password reset is covered in terms.test.ts (its
+// owner events are below).
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -42,6 +49,7 @@ async function setGate(on: boolean) {
 
 beforeEach(async () => {
   await pool.query('TRUNCATE accounts, guest_sessions, password_reset_tokens RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE owner_events RESTART IDENTITY');
   await pool.query('DELETE FROM beta_invites');
   await pool.query('UPDATE beta_settings SET guest_mode_on = true WHERE id = 1');
   await setGate(false);
@@ -49,9 +57,12 @@ beforeEach(async () => {
   vi.mocked(liveSubscriptionIds).mockReset().mockResolvedValue([]);
   vi.mocked(forgetCustomerContact).mockReset();
   vi.mocked(expireOpenCheckoutSessions).mockReset();
+  sendMailMock.mockReset().mockResolvedValue(undefined);
+  process.env.ALERT_EMAIL_TO = OWNER;
 });
 
 afterAll(async () => {
+  process.env.ALERT_EMAIL_TO = '';
   await setGate(false);
   await pool.end();
   await db.end();
@@ -643,6 +654,121 @@ describe('POST /api/auth/not-me', () => {
     expect(await accountsSnapshot()).toEqual(before);
     expect(await verificationUsed()).toBe(false);
     expect(cancelAndRefundUnused).not.toHaveBeenCalled();
+  });
+});
+
+describe('owner events and alerts', () => {
+  const NOT_ME_LINES = [
+    'A "not me" link was used, and the unverified account was removed.',
+    "Repeated reports can mean someone is signing up with other people's addresses.",
+  ];
+
+  beforeEach(async () => {
+    // A distinctive id, so a leak can't hide in a count or a timestamp.
+    await pool.query("SELECT setval(pg_get_serial_sequence('accounts', 'id'), 987650)");
+  });
+
+  async function ownerEventKinds(): Promise<string[]> {
+    return (await pool.query<{ kind: string }>('SELECT kind FROM owner_events ORDER BY id')).rows.map((r) => r.kind);
+  }
+
+  // Neither the address nor the account id reaches an owner alert, an owner_events row or an alert log.
+  async function expectNothingPersonal(ids: number[], logged: { mock: { calls: unknown[][] } }[]) {
+    const rows = JSON.stringify((await pool.query('SELECT * FROM owner_events')).rows);
+    for (const text of [JSON.stringify(ownerAlerts()), rows]) {
+      expect(text).not.toContain(email);
+      for (const id of ids) expect(text).not.toContain(String(id));
+    }
+    for (const spy of logged) expect(spy.mock.calls.filter(([msg]) => msg === 'Owner alert failed')).toHaveLength(0);
+  }
+
+  async function expectNotMeAlert() {
+    await vi.waitFor(() => expect(ownerAlerts()).toHaveLength(1));
+    const [mail] = ownerAlerts()[0];
+    expect(mail.subject).toBe("[Vernal app] Someone reported an account that wasn't theirs");
+    expect(mail.text.split('\n\n').slice(0, 2)).toEqual(NOT_ME_LINES);
+    expect(mail.text).toMatch(/Open users: \S+\/admin\/users$/);
+  }
+
+  it('not-me records one not_me row and sends one alert, after the commit', async () => {
+    const id = await createAccount(email, false);
+    await verificationToken(id);
+    let displacedAtSend: unknown = 'not sent';
+    sendMailMock.mockImplementation(async (o) => {
+      // A separate connection only sees committed data.
+      if (o.to === OWNER) displacedAtSend = (await pool.query('SELECT displaced_at FROM accounts WHERE id = $1', [id])).rows[0].displaced_at;
+    });
+    const warn = vi.spyOn(logger, 'warn');
+    try {
+      expect((await request(app).post('/api/auth/not-me').send({ token: VERIFY_TOKEN })).status).toBe(200);
+      expect(await ownerEventKinds()).toEqual(['not_me']);
+      await expectNotMeAlert();
+      await vi.waitFor(() => expect(displacedAtSend).toBeInstanceOf(Date));
+      await expectNothingPersonal([id], [warn]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("verify-email with 'not_mine' records not_me and sends the same alert", async () => {
+    const id = await createAccount(email, false);
+    await verificationToken(id);
+    const res = await request(app).post('/api/auth/verify-email').send({ token: VERIFY_TOKEN, choice: 'not_mine' });
+    expect(res.status).toBe(200);
+    expect(await ownerEventKinds()).toEqual(['not_me']);
+    await expectNotMeAlert();
+    await expectNothingPersonal([id], []);
+  });
+
+  it('a failed not-me records nothing and sends no alert', async () => {
+    const id = await createAccount(email, false);
+    await verificationToken(id);
+    expect((await request(app).post('/api/auth/not-me').send({ token: 'nope' })).status).toBe(400);
+    // Already verified, and a Stripe failure, also change nothing.
+    await pool.query('UPDATE accounts SET email_verified = true WHERE id = $1', [id]);
+    expect((await request(app).post('/api/auth/not-me').send({ token: VERIFY_TOKEN })).status).toBe(409);
+    await pool.query(`UPDATE accounts SET email_verified = false, stripe_subscription_id = 'sub_1' WHERE id = $1`, [id]);
+    vi.mocked(cancelAndRefundUnused).mockRejectedValueOnce(new Error('stripe down'));
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    try {
+      expect((await request(app).post('/api/auth/not-me').send({ token: VERIFY_TOKEN })).status).toBe(502);
+    } finally {
+      error.mockRestore();
+    }
+    expect(await ownerEventKinds()).toEqual([]);
+    expect(ownerAlerts()).toHaveLength(0);
+  });
+
+  const RESET_TOKEN = 'owner-events-reset-token';
+  async function postReset(accountId: number, choice: 'mine' | 'not_mine') {
+    await pool.query(
+      `INSERT INTO password_reset_tokens (account_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '1 hour')`,
+      [accountId, hashToken(RESET_TOKEN)],
+    );
+    return request(app).post('/api/auth/reset-password').send({ token: RESET_TOKEN, password: 'NewPassword1!', choice });
+  }
+
+  it("reset-password 'not_mine' records account_created and takeover, and sends no owner alert", async () => {
+    const oldId = await createAccount(email, false);
+    const warn = vi.spyOn(logger, 'warn');
+    try {
+      const res = await postReset(oldId, 'not_mine');
+      expect(res.status).toBe(200);
+      expect(res.body.data.newAccount).toBe(true);
+      expect(await ownerEventKinds()).toEqual(['account_created', 'takeover']);
+      expect(ownerAlerts()).toHaveLength(0);
+      const { rows } = await pool.query<{ id: string }>('SELECT id FROM accounts WHERE email = $1', [email]);
+      await expectNothingPersonal([oldId, Number(rows[0].id)], [warn]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reset-password 'mine' records nothing", async () => {
+    const id = await createAccount(email, false);
+    expect((await postReset(id, 'mine')).status).toBe(200);
+    expect(await ownerEventKinds()).toEqual([]);
+    expect(ownerAlerts()).toHaveLength(0);
   });
 });
 

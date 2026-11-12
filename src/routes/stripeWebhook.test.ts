@@ -1,10 +1,22 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi, type MockInstance } from 'vitest';
 import request from 'supertest';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import Stripe from 'stripe';
 import { gzipSync } from 'zlib';
 import app from '../index';
 import { getStripe } from '../lib/stripe';
+import { logger } from '../lib/logger';
+import * as mailer from '../lib/mailer';
+import * as ownerAlerts from '../lib/ownerAlerts';
+
+vi.mock('../lib/mailer', () => ({ sendMail: vi.fn().mockResolvedValue(undefined) }));
+const sendMailMock = vi.mocked(mailer.sendMail);
+
+// The real recordOwnerEvent, wrapped so a test can make the apply step fail right after it.
+vi.mock('../lib/ownerAlerts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/ownerAlerts')>();
+  return { ...actual, recordOwnerEvent: vi.fn(actual.recordOwnerEvent) };
+});
 
 const appStripe = getStripe();
 
@@ -29,16 +41,17 @@ interface AccountFields {
 }
 
 // Each account gets its own customer id; returns both.
-async function createAccount(fields: AccountFields = {}): Promise<{ id: number; customer: string }> {
+async function createAccount(fields: AccountFields = {}): Promise<{ id: number; customer: string; email: string }> {
   seq += 1;
   const customer = `cus_wh_${seq}`;
+  const email = `wh-${seq}@example.com`;
   const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO accounts (email, password_hash, zone, zone_location_label, email_verified,
                            stripe_customer_id, subscription_tier, subscription_interval,
                            stripe_subscription_id, stripe_lifetime_payment_intent)
      VALUES ($1, 'x', '7b', 'Test City', true, $2, $3, $4, $5, $6) RETURNING id`,
     [
-      `wh-${seq}@example.com`,
+      email,
       customer,
       fields.tier ?? 'free',
       fields.interval ?? null,
@@ -46,7 +59,7 @@ async function createAccount(fields: AccountFields = {}): Promise<{ id: number; 
       fields.paymentIntent ?? null,
     ],
   );
-  return { id: rows[0].id, customer };
+  return { id: rows[0].id, customer, email };
 }
 
 async function accountRow(id: number) {
@@ -84,7 +97,9 @@ function sub(id: string, customer: string, status = 'active', overrides: Record<
 }
 
 beforeAll(async () => {
-  await pool.query('TRUNCATE accounts, guest_sessions, password_reset_tokens, stripe_events RESTART IDENTITY CASCADE');
+  await pool.query(
+    'TRUNCATE accounts, guest_sessions, password_reset_tokens, stripe_events, owner_events RESTART IDENTITY CASCADE',
+  );
 });
 beforeEach(() => {
   retrieveSub.mockReset();
@@ -373,5 +388,393 @@ describe.skipIf(!WEBHOOK_SECRET)('refunds and disputes', () => {
     const res = await sendEvent('charge.refunded', { id: 'ch_3', object: 'charge', refunded: true, payment_intent: 'pi_someone_else' });
     expect(res.status).toBe(200);
     expect((await accountRow(id)).subscription_interval).toBe('lifetime');
+  });
+});
+
+describe.skipIf(!WEBHOOK_SECRET)('owner events and alerts', () => {
+  const OWNER = 'owner-alerts@example.test';
+  // Pre-existing, out of this phase's scope: the only log line allowed to carry a Stripe id.
+  const REVOKE_LOG = 'Lifetime access revoked after a refund or dispute';
+  let logged: MockInstance[] = [];
+
+  beforeAll(async () => {
+    // A distinctive id, so a leak can't hide behind an amount or a timestamp.
+    await pool.query("SELECT setval(pg_get_serial_sequence('accounts', 'id'), GREATEST(987650, (SELECT MAX(id) FROM accounts)))");
+  });
+  beforeEach(async () => {
+    process.env.ALERT_EMAIL_TO = OWNER;
+    await pool.query('TRUNCATE owner_events RESTART IDENTITY');
+    sendMailMock.mockClear();
+    logged = [vi.spyOn(logger, 'info'), vi.spyOn(logger, 'warn'), vi.spyOn(logger, 'error')];
+  });
+  afterEach(() => {
+    process.env.ALERT_EMAIL_TO = '';
+    for (const spy of logged) spy.mockRestore();
+  });
+
+  async function kinds(): Promise<string[]> {
+    return (await pool.query<{ kind: string }>('SELECT kind FROM owner_events ORDER BY id')).rows.map((r) => r.kind);
+  }
+
+  function alerts(): { subject: string; text: string }[] {
+    return sendMailMock.mock.calls.filter(([m]) => m.to === OWNER).map(([m]) => m as { subject: string; text: string });
+  }
+
+  function firstLines(n: number): string[] {
+    return alerts()[0].text.split('\n\n').slice(0, n);
+  }
+
+  async function noAlert() {
+    await new Promise((r) => setTimeout(r, 100));
+    expect(alerts()).toHaveLength(0);
+  }
+
+  // The revoke warning is the pre-existing line; it is checked, then left out of the leak check.
+  function revokeLogs(): unknown[][] {
+    return logged[1].mock.calls.filter(([msg]) => msg === REVOKE_LOG);
+  }
+
+  async function expectNoLeak(account: { id: number; customer: string; email: string }, stripeIds: string[]) {
+    await expectNoSecrets([account.email, String(account.id), account.customer, ...stripeIds]);
+  }
+
+  async function expectNoSecrets(secrets: string[]) {
+    const mailText = JSON.stringify(sendMailMock.mock.calls);
+    const rowsText = JSON.stringify((await pool.query('SELECT * FROM owner_events')).rows);
+    const logText = JSON.stringify(logged.flatMap((spy) => spy.mock.calls.filter(([msg]) => msg !== REVOKE_LOG)));
+    for (const text of [mailText, rowsText, logText]) {
+      for (const secret of secrets) expect(text).not.toContain(secret);
+    }
+  }
+
+  it('a subscription checkout records subscription_started and alerts with plan, interval and amount', async () => {
+    const account = await createAccount();
+    retrieveSub.mockResolvedValueOnce(sub('sub_start_1', account.customer) as never);
+    const session = checkoutSession(account.customer, {
+      mode: 'subscription',
+      subscription: 'sub_start_1',
+      payment_intent: null,
+      amount_total: 500,
+      currency: 'usd',
+    });
+    const res = await sendEvent('checkout.session.completed', session, 'evt_start_1');
+    expect(res.status).toBe(200);
+    expect(retrieveSub).toHaveBeenCalledWith('sub_start_1');
+    expect(await kinds()).toEqual(['subscription_started']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(alerts()[0].subject).toBe('[Vernal app] New Supporter subscription');
+    expect(firstLines(1)).toEqual(['Supporter, monthly, $5.00.']);
+    expect(alerts()[0].text).toMatch(/Open users: \S+\/admin\/users$/);
+    // The account itself is left to the customer.subscription.* events.
+    expect((await accountRow(account.id)).subscription_tier).toBe('free');
+    await expectNoLeak(account, ['sub_start_1', session.id, 'evt_start_1']);
+  });
+
+  it('a delayed subscription payment that succeeds counts too', async () => {
+    const account = await createAccount();
+    retrieveSub.mockResolvedValueOnce(
+      sub('sub_start_2', account.customer, 'active', {
+        items: { data: [{ current_period_end: 1893456000, price: { recurring: { interval: 'year' } } }] },
+      }) as never,
+    );
+    const session = checkoutSession(account.customer, {
+      mode: 'subscription',
+      subscription: 'sub_start_2',
+      payment_intent: null,
+      amount_total: 5000,
+      currency: 'usd',
+    });
+    await sendEvent('checkout.session.async_payment_succeeded', session, 'evt_start_2');
+    expect(await kinds()).toEqual(['subscription_started']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['Supporter, yearly, $50.00.']);
+    await expectNoLeak(account, ['sub_start_2', session.id, 'evt_start_2']);
+  });
+
+  it('a failed subscription lookup still records, without the interval or an id in the logs', async () => {
+    const account = await createAccount();
+    retrieveSub.mockRejectedValueOnce(new Error('Stripe down'));
+    const session = checkoutSession(account.customer, {
+      mode: 'subscription',
+      subscription: 'sub_start_3',
+      payment_intent: null,
+      amount_total: 500,
+      currency: 'usd',
+    });
+    const res = await sendEvent('checkout.session.completed', session, 'evt_start_3');
+    expect(res.status).toBe(200);
+    expect(await kinds()).toEqual(['subscription_started']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['Supporter, $5.00.']);
+    const logText = JSON.stringify(logged.map((spy) => spy.mock.calls));
+    for (const id of ['sub_start_3', account.customer, session.id]) expect(logText).not.toContain(id);
+    await expectNoLeak(account, ['sub_start_3', session.id, 'evt_start_3']);
+  });
+
+  it('a subscription checkout for an unknown customer records nothing', async () => {
+    retrieveSub.mockResolvedValueOnce(sub('sub_start_4', 'cus_nobody') as never);
+    const session = checkoutSession('cus_nobody', { mode: 'subscription', subscription: 'sub_start_4', amount_total: 500, currency: 'usd' });
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(await kinds()).toEqual([]);
+    await noAlert();
+    await expectNoSecrets(['cus_nobody', 'sub_start_4', session.id]);
+  });
+
+  it('a no_payment_required subscription checkout counts, with a zero amount', async () => {
+    const account = await createAccount();
+    retrieveSub.mockResolvedValueOnce(sub('sub_start_5', account.customer) as never);
+    const session = checkoutSession(account.customer, {
+      mode: 'subscription',
+      payment_status: 'no_payment_required',
+      subscription: 'sub_start_5',
+      payment_intent: null,
+      amount_total: 0,
+      currency: 'usd',
+    });
+    expect((await sendEvent('checkout.session.completed', session, 'evt_start_5')).status).toBe(200);
+    expect(await kinds()).toEqual(['subscription_started']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['Supporter, monthly, $0.00.']);
+    await expectNoLeak(account, ['sub_start_5', session.id, 'evt_start_5']);
+  });
+
+  it('a subscription checkout without an amount leaves it out of the line', async () => {
+    const account = await createAccount();
+    retrieveSub.mockResolvedValueOnce(sub('sub_start_6', account.customer) as never);
+    const session = checkoutSession(account.customer, { mode: 'subscription', subscription: 'sub_start_6', payment_intent: null });
+    await sendEvent('checkout.session.completed', session, 'evt_start_6');
+    expect(await kinds()).toEqual(['subscription_started']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['Supporter, monthly.']);
+    await expectNoLeak(account, ['sub_start_6', session.id, 'evt_start_6']);
+  });
+
+  it('an unpaid subscription checkout waits for the delayed payment, which counts once', async () => {
+    const account = await createAccount();
+    const session = checkoutSession(account.customer, {
+      mode: 'subscription',
+      payment_status: 'unpaid',
+      subscription: 'sub_start_7',
+      payment_intent: null,
+      amount_total: 500,
+      currency: 'usd',
+    });
+    expect((await sendEvent('checkout.session.completed', session, 'evt_start_7a')).status).toBe(200);
+    expect(await kinds()).toEqual([]);
+    await noAlert();
+
+    retrieveSub.mockResolvedValueOnce(sub('sub_start_7', account.customer) as never);
+    const paid = { ...session, payment_status: 'paid' };
+    expect((await sendEvent('checkout.session.async_payment_succeeded', paid, 'evt_start_7b')).status).toBe(200);
+    expect(await kinds()).toEqual(['subscription_started']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['Supporter, monthly, $5.00.']);
+    await expectNoLeak(account, ['sub_start_7', session.id, 'evt_start_7a', 'evt_start_7b']);
+  });
+
+  it('a setup-mode checkout records nothing', async () => {
+    const account = await createAccount();
+    const session = checkoutSession(account.customer, { mode: 'setup', payment_status: 'no_payment_required', payment_intent: null });
+    expect((await sendEvent('checkout.session.completed', session, 'evt_setup_1')).status).toBe(200);
+    expect(await kinds()).toEqual([]);
+    expect((await accountRow(account.id)).subscription_tier).toBe('free');
+    await noAlert();
+    await expectNoLeak(account, [session.id, 'evt_setup_1']);
+  });
+
+  it('a subscription checkout on a lifetime account records nothing', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'lifetime', paymentIntent: 'pi_start_8' });
+    retrieveSub.mockResolvedValueOnce(sub('sub_start_8', account.customer) as never);
+    const session = checkoutSession(account.customer, {
+      mode: 'subscription',
+      subscription: 'sub_start_8',
+      payment_intent: null,
+      amount_total: 500,
+      currency: 'usd',
+    });
+    expect((await sendEvent('checkout.session.completed', session, 'evt_start_8')).status).toBe(200);
+    expect(await kinds()).toEqual([]);
+    await noAlert();
+    await expectNoLeak(account, ['sub_start_8', 'pi_start_8', session.id, 'evt_start_8']);
+  });
+
+  it('a lifetime checkout records lifetime_purchased and alerts with the amount', async () => {
+    const account = await createAccount();
+    const session = checkoutSession(account.customer, { payment_intent: 'pi_life_1', amount_total: 4000, currency: 'usd' });
+    await sendEvent('checkout.session.completed', session, 'evt_life_1');
+    expect(await kinds()).toEqual(['lifetime_purchased']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(alerts()[0].subject).toBe('[Vernal app] New lifetime purchase');
+    expect(firstLines(1)).toEqual(['Lifetime, $40.00.']);
+    await expectNoLeak(account, ['pi_life_1', session.id, 'evt_life_1']);
+  });
+
+  it('a lifetime checkout without an amount leaves it out of the line', async () => {
+    const account = await createAccount();
+    const session = checkoutSession(account.customer, { payment_intent: 'pi_life_2' });
+    await sendEvent('checkout.session.completed', session, 'evt_life_2');
+    expect(await kinds()).toEqual(['lifetime_purchased']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['Lifetime.']);
+    await expectNoLeak(account, ['pi_life_2', session.id, 'evt_life_2']);
+  });
+
+  it('a lifetime checkout that matches no account records nothing', async () => {
+    const session = checkoutSession('cus_nobody', { amount_total: 4000, currency: 'usd' });
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(await kinds()).toEqual([]);
+    await noAlert();
+    await expectNoSecrets(['cus_nobody', session.id, session.payment_intent]);
+  });
+
+  it('a full refund of a lifetime payment records refund and alerts with the amount', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'lifetime', paymentIntent: 'pi_ref_1' });
+    const charge = { id: 'ch_ref_1', object: 'charge', refunded: true, payment_intent: 'pi_ref_1', amount_refunded: 4000, currency: 'usd' };
+    await sendEvent('charge.refunded', charge, 'evt_ref_1');
+    expect(await kinds()).toEqual(['refund']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(alerts()[0].subject).toBe('[Vernal app] A lifetime payment was refunded');
+    expect(firstLines(1)).toEqual(['$40.00 refunded. Lifetime access was revoked automatically.']);
+    expect(revokeLogs()).toEqual([[REVOKE_LOG, { paymentIntent: 'pi_ref_1' }]]);
+    await expectNoLeak(account, ['pi_ref_1', 'ch_ref_1', 'evt_ref_1']);
+  });
+
+  it('a refund without an amount says so without guessing', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'lifetime', paymentIntent: 'pi_ref_2' });
+    await sendEvent('charge.refunded', { id: 'ch_ref_2', object: 'charge', refunded: true, payment_intent: 'pi_ref_2' }, 'evt_ref_2');
+    expect(await kinds()).toEqual(['refund']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['A payment was refunded. Lifetime access was revoked automatically.']);
+    await expectNoLeak(account, ['pi_ref_2', 'ch_ref_2', 'evt_ref_2']);
+  });
+
+  it('a full refund of a non-lifetime charge records nothing and alerts nothing', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'monthly', subId: 'sub_ref_3' });
+    const charge = { id: 'ch_ref_3', object: 'charge', refunded: true, payment_intent: 'pi_ref_3', amount_refunded: 500, currency: 'usd' };
+    expect((await sendEvent('charge.refunded', charge, 'evt_ref_3')).status).toBe(200);
+    expect(await kinds()).toEqual([]);
+    await noAlert();
+    expect(revokeLogs()).toEqual([]);
+    await expectNoLeak(account, ['pi_ref_3', 'ch_ref_3', 'evt_ref_3', 'sub_ref_3']);
+  });
+
+  it('a dispute on a lifetime payment records dispute and says access was revoked', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'lifetime', paymentIntent: 'pi_dis_1' });
+    const dispute = {
+      id: 'dp_dis_1', object: 'dispute', status: 'needs_response', charge: 'ch_dis_1',
+      payment_intent: 'pi_dis_1', amount: 4000, currency: 'usd',
+    };
+    await sendEvent('charge.dispute.created', dispute, 'evt_dis_1');
+    expect(await kinds()).toEqual(['dispute']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(alerts()[0].subject).toBe('[Vernal app] A payment was disputed');
+    expect(firstLines(2)).toEqual([
+      '$40.00 disputed. Lifetime access was revoked automatically.',
+      'Stripe sets a deadline to respond. Answer it in the Stripe dashboard.',
+    ]);
+    expect(revokeLogs()).toEqual([[REVOKE_LOG, { paymentIntent: 'pi_dis_1' }]]);
+    await expectNoLeak(account, ['pi_dis_1', 'ch_dis_1', 'dp_dis_1', 'evt_dis_1']);
+  });
+
+  it('a dispute on a non-lifetime charge still records and alerts, without the revoked sentence', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'monthly', subId: 'sub_dis_2' });
+    const dispute = {
+      id: 'dp_dis_2', object: 'dispute', status: 'needs_response', charge: 'ch_dis_2',
+      payment_intent: 'pi_dis_2', amount: 500, currency: 'usd',
+    };
+    await sendEvent('charge.dispute.created', dispute, 'evt_dis_2');
+    expect(await kinds()).toEqual(['dispute']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(2)).toEqual([
+      '$5.00 disputed.',
+      'Stripe sets a deadline to respond. Answer it in the Stripe dashboard.',
+    ]);
+    expect(revokeLogs()).toEqual([]);
+    expect((await accountRow(account.id)).subscription_tier).toBe('supporter');
+    await expectNoLeak(account, ['pi_dis_2', 'ch_dis_2', 'dp_dis_2', 'evt_dis_2', 'sub_dis_2']);
+  });
+
+  it('a dispute with no payment intent or amount still records and alerts', async () => {
+    const account = await createAccount();
+    await sendEvent('charge.dispute.created', { id: 'dp_dis_3', object: 'dispute', status: 'needs_response', charge: 'ch_dis_3' }, 'evt_dis_3');
+    expect(await kinds()).toEqual(['dispute']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(firstLines(1)).toEqual(['A payment was disputed.']);
+    await expectNoLeak(account, ['ch_dis_3', 'dp_dis_3', 'evt_dis_3']);
+  });
+
+  it('a cancel at period end counts once, and the later deleted event does not count again', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'monthly', subId: 'sub_can_1' });
+    const cancelling = sub('sub_can_1', account.customer, 'active', { cancel_at_period_end: true, cancel_at: 1893456000 });
+    retrieveSub.mockResolvedValueOnce(cancelling as never);
+    await sendEvent('customer.subscription.updated', cancelling, 'evt_can_1');
+    expect(await kinds()).toEqual(['subscription_cancelled']);
+
+    retrieveSub.mockResolvedValueOnce(cancelling as never);
+    await sendEvent('customer.subscription.updated', cancelling, 'evt_can_2');
+    expect(await kinds()).toEqual(['subscription_cancelled']);
+
+    retrieveSub.mockResolvedValueOnce(sub('sub_can_1', account.customer, 'canceled') as never);
+    await sendEvent('customer.subscription.deleted', sub('sub_can_1', account.customer, 'canceled'), 'evt_can_3');
+    expect((await accountRow(account.id)).subscription_tier).toBe('free');
+    expect(await kinds()).toEqual(['subscription_cancelled']);
+    await noAlert();
+    await expectNoLeak(account, ['sub_can_1', 'evt_can_1', 'evt_can_2', 'evt_can_3']);
+  });
+
+  it('an immediate cancel counts once when the deleted event downgrades the account', async () => {
+    const account = await createAccount({ tier: 'supporter', interval: 'monthly', subId: 'sub_can_2' });
+    retrieveSub.mockResolvedValueOnce(sub('sub_can_2', account.customer, 'canceled') as never);
+    await sendEvent('customer.subscription.deleted', sub('sub_can_2', account.customer, 'canceled'), 'evt_can_4');
+    expect((await accountRow(account.id)).subscription_tier).toBe('free');
+    expect(await kinds()).toEqual(['subscription_cancelled']);
+
+    // A second deleted event finds the account already free and counts nothing.
+    retrieveSub.mockResolvedValueOnce(sub('sub_can_2', account.customer, 'canceled') as never);
+    await sendEvent('customer.subscription.deleted', sub('sub_can_2', account.customer, 'canceled'), 'evt_can_5');
+    expect(await kinds()).toEqual(['subscription_cancelled']);
+    await noAlert();
+    await expectNoLeak(account, ['sub_can_2', 'evt_can_4', 'evt_can_5']);
+  });
+
+  it('the same event delivered twice records once and alerts once', async () => {
+    const account = await createAccount();
+    const session = checkoutSession(account.customer, { payment_intent: 'pi_twice', amount_total: 4000, currency: 'usd' });
+    expect((await sendEvent('checkout.session.completed', session, 'evt_twice')).status).toBe(200);
+    expect((await sendEvent('checkout.session.completed', session, 'evt_twice')).status).toBe(200);
+    expect(await kinds()).toEqual(['lifetime_purchased']);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(alerts()).toHaveLength(1);
+    await expectNoLeak(account, ['pi_twice', session.id, 'evt_twice']);
+  });
+
+  it('a rolled-back event records nothing, alerts nothing and returns 500', async () => {
+    const account = await createAccount();
+    const actual = await vi.importActual<typeof import('../lib/ownerAlerts')>('../lib/ownerAlerts');
+    vi.mocked(ownerAlerts.recordOwnerEvent).mockImplementationOnce(async (kind, client?: PoolClient) => {
+      await actual.recordOwnerEvent(kind, client);
+      throw new Error('injected failure');
+    });
+    const session = checkoutSession(account.customer, { payment_intent: 'pi_rollback', amount_total: 4000, currency: 'usd' });
+    vi.mocked(ownerAlerts.recordOwnerEvent).mockClear();
+    const res = await sendEvent('checkout.session.completed', session, 'evt_rollback');
+    expect(ownerAlerts.recordOwnerEvent).toHaveBeenCalledWith('lifetime_purchased', expect.anything());
+    expect(res.status).toBe(500);
+    expect(await kinds()).toEqual([]);
+    expect((await accountRow(account.id)).subscription_tier).toBe('free');
+    const { rowCount } = await pool.query("SELECT 1 FROM stripe_events WHERE event_id = 'evt_rollback'");
+    expect(rowCount).toBe(0);
+    await noAlert();
+    await expectNoLeak(account, ['pi_rollback', session.id, 'evt_rollback']);
+  });
+
+  it('an event type the handler ignores records nothing', async () => {
+    const account = await createAccount();
+    expect((await sendEvent('customer.created', { id: account.customer }, 'evt_ignored')).status).toBe(200);
+    expect((await sendEvent('checkout.session.completed', checkoutSession(account.customer, { payment_status: 'unpaid' }))).status).toBe(200);
+    expect(await kinds()).toEqual([]);
+    await noAlert();
+    await expectNoLeak(account, ['evt_ignored']);
   });
 });

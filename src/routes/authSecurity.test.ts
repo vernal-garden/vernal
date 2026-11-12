@@ -5,6 +5,8 @@ import { Pool } from 'pg';
 import app from '../index';
 import * as mailer from '../lib/mailer';
 import { hashToken } from '../lib/tokens';
+import { logger } from '../lib/logger';
+import { invalidateBetaSettings } from '../lib/beta';
 import { ipKeyGenerator } from 'express-rate-limit';
 import { consumeResetEmailQuota, clearResetEmailQuota } from '../middleware/rateLimiters';
 import passport from 'passport';
@@ -19,7 +21,11 @@ const pool = new Pool({ connectionString: url });
 
 async function resetDb() {
   await pool.query('TRUNCATE accounts, guest_sessions, password_reset_tokens RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE owner_events RESTART IDENTITY');
 }
+
+const OWNER = 'owner-alerts@example.test';
+const ownerAlerts = () => sendMailMock.mock.calls.filter(([o]) => o.to === OWNER);
 
 let emailCounter = 0;
 function nextEmail(prefix: string): string {
@@ -428,6 +434,125 @@ describe('email verification', () => {
     );
     expect((await request(app).post('/api/auth/verify-email').send({ token })).status).toBe(400);
     expect((await request(app).post('/api/auth/verify-email').send({})).status).toBe(400);
+  });
+});
+
+describe('owner alert on email sign-up', () => {
+  beforeAll(async () => {
+    // A distinctive id, so a leak can't hide behind the account count or a timestamp.
+    await pool.query("SELECT setval(pg_get_serial_sequence('accounts', 'id'), GREATEST(987650, (SELECT MAX(id) FROM accounts)))");
+  });
+  beforeEach(async () => {
+    process.env.ALERT_EMAIL_TO = OWNER;
+    await pool.query('TRUNCATE owner_events RESTART IDENTITY');
+  });
+  afterEach(() => {
+    // Empty, as in src/test/setup.ts.
+    process.env.ALERT_EMAIL_TO = '';
+    process.env.ALERT_INSTANT_SIGNUPS = '';
+  });
+
+  async function ownerEventKinds(): Promise<string[]> {
+    return (await pool.query<{ kind: string }>('SELECT kind FROM owner_events ORDER BY id')).rows.map((r) => r.kind);
+  }
+
+  it('records account_created and sends one alert with the count, nothing personal', async () => {
+    const email = nextEmail('alerted');
+    const logged = [vi.spyOn(logger, 'warn'), vi.spyOn(logger, 'error')];
+    try {
+      const reg = await request(app).post('/api/auth/register').send({ email, password: 'Password123!' });
+      expect(reg.status).toBe(201);
+      const accountId: number = reg.body.data.account.id;
+      expect(await ownerEventKinds()).toEqual(['account_created']);
+
+      await vi.waitFor(() => expect(ownerAlerts()).toHaveLength(1));
+      const total = Number((await pool.query('SELECT COUNT(*) AS n FROM accounts')).rows[0].n);
+      const [mail] = ownerAlerts()[0];
+      expect(mail.subject).toBe('[Vernal app] New account');
+      expect(mail.text.split('\n\n').slice(0, 2)).toEqual([
+        'Someone made a Vernal account (email).',
+        `Accounts: ${total} total.`,
+      ]);
+      expect(mail.text).toMatch(/Open users: \S+\/admin\/users$/);
+
+      const alertText = JSON.stringify(ownerAlerts());
+      const rowsText = JSON.stringify((await pool.query('SELECT * FROM owner_events')).rows);
+      for (const text of [alertText, rowsText]) {
+        expect(text).not.toContain(email);
+        expect(text).not.toContain(String(accountId));
+      }
+      for (const spy of logged) {
+        expect(spy.mock.calls.filter(([msg]) => msg === 'Owner alert failed')).toHaveLength(0);
+        expect(JSON.stringify(spy.mock.calls)).not.toContain(email);
+      }
+    } finally {
+      for (const spy of logged) spy.mockRestore();
+    }
+  });
+
+  it('with ALERT_INSTANT_SIGNUPS=false records the row and sends no alert', async () => {
+    process.env.ALERT_INSTANT_SIGNUPS = 'false';
+    const email = nextEmail('quiet');
+    expect((await request(app).post('/api/auth/register').send({ email, password: 'Password123!' })).status).toBe(201);
+    expect(await ownerEventKinds()).toEqual(['account_created']);
+    // The verification mail goes out after the response too; by then an alert would have been queued.
+    await mailTokenTo(email);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(ownerAlerts()).toHaveLength(0);
+  });
+
+  it('ALERT_INSTANT_SIGNUPS is read case-insensitively ("FALSE")', async () => {
+    process.env.ALERT_INSTANT_SIGNUPS = ' FALSE ';
+    const email = nextEmail('quiet-caps');
+    expect((await request(app).post('/api/auth/register').send({ email, password: 'Password123!' })).status).toBe(201);
+    expect(await ownerEventKinds()).toEqual(['account_created']);
+    await mailTokenTo(email);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(ownerAlerts()).toHaveLength(0);
+  });
+
+  describe('beta terms at sign-up', () => {
+    beforeEach(async () => {
+      await pool.query('UPDATE beta_settings SET gate_on = false, gate_first_on_at = NULL WHERE id = 1');
+      await pool.query('DELETE FROM beta_invites');
+      invalidateBetaSettings();
+    });
+    afterAll(async () => {
+      await pool.query('DELETE FROM beta_invites');
+      invalidateBetaSettings();
+    });
+
+    it('an invited sign-up accepting the beta terms records account_created and beta_terms_accepted', async () => {
+      const email = nextEmail('beta-yes');
+      await pool.query('INSERT INTO beta_invites (email) VALUES ($1)', [email]);
+      const reg = await request(app).post('/api/auth/register').send({ email, password: 'Password123!', acceptBetaTerms: true });
+      expect(reg.status).toBe(201);
+      const { rows } = await pool.query('SELECT beta_terms_accepted_at FROM accounts WHERE email = $1', [email]);
+      expect(rows[0].beta_terms_accepted_at).not.toBeNull();
+      expect(await ownerEventKinds()).toEqual(['account_created', 'beta_terms_accepted']);
+    });
+
+    it('a sign-up that does not accept them records only account_created', async () => {
+      // Invited but not accepting (a pending participant), and not invited at all.
+      const invited = nextEmail('beta-pending');
+      await pool.query('INSERT INTO beta_invites (email) VALUES ($1)', [invited]);
+      expect((await request(app).post('/api/auth/register').send({ email: invited, password: 'Password123!' })).status).toBe(201);
+      expect(await ownerEventKinds()).toEqual(['account_created']);
+
+      await pool.query('TRUNCATE owner_events RESTART IDENTITY');
+      const plain = nextEmail('beta-none');
+      const reg = await request(app).post('/api/auth/register').send({ email: plain, password: 'Password123!', acceptBetaTerms: true });
+      expect(reg.status).toBe(201);
+      expect(await ownerEventKinds()).toEqual(['account_created']);
+    });
+  });
+
+  it('a refused sign-up records nothing and sends no alert', async () => {
+    const email = nextEmail('dupe');
+    await createUser(email);
+    expect((await request(app).post('/api/auth/register').send({ email, password: 'Password123!' })).status).toBe(409);
+    expect(await ownerEventKinds()).toEqual([]);
+    expect(ownerAlerts()).toHaveLength(0);
   });
 });
 

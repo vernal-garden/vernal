@@ -5,6 +5,7 @@ import { db } from '../lib/db';
 import { getStripe } from '../lib/stripe';
 import { logger } from '../lib/logger';
 import { cancelSubscriptionNow, retrieveSubscription } from '../lib/billing';
+import { formatUsd, recordOwnerEvent, sendOwnerAlert } from '../lib/ownerAlerts';
 
 // POST /api/webhooks/stripe — mounted directly in src/index.ts so it can use
 // express.raw() ahead of the global express.json() middleware.
@@ -12,9 +13,24 @@ import { cancelSubscriptionNow, retrieveSubscription } from '../lib/billing';
 // Each event is applied exactly once. Stripe calls happen first (planEvent),
 // then one transaction records the event id and applies the change. Any
 // failure rolls both back and returns 500, so Stripe's retry runs it again.
+// Owner alerts an apply step queues are sent only once it has committed.
 
-type Apply = (client: PoolClient) => Promise<void>;
+type OwnerAlert = Parameters<typeof sendOwnerAlert>[0];
+type Apply = (client: PoolClient, alerts: OwnerAlert[]) => Promise<void>;
 const noop: Apply = async () => {};
+
+const USERS_LINK = { label: 'Open users', path: '/admin/users' };
+const REVOKED = 'Lifetime access was revoked automatically.';
+
+// Left out of the alert, rather than guessed, when the event doesn't carry it.
+function amountOf(cents: number | null | undefined, currency: string | null | undefined): string | null {
+  return typeof cents === 'number' && currency ? formatUsd(cents, currency) : null;
+}
+
+// "Supporter, monthly, $5.00." with any missing part left out.
+function sentence(parts: (string | null | undefined)[]): string {
+  return `${parts.filter(Boolean).join(', ')}.`;
+}
 
 const LIVE_STATUSES = new Set(['active', 'trialing']);
 const FREE_STATUSES = new Set(['canceled', 'unpaid', 'incomplete_expired']);
@@ -63,11 +79,13 @@ async function planSubscription(subId: string, deleted: boolean): Promise<Apply>
   return async (client) => {
     const { rows } = await client.query<{
       id: number;
+      subscription_tier: string;
       subscription_interval: string | null;
       stripe_subscription_id: string | null;
+      subscription_cancelled_at: Date | null;
     }>(
-      `SELECT id, subscription_interval, stripe_subscription_id FROM accounts
-        WHERE stripe_customer_id = $1 FOR UPDATE`,
+      `SELECT id, subscription_tier, subscription_interval, stripe_subscription_id, subscription_cancelled_at
+         FROM accounts WHERE stripe_customer_id = $1 FOR UPDATE`,
       [customerId],
     );
     const account = rows[0];
@@ -85,6 +103,10 @@ async function planSubscription(subId: string, deleted: boolean): Promise<Apply>
           WHERE id = $1`,
         [account.id],
       );
+      // A cancel at period end was counted when it was set; this counts an immediate one.
+      if (account.subscription_tier !== 'free' && account.subscription_cancelled_at === null) {
+        await recordOwnerEvent('subscription_cancelled', client);
+      }
       return;
     }
 
@@ -117,6 +139,45 @@ async function planSubscription(subId: string, deleted: boolean): Promise<Apply>
     values.push(cancelledAt);
     values.push(account.id);
     await client.query(`UPDATE accounts SET ${updates.join(', ')} WHERE id = $${idx}`, values);
+    if (account.subscription_cancelled_at === null && cancelledAt !== null) {
+      await recordOwnerEvent('subscription_cancelled', client);
+    }
+  };
+}
+
+// The customer.subscription.* events update the account; this only counts the
+// new subscription and alerts the owner.
+async function planSubscriptionStart(session: Stripe.Checkout.Session): Promise<Apply> {
+  const customerId = idOf(session.customer);
+  if (!customerId) return noop;
+  const subId = idOf(session.subscription);
+  let interval: string | undefined;
+  if (subId) {
+    try {
+      const recurring = (await retrieveSubscription(subId))?.items.data[0]?.price.recurring?.interval;
+      if (recurring === 'month') interval = 'monthly';
+      // Display wording for the alert; the account stores 'annual'.
+      else if (recurring === 'year') interval = 'yearly';
+    } catch {
+      // Only the alert's wording needs it, so a Stripe error doesn't fail the event.
+    }
+  }
+  const amount = amountOf(session.amount_total, session.currency);
+
+  return async (client, alerts) => {
+    const { rowCount } = await client.query(
+      `SELECT 1 FROM accounts
+        WHERE stripe_customer_id = $1 AND subscription_interval IS DISTINCT FROM 'lifetime'`,
+      [customerId],
+    );
+    if (!rowCount) return;
+    await recordOwnerEvent('subscription_started', client);
+    alerts.push({
+      kind: 'subscription_started',
+      subject: 'New Supporter subscription',
+      lines: [sentence(['Supporter', interval, amount])],
+      link: USERS_LINK,
+    });
   };
 }
 
@@ -133,9 +194,10 @@ async function planLifetimeGrant(session: Stripe.Checkout.Session): Promise<Appl
   const subId = rows[0]?.stripe_subscription_id;
   if (subId) await cancelSubscriptionNow(subId);
   const paymentIntent = idOf(session.payment_intent);
+  const amount = amountOf(session.amount_total, session.currency);
 
-  return async (client) => {
-    await client.query(
+  return async (client, alerts) => {
+    const result = await client.query(
       `UPDATE accounts
           SET subscription_tier = 'supporter', subscription_interval = 'lifetime',
               stripe_lifetime_payment_intent = COALESCE($2, stripe_lifetime_payment_intent),
@@ -144,21 +206,64 @@ async function planLifetimeGrant(session: Stripe.Checkout.Session): Promise<Appl
         WHERE stripe_customer_id = $1`,
       [customerId, paymentIntent],
     );
+    if (!result.rowCount) return;
+    await recordOwnerEvent('lifetime_purchased', client);
+    alerts.push({
+      kind: 'lifetime_purchased',
+      subject: 'New lifetime purchase',
+      lines: [sentence(['Lifetime', amount])],
+      link: USERS_LINK,
+    });
   };
 }
 
 // Refunds and disputes only affect lifetime access; subscriptions follow
 // Stripe's own lifecycle. The payment intent is kept so a won dispute can
-// still find the account.
-function revokeLifetime(paymentIntent: string | null): Apply {
+// still find the account. Returns whether a lifetime account was revoked.
+async function revokeLifetime(client: PoolClient, paymentIntent: string): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE accounts SET subscription_tier = 'free', subscription_interval = NULL, updated_at = NOW()
+      WHERE stripe_lifetime_payment_intent = $1 AND subscription_interval = 'lifetime'`,
+    [paymentIntent],
+  );
+  if (result.rowCount) logger.warn('Lifetime access revoked after a refund or dispute', { paymentIntent });
+  return Boolean(result.rowCount);
+}
+
+// Only a refund that revoked lifetime access is counted.
+function planRefund(charge: Stripe.Charge): Apply {
+  const paymentIntent = idOf(charge.payment_intent);
   if (!paymentIntent) return noop;
-  return async (client) => {
-    const result = await client.query(
-      `UPDATE accounts SET subscription_tier = 'free', subscription_interval = NULL, updated_at = NOW()
-        WHERE stripe_lifetime_payment_intent = $1 AND subscription_interval = 'lifetime'`,
-      [paymentIntent],
-    );
-    if (result.rowCount) logger.warn('Lifetime access revoked after a refund or dispute', { paymentIntent });
+  const amount = amountOf(charge.amount_refunded, charge.currency);
+  return async (client, alerts) => {
+    if (!(await revokeLifetime(client, paymentIntent))) return;
+    await recordOwnerEvent('refund', client);
+    alerts.push({
+      kind: 'refund',
+      subject: 'A lifetime payment was refunded',
+      lines: [`${amount ?? 'A payment was'} refunded. ${REVOKED}`],
+      link: USERS_LINK,
+    });
+  };
+}
+
+// Every dispute is counted, lifetime or not, since each one needs an answer in Stripe.
+function planDispute(dispute: Stripe.Dispute): Apply {
+  const paymentIntent = idOf(dispute.payment_intent);
+  const amount = amountOf(dispute.amount, dispute.currency);
+  return async (client, alerts) => {
+    const revoked = paymentIntent ? await revokeLifetime(client, paymentIntent) : false;
+    await recordOwnerEvent('dispute', client);
+    const disputed = `${amount ?? 'A payment was'} disputed.`;
+    alerts.push({
+      kind: 'dispute',
+      subject: 'A payment was disputed',
+      lines: [
+        revoked ? `${disputed} ${REVOKED}` : disputed,
+        'Stripe sets a deadline to respond. Answer it in the Stripe dashboard.',
+      ],
+      link: USERS_LINK,
+    });
   };
 }
 
@@ -184,12 +289,17 @@ async function planEvent(event: Stripe.Event): Promise<Apply | null> {
     case 'checkout.session.completed': {
       const session = event.data.object;
       // Delayed methods (bank debits) complete unpaid; the async events decide.
+      if (session.mode === 'subscription') {
+        // 'no_payment_required' (full discounts, trials) counts too.
+        return session.payment_status === 'unpaid' ? noop : planSubscriptionStart(session);
+      }
       if (session.mode !== 'payment' || session.payment_status !== 'paid') return noop;
       return planLifetimeGrant(session);
     }
     case 'checkout.session.async_payment_succeeded': {
       const session = event.data.object;
-      return session.mode === 'payment' ? planLifetimeGrant(session) : noop;
+      if (session.mode === 'payment') return planLifetimeGrant(session);
+      return session.mode === 'subscription' ? planSubscriptionStart(session) : noop;
     }
     case 'checkout.session.async_payment_failed':
       logger.warn('Stripe delayed payment failed', { sessionId: event.data.object.id });
@@ -197,10 +307,10 @@ async function planEvent(event: Stripe.Event): Promise<Apply | null> {
     case 'charge.refunded': {
       const charge = event.data.object;
       // `refunded` is true only once the full amount is refunded.
-      return charge.refunded ? revokeLifetime(idOf(charge.payment_intent)) : noop;
+      return charge.refunded ? planRefund(charge) : noop;
     }
     case 'charge.dispute.created':
-      return revokeLifetime(idOf(event.data.object.payment_intent));
+      return planDispute(event.data.object);
     case 'charge.dispute.closed': {
       const dispute = event.data.object;
       // A won dispute, or an inquiry (early warning) that closed without a
@@ -235,6 +345,7 @@ export async function handleStripeWebhook(req: Request, res: Response) {
     const apply = await planEvent(event);
     if (!apply) return res.json({ received: true });
 
+    const alerts: OwnerAlert[] = [];
     const client = await db.connect();
     try {
       await client.query('BEGIN');
@@ -248,7 +359,7 @@ export async function handleStripeWebhook(req: Request, res: Response) {
         await client.query('ROLLBACK');
         return res.json({ received: true });
       }
-      await apply(client);
+      await apply(client, alerts);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
@@ -256,6 +367,7 @@ export async function handleStripeWebhook(req: Request, res: Response) {
     } finally {
       client.release();
     }
+    for (const alert of alerts) void sendOwnerAlert(alert);
     res.json({ received: true });
   } catch (err) {
     logger.error('POST /webhooks/stripe failed', err, { eventType: event.type });

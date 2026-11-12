@@ -69,6 +69,7 @@ import {
   settleDisplacedBilling,
   type SettledBilling,
 } from '../lib/displacement';
+import { alertNewAccount, recordOwnerEvent, sendOwnerAlert } from '../lib/ownerAlerts';
 
 export const authRouter = Router();
 
@@ -344,6 +345,8 @@ authRouter.post('/register', registerLimiter, async (req: Request, res: Response
       await migrateGuestData(client, guestSessionId, accountId);
     }
 
+    await recordOwnerEvent('account_created', client);
+    if (acceptedBeta) await recordOwnerEvent('beta_terms_accepted', client);
     await client.query('COMMIT');
 
     // Soft verification: nothing is gated, so a mail failure must not fail signup.
@@ -361,6 +364,8 @@ authRouter.post('/register', registerLimiter, async (req: Request, res: Response
         account: { id: accountId, email: email.toLowerCase() },
       },
     });
+    // After the response; never throws.
+    void alertNewAccount('email');
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -698,6 +703,9 @@ authRouter.post('/reset-password', passwordResetLimiter, async (req: Request, re
                    CASE WHEN $4::boolean THEN $5::text END)`,
           [current.email, newHash, LOCATION_NOT_SET, decision.participant, joinedVia(decision)],
         );
+        // Digest only: no instant new-account alert for a takeover.
+        await recordOwnerEvent('account_created', client);
+        await recordOwnerEvent('takeover', client);
         displaced = true;
       } else {
         if (unverifiedEmail !== null) {
@@ -905,6 +913,7 @@ async function removeUnverifiedAccount(
       } else {
         await client.query('UPDATE email_verification_tokens SET used_at = now() WHERE id = $1', [rows[0].id]);
         await displaceAccount(client, accountId);
+        await recordOwnerEvent('not_me', client);
         await client.query('COMMIT');
         outcome = 'removed';
       }
@@ -917,7 +926,19 @@ async function removeUnverifiedAccount(
   } finally {
     if (outcome !== 'removed') await billingSettledNotDisplaced(accountId);
   }
-  if (outcome === 'removed') await finishDisplacement(settled, { path: 'not_me' });
+  if (outcome === 'removed') {
+    await finishDisplacement(settled, { path: 'not_me' });
+    // In the background, so a slow mail server can't hold the response. Never throws.
+    void sendOwnerAlert({
+      kind: 'not_me',
+      subject: "Someone reported an account that wasn't theirs",
+      lines: [
+        'A "not me" link was used, and the unverified account was removed.',
+        "Repeated reports can mean someone is signing up with other people's addresses.",
+      ],
+      link: { label: 'Open users', path: '/admin/users' },
+    });
+  }
   return outcome;
 }
 

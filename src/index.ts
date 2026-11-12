@@ -8,6 +8,7 @@ import cookieParser from 'cookie-parser';
 import cron from 'node-cron';
 import { logger } from './lib/logger';
 import { runNightlyJob } from './jobs/nightly';
+import { startOwnerDigestCron } from './lib/ownerDigest';
 import { healthRouter } from './routes/health';
 import { authRouter } from './routes/auth';
 import catalogueRouter from './routes/catalogue';
@@ -206,6 +207,8 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
       app.listen(PORT, () => {
         logger.info(`API running → http://localhost:${PORT}`);
         logger.info(`Environment: ${process.env.NODE_ENV ?? 'production (NODE_ENV unset)'}`);
+        // Only once storage is ready and the server is listening.
+        startOwnerDigestCron();
       });
     })
     .catch((err: unknown) => {
