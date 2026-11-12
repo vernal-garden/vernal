@@ -116,6 +116,7 @@ async function setThumbnail(gardenId: number, stored?: string): Promise<string> 
 }
 
 interface Fixtures {
+  ownerId: number;
   owner: Agent;
   other: Agent;
   guest: Agent;
@@ -151,6 +152,7 @@ beforeEach(async () => {
   await createSeedPhoto(await createSeed({ accountId: otherId }));
 
   f = {
+    ownerId,
     owner,
     other,
     guest,
@@ -181,6 +183,12 @@ function expectRedirect(res: request.Response, key: string) {
 function expectNotFound(res: request.Response) {
   expect(res.status).toBe(404);
   expect(res.body).toEqual({ error: 'Not found' });
+}
+
+async function makeFree(accountId: number) {
+  await pool.query("UPDATE accounts SET subscription_tier = 'free' WHERE id = $1", [accountId]);
+  const { rows } = await pool.query('SELECT subscription_tier FROM accounts WHERE id = $1', [accountId]);
+  expect(rows[0].subscription_tier).toBe('free');
 }
 
 describe('GET /api/media/*', () => {
@@ -253,6 +261,18 @@ describe('GET /api/media/*', () => {
   });
 });
 
+describe('free account: photos made with paid tools stay viewable', () => {
+  it('a free account gets its own seed photo and harvest photo', async () => {
+    await makeFree(f.ownerId);
+    for (const key of [f.seedPhoto.key, f.harvestPhoto.key]) {
+      expectRedirect(await f.owner.get(`/api/media/${key}`), key);
+    }
+    for (const key of [f.seedPhoto.key, f.harvestPhoto.key]) {
+      expectNotFound(await f.other.get(`/api/media/${key}`));
+    }
+  });
+});
+
 describe('GET /api/media/* with local storage', () => {
   const s3Config = getServerConfig();
   let dir: string;
@@ -287,6 +307,16 @@ describe('GET /api/media/* with local storage', () => {
       expectFile(await f.owner.get(`/api/media/${key}`), key);
     }
     expect(getMediaRedirectUrlMock).not.toHaveBeenCalled();
+  });
+
+  it('a free account gets the bytes of its own seed and harvest photo', async () => {
+    await makeFree(f.ownerId);
+    for (const key of [f.seedPhoto.key, f.harvestPhoto.key]) {
+      expectFile(await f.owner.get(`/api/media/${key}`), key);
+    }
+    for (const key of [f.seedPhoto.key, f.harvestPhoto.key]) {
+      expectNotFound(await f.other.get(`/api/media/${key}`));
+    }
   });
 
   it('returns 404 to another account for each kind', async () => {

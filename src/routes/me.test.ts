@@ -1121,6 +1121,16 @@ describe('/api/me/export', () => {
     expect(processExportJobMock).toHaveBeenCalledWith(res.body.data.jobId);
   });
 
+  it('a free account can request an export', async () => {
+    await pool.query("UPDATE accounts SET subscription_tier = 'free' WHERE id = $1", [accountId]);
+    const { rows } = await pool.query('SELECT subscription_tier FROM accounts WHERE id = $1', [accountId]);
+    expect(rows[0].subscription_tier).toBe('free');
+
+    const res = await agent.post('/api/me/export');
+    expect(res.status).toBe(202);
+    expect(processExportJobMock).toHaveBeenCalledWith(res.body.data.jobId);
+  });
+
   it('POST returns 409 while a job is pending', async () => {
     await insertJob('pending');
     const res = await agent.post('/api/me/export');
