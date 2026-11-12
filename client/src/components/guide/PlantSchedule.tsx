@@ -20,6 +20,7 @@ interface Props {
   onNext: (() => void) | null;
   setOverrides: (row: GuideRow, partial: Partial<GuideOverrides>) => Promise<void>;
   setDone: (row: GuideRow, done: boolean) => Promise<void>;
+  onFrostSaved: () => void;
 }
 
 export default function PlantSchedule(props: Props) {
@@ -121,7 +122,7 @@ function DesktopModal(props: Props) {
 }
 
 function ScheduleBody({
-  row, garden, readOnly, isAccount, setOverrides, setDone, showTitle,
+  row, garden, readOnly, isAccount, setOverrides, setDone, onFrostSaved, showTitle,
 }: Props & { showTitle?: boolean }) {
   const [doneError, setDoneError] = useState<string | null>(null);
   const transplants = row.weeksToTransplant != null;
@@ -159,7 +160,7 @@ function ScheduleBody({
         </div>
       </div>
 
-      {garden && <ZoneStrip garden={garden} isAccount={isAccount} />}
+      {garden && <ZoneStrip garden={garden} isAccount={isAccount} onFrostSaved={onFrostSaved} />}
 
       {!readOnly && (
         <div>

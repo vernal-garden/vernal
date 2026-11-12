@@ -30,6 +30,7 @@ export interface GuideGarden {
     lastSpringFrost: string | null;
     firstFallFrost: string | null;
     frostSource: 'account_frost' | 'zone_estimate' | null;
+    frostBasis: 'noaa' | 'rough' | null;
     frostFree: boolean;
   };
 }

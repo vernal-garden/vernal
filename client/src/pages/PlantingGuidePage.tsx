@@ -6,6 +6,7 @@ import { usePlantingGuide } from '../hooks/usePlantingGuide';
 import { parseDay, todayPacific } from '../lib/guideDates';
 import { filterRows, hasWindows, rowKey, seedParam, type GuideFilterState, type GuideView } from '../lib/guideModel';
 import { useMicroFeedback } from '../lib/microFeedback';
+import { FROST_COPY } from '../lib/frostLabels';
 import type { GuideOverrides, GuideRow } from '../types/plantingGuide';
 import { CloseIcon } from '../components/shell/icons';
 import ZoneStrip from '../components/guide/ZoneStrip';
@@ -42,6 +43,7 @@ function storeView(view: GuideView): void {
 
 const OPEN_PARAM_RE = /^(seed|cambium):(\d+)$/;
 const LOG_PROMPT_MS = 10_000;
+const FROST_SAVED_MS = 3_000;
 
 function findDeepLinkRow(rows: GuideRow[], param: string): GuideRow | undefined {
   const m = OPEN_PARAM_RE.exec(param);
@@ -50,6 +52,28 @@ function findDeepLinkRow(rows: GuideRow[], param: string): GuideRow | undefined 
     ? rows.find((r) => r.seedId === m[2])
     : rows.find((r) => r.seedId === null && r.cambiumSeedId === m[2]);
 }
+
+// Fixed toast above the bottom shell.
+const toastStyle: CSSProperties = {
+  position: 'fixed',
+  left: '50%',
+  transform: 'translateX(-50%)',
+  bottom: 'calc(var(--shell-bottom, 0px) + 16px + var(--deletion-banner-h, 0px))',
+  zIndex: 1060,
+  width: 'max-content',
+  maxWidth: 'calc(100vw - 32px)',
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 'var(--sp-2)',
+  padding: 'var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4)',
+  background: 'var(--c-surface)',
+  border: '1px solid var(--c-border)',
+  borderRadius: 'var(--r-lg)',
+  boxShadow: 'var(--shadow-lg)',
+  fontSize: 14,
+  color: 'var(--c-text)',
+};
 
 const noticeStyle: CSSProperties = {
   margin: 0,
@@ -83,6 +107,21 @@ export default function PlantingGuidePage() {
     const timer = window.setTimeout(() => setLogPromptRow(null), LOG_PROMPT_MS);
     return () => window.clearTimeout(timer);
   }, [logPromptRow]);
+
+  // The page strip's frost-date editor, also opened from the frost banner.
+  const [frostEditorOpen, setFrostEditorOpen] = useState(false);
+  // Bumped on each save so a second save restarts the toast timer.
+  const [frostSavedToast, setFrostSavedToast] = useState(0);
+  useEffect(() => {
+    if (!frostSavedToast) return;
+    const timer = window.setTimeout(() => setFrostSavedToast(0), FROST_SAVED_MS);
+    return () => window.clearTimeout(timer);
+  }, [frostSavedToast]);
+  const onFrostSaved = useCallback(() => {
+    setFrostEditorOpen(false);
+    void reload();
+    setFrostSavedToast((n) => n + 1);
+  }, [reload]);
 
   const readOnly = data?.readOnly ?? true;
   const setDoneAndPrompt = useCallback(
@@ -192,7 +231,15 @@ export default function PlantingGuidePage() {
             Planting Guide
           </h1>
         )}
-        {gardenInView && <ZoneStrip garden={gardenInView} isAccount={isAccount} />}
+        {gardenInView && (
+          <ZoneStrip
+            garden={gardenInView}
+            isAccount={isAccount}
+            editorOpen={frostEditorOpen}
+            onEditorOpenChange={setFrostEditorOpen}
+            onFrostSaved={onFrostSaved}
+          />
+        )}
 
         <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 'var(--sp-3)' }}>
           <SeasonSelector currentSeason={data.currentSeason} season={data.season} onChange={changeSeason} />
@@ -200,7 +247,16 @@ export default function PlantingGuidePage() {
           <GuideFilters filters={filters} onChange={setFilters} gardens={data.gardens} isMobile={isMobile} />
         </div>
 
-        {gardenInView && <FrostBanner key={`${data.season}-${gardenInView.id}`} garden={gardenInView} season={data.season} today={today} />}
+        {gardenInView && (
+          <FrostBanner
+            key={`${data.season}-${gardenInView.id}`}
+            garden={gardenInView}
+            season={data.season}
+            today={today}
+            isAccount={isAccount}
+            onSetDate={() => setFrostEditorOpen(true)}
+          />
+        )}
         <Legend />
 
         {data.readOnly && <p role="status" style={noticeStyle}>Past seasons are read-only.</p>}
@@ -246,33 +302,12 @@ export default function PlantingGuidePage() {
           onNext={openIndex >= 0 && openIndex < filteredRows.length - 1 ? () => setOpenRowKey(rowKey(filteredRows[openIndex + 1])) : null}
           setOverrides={setOverridesAndPrompt}
           setDone={setDoneAndPrompt}
+          onFrostSaved={onFrostSaved}
         />
       )}
 
       {logPromptRow && (
-        <div
-          role="status"
-          style={{
-            position: 'fixed',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            bottom: 'calc(var(--shell-bottom, 0px) + 16px + var(--deletion-banner-h, 0px))',
-            zIndex: 1060,
-            width: 'max-content',
-            maxWidth: 'calc(100vw - 32px)',
-            boxSizing: 'border-box',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--sp-2)',
-            padding: 'var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4)',
-            background: 'var(--c-surface)',
-            border: '1px solid var(--c-border)',
-            borderRadius: 'var(--r-lg)',
-            boxShadow: 'var(--shadow-lg)',
-            fontSize: 14,
-            color: 'var(--c-text)',
-          }}
-        >
+        <div role="status" style={toastStyle}>
           <span>Marked done. Log your harvest?</span>
           <Link
             to={`/harvest?log=new&gardenId=${logPromptRow.gardenId}&seed=${seedParam(logPromptRow)}`}
@@ -283,6 +318,12 @@ export default function PlantingGuidePage() {
           <button type="button" aria-label="Dismiss" onClick={() => setLogPromptRow(null)} style={iconButtonStyle}>
             <CloseIcon width={18} height={18} />
           </button>
+        </div>
+      )}
+
+      {frostSavedToast > 0 && (
+        <div role="status" style={{ ...toastStyle, padding: 'var(--sp-3) var(--sp-4)' }}>
+          <span>{FROST_COPY.saved}</span>
         </div>
       )}
     </div>

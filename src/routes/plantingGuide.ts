@@ -194,7 +194,10 @@ router.get('/', async (req: Request, res: Response) => {
       if (rows[0]?.last) accountFrost = { last: rows[0].last, first: rows[0].first };
     }
 
-    const frostByGarden = new Map<string, FrostContext & { firstFallFrost: string | null }>();
+    const frostByGarden = new Map<
+      string,
+      FrostContext & { firstFallFrost: string | null; frostBasis: 'noaa' | 'rough' | null }
+    >();
     for (const g of gardens) {
       frostByGarden.set(g.id, resolveFrostContext(accountFrost, g.zone, season));
     }
@@ -276,6 +279,7 @@ router.get('/', async (req: Request, res: Response) => {
             firstFallFrost: frost.firstFallFrost,
             frostSource: frost.frostSource,
             frostFree: frost.frostFree,
+            frostBasis: frost.frostBasis,
           },
         };
       }),
