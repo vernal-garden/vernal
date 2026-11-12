@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import bcrypt from 'bcrypt';
 import request from 'supertest';
 import { Pool } from 'pg';
@@ -28,6 +28,8 @@ const sendMailMock = vi.mocked(mailer.sendMail);
 // The password-removed notices sent to an address.
 const removedNotices = (to: string) =>
   sendMailMock.mock.calls.filter(([o]) => o.to === to && o.subject === 'Your Vernal password was removed');
+const OWNER = 'owner-alerts@example.test';
+const ownerAlerts = () => sendMailMock.mock.calls.filter(([o]) => o.to === OWNER);
 
 // Stripe is never called: the displacement refund helper is a stand-in.
 vi.mock('../billing', async (importOriginal) => ({
@@ -44,6 +46,20 @@ const pool = new Pool({ connectionString: url });
 
 async function resetDb() {
   await pool.query('TRUNCATE accounts, guest_sessions, password_reset_tokens RESTART IDENTITY CASCADE');
+  await pool.query('TRUNCATE owner_events RESTART IDENTITY');
+}
+
+async function ownerEventKinds(): Promise<string[]> {
+  return (await pool.query<{ kind: string }>('SELECT kind FROM owner_events ORDER BY id')).rows.map((r) => r.kind);
+}
+
+// Neither the address nor the account id reaches an owner alert or an owner_events row.
+async function expectNothingPersonal(address: string, accountId: number) {
+  const rows = JSON.stringify((await pool.query('SELECT * FROM owner_events')).rows);
+  for (const text of [JSON.stringify(ownerAlerts()), rows]) {
+    expect(text.toLowerCase()).not.toContain(address.toLowerCase());
+    expect(text).not.toContain(String(accountId));
+  }
 }
 
 function googleUser(id: string, email: string, verified: boolean | undefined = true, hd?: string): OAuthUser {
@@ -75,6 +91,10 @@ async function passwordAccount(email: string, verified: boolean): Promise<number
 beforeEach(async () => {
   await resetDb();
   sendMailMock.mockReset().mockResolvedValue(undefined);
+  // No owner alert recipient outside the owner-alert tests, so the sendMail
+  // counts below can't see a background alert.
+  process.env.ALERT_EMAIL_TO = '';
+  process.env.ALERT_INSTANT_SIGNUPS = '';
 });
 afterAll(async () => {
   await pool.end();
@@ -207,6 +227,94 @@ describe('resolveOAuthAccount', () => {
     const first = await resolveOAuthAccount(googleUser('g-5', 'repeat@example.com'));
     const second = await resolveOAuthAccount(googleUser('g-5', 'repeat@example.com'));
     expect(second).toEqual({ accountId: first.accountId, isNew: false });
+  });
+});
+
+describe('resolveOAuthAccount — owner events and alerts', () => {
+  beforeEach(async () => {
+    process.env.ALERT_EMAIL_TO = OWNER;
+    // A distinctive id, so a leak can't hide behind the account count.
+    await pool.query("SELECT setval(pg_get_serial_sequence('accounts', 'id'), 987650)");
+  });
+  afterEach(() => {
+    process.env.ALERT_EMAIL_TO = '';
+  });
+
+  it('a first Google sign-in records account_created and sends one "Google" alert after the commit', async () => {
+    await passwordAccount('someone-else@example.com', true);
+    let rowsAtSend = -1;
+    sendMailMock.mockImplementationOnce(async () => {
+      // A separate connection only sees committed data.
+      rowsAtSend = (await pool.query('SELECT 1 FROM owner_events')).rows.length;
+    });
+    const logged = [vi.spyOn(logger, 'info'), vi.spyOn(logger, 'warn'), vi.spyOn(logger, 'error')];
+    try {
+      const result = await resolveOAuthAccount(googleUser('g-50', 'First.Timer@gmail.com'));
+      expect(result.isNew).toBe(true);
+
+      expect(await ownerEventKinds()).toEqual(['account_created']);
+      // Sent in the background.
+      await vi.waitFor(() => expect(rowsAtSend).toBe(1));
+      expect(sendMailMock).toHaveBeenCalledTimes(1);
+      expect(ownerAlerts()).toHaveLength(1);
+      const [mail] = ownerAlerts()[0];
+      expect(mail.subject).toBe('[Vernal app] New account');
+      expect(mail.text.split('\n\n').slice(0, 2)).toEqual(['Someone made a Vernal account (Google).', 'Accounts: 2 total.']);
+      expect(mail.text).toContain('Open users: ');
+      expect(mail.text).toMatch(/\/admin\/users$/);
+
+      await expectNothingPersonal('first.timer@gmail.com', result.accountId);
+      // The alert path logs nothing.
+      for (const spy of logged) expect(spy).not.toHaveBeenCalled();
+    } finally {
+      for (const spy of logged) spy.mockRestore();
+    }
+  });
+
+  it('with ALERT_INSTANT_SIGNUPS=false records the row and sends no alert', async () => {
+    process.env.ALERT_INSTANT_SIGNUPS = 'false';
+    const result = await resolveOAuthAccount(googleUser('g-51', 'quiet@gmail.com'));
+    expect(result.isNew).toBe(true);
+    expect(await ownerEventKinds()).toEqual(['account_created']);
+    // The setting is read before anything is queued; give a background send time to show.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(sendMailMock).not.toHaveBeenCalled();
+  });
+
+  it('a sign-in to an existing account records nothing and sends no alert', async () => {
+    const first = await resolveOAuthAccount(googleUser('g-52', 'returning@gmail.com'));
+    // The new account's own alert, before counting from here.
+    await vi.waitFor(() => expect(ownerAlerts()).toHaveLength(1));
+    await pool.query('TRUNCATE owner_events RESTART IDENTITY');
+    sendMailMock.mockClear();
+
+    // The known identity, then a second Google identity linking by address.
+    expect(await resolveOAuthAccount(googleUser('g-52', 'returning@gmail.com'))).toEqual({
+      accountId: first.accountId,
+      isNew: false,
+    });
+    expect((await resolveOAuthAccount(googleUser('g-53', 'returning@gmail.com'))).isNew).toBe(false);
+    // A verified password account claimed in place.
+    await passwordAccount('claimed@gmail.com', true);
+    expect((await resolveOAuthAccount(googleUser('g-54', 'claimed@gmail.com'))).isNew).toBe(false);
+
+    expect(await ownerEventKinds()).toEqual([]);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(ownerAlerts()).toHaveLength(0);
+  });
+
+  it('a failed alert does not fail the sign-in and logs only the kind and error code', async () => {
+    sendMailMock.mockRejectedValueOnce(Object.assign(new Error('SMTP down for unlucky@gmail.com'), { code: 'ECONNECTION' }));
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await resolveOAuthAccount(googleUser('g-55', 'unlucky@gmail.com'));
+      expect(result.isNew).toBe(true);
+      await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+      expect(warn.mock.calls).toEqual([['Owner alert failed', { kind: 'account_created', errCode: 'ECONNECTION' }]]);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await ownerEventKinds()).toEqual(['account_created']);
   });
 });
 
@@ -723,6 +831,44 @@ describe('resolveOAuthAccount — an unverified account asks first', () => {
       errorSpy.mockRestore();
     }
     expect(removedNotices(email)).toHaveLength(1);
+  });
+
+  it("'not_mine' records a new account and a takeover, and sends no owner alert", async () => {
+    // Distinctive ids, so a leak can't hide in a timestamp.
+    await pool.query("SELECT setval(pg_get_serial_sequence('accounts', 'id'), 987650)");
+    const oldId = await squatter();
+    const token = await holdSignIn();
+    expect(await ownerEventKinds()).toEqual([]);
+    process.env.ALERT_EMAIL_TO = OWNER;
+    const failed = vi.spyOn(logger, 'warn');
+    try {
+      const result = await completeOAuthTakeover(token, browser, 'not_mine');
+      expect(result.isNew).toBe(true);
+      expect(await ownerEventKinds()).toEqual(['account_created', 'takeover']);
+      // Give a background send time to show.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(ownerAlerts()).toHaveLength(0);
+      expect(failed.mock.calls.filter(([msg]) => msg === 'Owner alert failed')).toHaveLength(0);
+      await expectNothingPersonal(email, oldId);
+      await expectNothingPersonal(email, result.accountId);
+    } finally {
+      failed.mockRestore();
+      process.env.ALERT_EMAIL_TO = '';
+    }
+  });
+
+  it("'mine' records nothing and sends no owner alert", async () => {
+    await squatter();
+    const token = await holdSignIn();
+    process.env.ALERT_EMAIL_TO = OWNER;
+    try {
+      await completeOAuthTakeover(token, browser, 'mine');
+      expect(await ownerEventKinds()).toEqual([]);
+      await new Promise((r) => setTimeout(r, 100));
+      expect(ownerAlerts()).toHaveLength(0);
+    } finally {
+      process.env.ALERT_EMAIL_TO = '';
+    }
   });
 
   it('billing settled but a racing request displaced the account: a warning, not an operator alert', async () => {

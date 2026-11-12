@@ -64,6 +64,9 @@ export default defineConfig({
         // Unset, this falls through to root .env and writes to the real R2 buckets.
         MEDIA_STORAGE: 'local',
         MEDIA_DIR: path.join(os.tmpdir(), 'vernal-e2e-media'),
+        // Empty so .env can't fill them in: e2e runs must never mail the owner.
+        ALERT_EMAIL_TO: '',
+        FEEDBACK_NOTIFY_EMAIL: '',
       },
     },
     {

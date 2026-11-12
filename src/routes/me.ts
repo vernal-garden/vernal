@@ -20,6 +20,7 @@ import { processExportJob, exportKey } from '../lib/exportWorker';
 import { storage, isStorageConfigError } from '../lib/storage';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { queueSessionGardens, drainSoon } from '../lib/r2Cleanup';
+import { recordOwnerEvent } from '../lib/ownerAlerts';
 
 const router = Router();
 router.use(requireAuth);
@@ -619,7 +620,7 @@ router.get('/email/confirm', async (req, res) => {
 
 // DELETE /api/me
 // Schedules account deletion by setting deletion_scheduled_at.
-// COALESCE ensures re-requesting does NOT reset the 30-day clock.
+// Only an unscheduled account gets a date, so re-requesting does NOT reset the 30-day clock.
 // The current session row is deleted and every other session is revoked; the
 // data purge runs via the nightly job 30 days after deletion_scheduled_at.
 router.delete('/', writeLimiter, async (req, res) => {
@@ -653,13 +654,18 @@ router.delete('/', writeLimiter, async (req, res) => {
     let queuedIds: number[] = [];
     try {
       await client.query('BEGIN');
-      await client.query(
+      // Only the call that sets the date counts; a repeat keeps the clock and just touches updated_at.
+      const scheduled = await client.query(
         `UPDATE accounts
-         SET deletion_scheduled_at = COALESCE(deletion_scheduled_at, NOW()),
-             updated_at = NOW()
-         WHERE id = $1`,
+         SET deletion_scheduled_at = NOW(), updated_at = NOW()
+         WHERE id = $1 AND deletion_scheduled_at IS NULL`,
         [accountId],
       );
+      if (scheduled.rowCount === 1) {
+        await recordOwnerEvent('deletion_scheduled', client);
+      } else {
+        await client.query('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [accountId]);
+      }
       // Every other device is signed out. Their rows are expired, not deleted,
       // so their unmerged guest gardens survive until the purge.
       await revokeAccountSessions(client, accountId, sessionToken);
@@ -708,10 +714,25 @@ router.post('/cancel-deletion', writeLimiter, async (req, res) => {
       }
     }
 
-    await db.query(
-      'UPDATE accounts SET deletion_scheduled_at = NULL, updated_at = NOW() WHERE id = $1',
-      [accountId],
-    );
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const cleared = await client.query(
+        'UPDATE accounts SET deletion_scheduled_at = NULL, updated_at = NOW() WHERE id = $1 AND deletion_scheduled_at IS NOT NULL',
+        [accountId],
+      );
+      if (cleared.rowCount === 1) {
+        await recordOwnerEvent('deletion_cancelled', client);
+      } else {
+        await client.query('UPDATE accounts SET updated_at = NOW() WHERE id = $1', [accountId]);
+      }
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
     res.json({ data: { deletionScheduledAt: null } });
   } catch (err) {
     logger.error('POST /me/cancel-deletion failed', err);
@@ -753,10 +774,29 @@ router.post('/beta-terms', writeLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
-    await db.query(
-      'UPDATE accounts SET beta_terms_version = $2, beta_terms_accepted_at = NOW(), updated_at = NOW() WHERE id = $1 AND beta_terms_version IS DISTINCT FROM $2',
-      [accountId, BETA_TERMS_VERSION],
-    );
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      // Lock the row so the "was it unset" read matches the update.
+      const { rows: prev } = await client.query<{ beta_terms_accepted_at: Date | null }>(
+        'SELECT beta_terms_accepted_at FROM accounts WHERE id = $1 FOR UPDATE',
+        [accountId],
+      );
+      const updated = await client.query(
+        'UPDATE accounts SET beta_terms_version = $2, beta_terms_accepted_at = NOW(), updated_at = NOW() WHERE id = $1 AND beta_terms_version IS DISTINCT FROM $2',
+        [accountId, BETA_TERMS_VERSION],
+      );
+      // A re-acceptance after a terms change doesn't count; only the first set does.
+      if (updated.rowCount === 1 && prev[0]?.beta_terms_accepted_at == null) {
+        await recordOwnerEvent('beta_terms_accepted', client);
+      }
+      await client.query('COMMIT');
+    } catch (txErr) {
+      await client.query('ROLLBACK');
+      throw txErr;
+    } finally {
+      client.release();
+    }
     res.status(204).end();
   } catch (err) {
     logger.error('POST /me/beta-terms failed', err);

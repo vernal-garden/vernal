@@ -1567,3 +1567,86 @@ describe('PATCH /api/me — zone length', () => {
     expect(res.body.error).toMatch(/zone/);
   });
 });
+
+// ── Phase 64: owner events (digest only, no alert) ───────────────────────────
+
+describe('owner events from /api/me', () => {
+  const kinds = async () => {
+    const { rows } = await pool.query<{ kind: string }>('SELECT kind FROM owner_events ORDER BY id');
+    return rows.map((r) => r.kind);
+  };
+
+  beforeEach(async () => {
+    await pool.query('TRUNCATE owner_events');
+    sendMailMock.mockClear();
+  });
+
+  it('records deletion_scheduled once, however many times DELETE is called', async () => {
+    const id = await createUser('oe-delete@example.com');
+    const first = await loginAgent('oe-delete@example.com');
+    expect((await first.delete('/api/me')).status).toBe(204);
+    const touched = async () =>
+      (await pool.query<{ t: Date }>('SELECT updated_at AS t FROM accounts WHERE id = $1', [id])).rows[0].t;
+    const before = await touched();
+    const second = await loginAgent('oe-delete@example.com');
+    expect((await second.delete('/api/me')).status).toBe(204);
+    expect(await kinds()).toEqual(['deletion_scheduled']);
+    // The repeat still bumps updated_at.
+    expect((await touched()).getTime()).toBeGreaterThan(before.getTime());
+  });
+
+  it('records deletion_cancelled once when a scheduled deletion is cleared', async () => {
+    const id = await createUser('oe-cancel@example.com');
+    await pool.query('UPDATE accounts SET deletion_scheduled_at = NOW() WHERE id = $1', [id]);
+    const agent = await loginAgent('oe-cancel@example.com');
+    expect((await agent.post('/api/me/cancel-deletion')).status).toBe(200);
+    expect((await agent.post('/api/me/cancel-deletion')).status).toBe(200);
+    expect(await kinds()).toEqual(['deletion_cancelled']);
+  });
+
+  it('records nothing when cancelling with nothing scheduled, and still answers 200', async () => {
+    await createUser('oe-cancel-none@example.com');
+    const agent = await loginAgent('oe-cancel-none@example.com');
+    const res = await agent.post('/api/me/cancel-deletion');
+    expect(res.status).toBe(200);
+    expect(res.body.data.deletionScheduledAt).toBeNull();
+    expect(await kinds()).toEqual([]);
+  });
+
+  it('records beta_terms_accepted once, and not for a re-acceptance after a version change', async () => {
+    const id = await createUser('oe-beta@example.com');
+    const agent = await loginAgent('oe-beta@example.com');
+    expect((await agent.post('/api/me/beta-terms').send({ accept: true })).status).toBe(204);
+    expect((await agent.post('/api/me/beta-terms').send({ accept: true })).status).toBe(204);
+    expect(await kinds()).toEqual(['beta_terms_accepted']);
+
+    await pool.query("UPDATE accounts SET beta_terms_version = 'old' WHERE id = $1", [id]);
+    expect((await agent.post('/api/me/beta-terms').send({ accept: true })).status).toBe(204);
+    expect(await kinds()).toEqual(['beta_terms_accepted']);
+  });
+
+  it('keeps personal data out of owner_events and sends no owner alert', async () => {
+    const email = 'oe-privacy@example.com';
+    await createUser(email);
+    process.env.ALERT_EMAIL_TO = 'owner@example.com';
+    try {
+      const agent = await loginAgent(email);
+      sendMailMock.mockClear();
+      expect((await agent.post('/api/me/beta-terms').send({ accept: true })).status).toBe(204);
+      expect((await agent.delete('/api/me')).status).toBe(204);
+      expect(sendMailMock).not.toHaveBeenCalled();
+      const again = await loginAgent(email);
+      sendMailMock.mockClear();
+      expect((await again.post('/api/me/cancel-deletion')).status).toBe(200);
+    } finally {
+      process.env.ALERT_EMAIL_TO = '';
+    }
+
+    const { rows } = await pool.query('SELECT * FROM owner_events');
+    expect(rows).toHaveLength(3);
+    for (const row of rows) expect(Object.keys(row).sort()).toEqual(['id', 'kind', 'occurred_at']);
+    expect(JSON.stringify(rows)).not.toContain(email);
+    expect(sendMailMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(sendMailMock.mock.calls)).not.toContain(email);
+  });
+});

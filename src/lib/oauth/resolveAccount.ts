@@ -16,6 +16,7 @@ import {
   settleDisplacedBilling,
   type SettledBilling,
 } from '../displacement';
+import { alertNewAccount, recordOwnerEvent } from '../ownerAlerts';
 import type { OAuthUser } from './providers/google';
 
 export class OAuthUnverifiedEmailError extends Error {
@@ -136,6 +137,8 @@ interface ResolveOptions {
 type Resolution =
   // passwordRemoved: an existing account's password was removed by the claim;
   // the caller emails `email` once the transaction has committed.
+  // newAccountAlert: a plain new account (not a takeover); the caller sends the
+  // owner alert after the commit.
   | {
       kind: 'resolved';
       accountId: number;
@@ -143,6 +146,7 @@ type Resolution =
       displacedId: number | null;
       passwordRemoved: boolean;
       email: string | null;
+      newAccountAlert: boolean;
     }
   | { kind: 'pending'; token: string; browserToken: string };
 
@@ -189,7 +193,15 @@ async function resolveWithin(client: PoolClient, login: ProviderLogin, opts: Res
        WHERE provider = $3 AND provider_user_id = $4`,
       [encAccess, encRefresh, provider, providerUserId],
     );
-    return { kind: 'resolved', accountId, isNew: false, displacedId: null, passwordRemoved: false, email };
+    return {
+      kind: 'resolved',
+      accountId,
+      isNew: false,
+      displacedId: null,
+      passwordRemoved: false,
+      email,
+      newAccountAlert: false,
+    };
   }
 
   // accounts.email is NOT NULL, so a profile without a (verified) email cannot sign in.
@@ -284,6 +296,8 @@ async function resolveWithin(client: PoolClient, login: ProviderLogin, opts: Res
       [email, displayName, LOCATION_NOT_SET, TERMS_VERSION, decision.participant, joinedVia(decision)],
     );
     accountId = Number(newAccount.rows[0].id);
+    await recordOwnerEvent('account_created', client);
+    if (displacedId !== null) await recordOwnerEvent('takeover', client);
   }
 
   await client.query(
@@ -299,7 +313,15 @@ async function resolveWithin(client: PoolClient, login: ProviderLogin, opts: Res
     await migrateGuestData(client, opts.guestSessionId, accountId);
   }
 
-  return { kind: 'resolved', accountId, isNew, displacedId, passwordRemoved, email };
+  return {
+    kind: 'resolved',
+    accountId,
+    isNew,
+    displacedId,
+    passwordRemoved,
+    email,
+    newAccountAlert: isNew && displacedId === null,
+  };
 }
 
 async function inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -332,6 +354,8 @@ export async function resolveOAuthAccount(
   if (result.kind === 'pending') throw new OAuthTakeoverChoiceRequired(result.token, result.browserToken);
   // After the commit; the notice never throws, so mail can't fail the sign-in.
   if (result.passwordRemoved && result.email) await sendPasswordRemovedNotice(result.email);
+  // In the background, so a slow mail server can't hold the sign-in. Never throws.
+  if (result.newAccountAlert) void alertNewAccount('Google');
   return { accountId: result.accountId, isNew: result.isNew };
 }
 
@@ -452,6 +476,7 @@ export async function completeOAuthTakeover(
     // Committed: sent before the billing follow-up, so a later throw can't skip
     // it. The notice never throws, so mail can't fail the sign-in.
     if (resolved.passwordRemoved && resolved.email) await sendPasswordRemovedNotice(resolved.email);
+    if (resolved.newAccountAlert) void alertNewAccount('Google');
     result = { accountId: resolved.accountId, isNew: resolved.isNew };
   } finally {
     if (settled && displacedId !== settled.accountId) await billingSettledNotDisplaced(settled.accountId);

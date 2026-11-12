@@ -293,6 +293,14 @@ export async function purgeStripeEvents(): Promise<{ affected: number }> {
   return { affected: result.rowCount ?? 0 };
 }
 
+// owner_events is counts-only (kind and time, no personal data); kept 90 days.
+export async function purgeOldOwnerEvents(): Promise<{ affected: number }> {
+  const result = await db.query(
+    `DELETE FROM owner_events WHERE occurred_at < NOW() - INTERVAL '90 days'`,
+  );
+  return { affected: result.rowCount ?? 0 };
+}
+
 // Usage events are behavioural data; keep 180 days. Deleted in batches so one
 // night's backlog doesn't hold a long lock.
 export async function purgeOldUsageEvents(): Promise<{ affected: number }> {
@@ -561,6 +569,7 @@ async function runNightlyTasks(): Promise<void> {
     ['purgeExpiredGuests', purgeExpiredGuests],
     ['purgeReadNotifications', purgeReadNotifications],
     ['purgeStripeEvents', purgeStripeEvents],
+    ['purgeOldOwnerEvents', purgeOldOwnerEvents],
     ['purgeOldUsageEvents', purgeOldUsageEvents],
     ['purgeOldGuestFeedback', purgeOldGuestFeedback],
     ['purgeBetaRecords', () => purgeBetaRecords()],

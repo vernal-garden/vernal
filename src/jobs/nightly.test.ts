@@ -29,6 +29,7 @@ import {
   purgeExpiredGuests,
   purgeReadNotifications,
   purgeStripeEvents,
+  purgeOldOwnerEvents,
   purgeOldUsageEvents,
   purgeOldGuestFeedback,
   purgeBetaRecords,
@@ -1598,6 +1599,24 @@ describe('purgeOldUsageEvents', () => {
     expect(affected).toBe(1);
     const { rows } = await pool.query<{ event_key: string }>('SELECT event_key FROM usage_events');
     expect(rows.map((r) => r.event_key)).toEqual(['evt_new']);
+  });
+});
+
+describe('purgeOldOwnerEvents', () => {
+  it('deletes owner events older than 90 days and keeps newer ones', async () => {
+    await pool.query('TRUNCATE owner_events');
+    await pool.query(
+      `INSERT INTO owner_events (kind, occurred_at)
+       VALUES ('account_created', NOW() - INTERVAL '91 days'),
+              ('refund', NOW() - INTERVAL '89 days'),
+              ('takeover', NOW())`,
+    );
+
+    const { affected } = await purgeOldOwnerEvents();
+
+    expect(affected).toBe(1);
+    const { rows } = await pool.query<{ kind: string }>('SELECT kind FROM owner_events ORDER BY id');
+    expect(rows.map((r) => r.kind)).toEqual(['refund', 'takeover']);
   });
 });
 
