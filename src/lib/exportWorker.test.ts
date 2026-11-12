@@ -386,6 +386,25 @@ describe('export contents', () => {
   });
 });
 
+describe('free account: export carries everything made with paid tools', () => {
+  it('exports paid-tool data and photos for a free account', async () => {
+    await pool.query("UPDATE accounts SET subscription_tier = 'free' WHERE id = $1", [accountId]);
+    const tier = await pool.query('SELECT subscription_tier FROM accounts WHERE id = $1', [accountId]);
+    expect(tier.rows[0].subscription_tier).toBe('free');
+
+    await runExport();
+
+    expect(json('soil_readings.json')).toHaveLength(1);
+    expect(json('amendment_logs.json')).toHaveLength(1);
+    expect(json('weather_connections.json')).toHaveLength(1);
+    expect((json('weather_readings.json') as Row[]).length).toBeGreaterThanOrEqual(1);
+    expect((json('seed_photos.json') as Row[])[0].file).toBe(seedPhotoPath(mine));
+    expect((json('harvest_entries.json') as Row[])[0].photos).toEqual([{ file: harvestPhotoPath(mine) }]);
+    expect(entries.has(seedPhotoPath(mine))).toBe(true);
+    expect(entries.has(harvestPhotoPath(mine))).toBe(true);
+  });
+});
+
 describe('export contents: sign-ins, notifications, contributions, ratings, weather', () => {
   it('exports sign-in identities without tokens', async () => {
     await runExport();
