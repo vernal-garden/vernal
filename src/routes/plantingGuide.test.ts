@@ -170,6 +170,7 @@ describe('GET /api/planting-guide', () => {
           firstFallFrost: `${SEASON}-10-20`,
           frostSource: 'account_frost',
           frostFree: false,
+          frostBasis: null,
         },
       },
     ]);
@@ -242,15 +243,16 @@ describe('GET /api/planting-guide', () => {
     const res = await agentB.get('/api/planting-guide');
     expect(res.status).toBe(200);
     expect(res.body.gardens[0].frost).toEqual({
-      lastSpringFrost: `${SEASON}-04-11`,
+      lastSpringFrost: `${SEASON}-04-24`,
       firstFallFrost: `${SEASON}-10-24`,
       frostSource: 'zone_estimate',
       frostFree: false,
+      frostBasis: 'noaa',
     });
     expect(res.body.rows).toHaveLength(1);
     expect(res.body.rows[0].windows.directSow).toEqual({
-      start: `${SEASON}-02-28`,
-      end: `${SEASON}-03-28`,
+      start: `${SEASON}-03-13`,
+      end: `${SEASON}-04-10`,
       source: 'zone_estimate',
     });
   });

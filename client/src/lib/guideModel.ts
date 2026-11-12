@@ -3,6 +3,7 @@
 
 import type { GuideGarden, GuideRow, GuideWindow, WindowKind, WindowSource } from '../types/plantingGuide';
 import { monthEnd, monthStart } from './guideDates';
+import { windowSourceLabel } from './frostLabels';
 
 export type SowType = 'indoors' | 'direct';
 export type GuideView = 'calendar' | 'timeline' | 'list';
@@ -93,17 +94,7 @@ export function filterRows(
 }
 
 export function sourceLabel(source: WindowSource | null): string {
-  switch (source) {
-    case 'custom': return 'Your custom date';
-    case 'account_frost': return 'Based on your frost dates';
-    case 'zone_estimate': return 'Estimated from your zone';
-    default: return 'No data, add manually';
-  }
-}
-
-export function gardenSourceLabel(garden: GuideGarden): string {
-  if (garden.frost.frostFree) return 'Frost-free zone';
-  return sourceLabel(garden.frost.frostSource);
+  return windowSourceLabel(source);
 }
 
 // Span of the dashed "No dates yet" bar: the garden's frost-free season when

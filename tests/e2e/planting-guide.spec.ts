@@ -75,7 +75,7 @@ test.describe('signed in', () => {
     await section.getByRole('button', { name: 'Reset to recommended' }).click();
     await expect(section.getByText('Custom date set')).toHaveCount(0);
     await expect(section.getByText('Your custom date')).toHaveCount(0);
-    await expect(section.getByText('Based on your frost dates')).toBeVisible();
+    await expect(section.getByText('From your last frost date')).toBeVisible();
   });
 
   test('the previous season is read-only', async ({ page }) => {

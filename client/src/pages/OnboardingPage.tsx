@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate, useLocation, Link } from 'react-router-dom';
 import * as api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
+import { FROST_COPY } from '../lib/frostLabels';
 
 type Method = 'square_foot' | 'raised_bed' | 'container' | 'in_ground' | '';
 
@@ -46,6 +47,29 @@ export default function OnboardingPage() {
   const [error, setError] = useState('');
   const [isGuestLimit, setIsGuestLimit] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [lastFrost, setLastFrost] = useState('');
+  // The date GET /api/me pre-filled, so an unchanged value isn't sent back.
+  const prefilledFrost = useRef<string | null>(null);
+  // Set once the user edits the field, so a late fetch can't overwrite it.
+  const frostTouched = useRef(false);
+
+  useEffect(() => {
+    if (!isAccount) return;
+    let cancelled = false;
+    api.get<{ data: { lastSpringFrostDate: string | null } }>('/api/me')
+      .then(res => {
+        const date = res?.data.lastSpringFrostDate ?? null;
+        if (cancelled || !date) return;
+        prefilledFrost.current = date;
+        if (!frostTouched.current) setLastFrost(date);
+      })
+      .catch(() => {
+        // Optional pre-fill: on failure the field just starts empty.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAccount]);
 
   // Guard: already onboarded (skip when explicitly creating a new garden,
   // and skip when the guest-limit error is actively displayed)
@@ -82,9 +106,11 @@ export default function OnboardingPage() {
         growingMethod: method,
       });
       if (isAccount) {
+        const frostChanged = lastFrost !== '' && lastFrost !== prefilledFrost.current;
         await api.patch('/api/me', {
           zone: zone.trim(),
           zoneLocationLabel: locationLabel.trim(),
+          ...(frostChanged ? { lastSpringFrostDate: lastFrost } : {}),
         });
       }
       await refetch();
@@ -138,7 +164,7 @@ export default function OnboardingPage() {
               />
             </div>
 
-            <div className="mb-6">
+            <div className={isAccount ? 'mb-5' : 'mb-6'}>
               <label htmlFor="zone" className="block mb-1.5 text-sm font-medium text-gray-700">
                 Hardiness zone
               </label>
@@ -162,6 +188,25 @@ export default function OnboardingPage() {
                 </a>
               </p>
             </div>
+
+            {isAccount && (
+              <div className="mb-6">
+                <label htmlFor="last-frost" className="block mb-1.5 text-sm font-medium text-gray-700">
+                  {FROST_COPY.onboardingLabel}
+                </label>
+                <input
+                  id="last-frost"
+                  type="date"
+                  value={lastFrost}
+                  onChange={e => {
+                    frostTouched.current = true;
+                    setLastFrost(e.target.value);
+                  }}
+                  className="block w-full px-3 py-2 border border-gray-300 rounded-md text-[0.9375rem] text-[#1a1a1a] outline-none"
+                />
+                <p className="mt-1.5 text-sm text-gray-500">{FROST_COPY.onboardingHint}</p>
+              </div>
+            )}
 
             <button
               type="button"

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import type { GuideGarden } from '../../types/plantingGuide';
 import { daysBetween, formatAround } from '../../lib/guideDates';
+import { FROST_COPY, springBannerText } from '../../lib/frostLabels';
 import { CloseIcon } from '../shell/icons';
-import { iconButtonStyle } from './styles';
+import { iconButtonStyle, linkStyle } from './styles';
 
 const LEAD_DAYS = 42;
 
@@ -10,6 +11,8 @@ interface Props {
   garden: GuideGarden;
   season: number;
   today: string;
+  isAccount?: boolean;
+  onSetDate?: () => void;
 }
 
 function readDismissed(key: string): boolean {
@@ -28,15 +31,18 @@ function within(today: string, target: string | null): target is string {
 
 // Amber reminder in the six weeks before the garden's last spring frost or
 // first fall frost.
-export default function FrostBanner({ garden, season, today }: Props) {
+export default function FrostBanner({ garden, season, today, isAccount, onSetDate }: Props) {
   const { lastSpringFrost, firstFallFrost, frostSource } = garden.frost;
   const estimated = frostSource === 'zone_estimate';
+  const spring = within(today, lastSpringFrost) ? springBannerText(garden.frost) : null;
 
   let which: 'spring' | 'fall' | null = null;
   let message = '';
-  if (within(today, lastSpringFrost)) {
+  let link: string | null = null;
+  if (spring) {
     which = 'spring';
-    message = `Last spring frost for Zone ${garden.zone}: ${formatAround(lastSpringFrost, estimated)}. Indoor starts due soon.`;
+    message = spring.text;
+    link = spring.link;
   } else if (within(today, firstFallFrost)) {
     which = 'fall';
     message = `First fall frost for Zone ${garden.zone}: ${formatAround(firstFallFrost, estimated)}.`;
@@ -56,6 +62,8 @@ export default function FrostBanner({ garden, season, today }: Props) {
     setDismissedKeys((prev) => [...prev, key]);
   }
 
+  const showLink = link !== null && isAccount && onSetDate;
+
   return (
     <div
       role="status"
@@ -72,7 +80,32 @@ export default function FrostBanner({ garden, season, today }: Props) {
         fontSize: 14,
       }}
     >
-      <span style={{ flex: 1, padding: 'var(--sp-2) 0' }}>{message}</span>
+      <span style={{ flex: 1, padding: 'var(--sp-2) 0' }}>
+        {message}
+        {showLink && (
+          <>
+            {' '}
+            <button
+              type="button"
+              aria-label={FROST_COPY.setDateName}
+              onClick={onSetDate}
+              style={{
+                ...linkStyle,
+                verticalAlign: 'middle',
+                padding: 0,
+                border: 'none',
+                background: 'none',
+                color: 'inherit',
+                fontSize: 'inherit',
+                fontWeight: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              {link}
+            </button>
+          </>
+        )}
+      </span>
       <button type="button" aria-label="Dismiss frost reminder" onClick={dismiss} style={{ ...iconButtonStyle, color: 'var(--c-text)' }}>
         <CloseIcon />
       </button>
