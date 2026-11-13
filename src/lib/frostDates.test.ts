@@ -68,6 +68,7 @@ describe('resolveFrostContext', () => {
       frostSource: 'account_frost',
       frostFree: false,
       frostBasis: null,
+      stationName: null,
     });
   });
 
@@ -76,6 +77,7 @@ describe('resolveFrostContext', () => {
     expect(ctx.firstFallFrost).toBeNull();
     expect(ctx.frostSource).toBe('account_frost');
     expect(ctx.frostBasis).toBeNull();
+    expect(ctx.stationName).toBeNull();
   });
 
   it('falls back to the zone estimate without account dates', () => {
@@ -85,6 +87,7 @@ describe('resolveFrostContext', () => {
       frostSource: 'zone_estimate',
       frostFree: false,
       frostBasis: 'noaa',
+      stationName: null,
     });
   });
 
@@ -95,6 +98,7 @@ describe('resolveFrostContext', () => {
       frostSource: null,
       frostFree: true,
       frostBasis: null,
+      stationName: null,
     });
   });
 
@@ -105,6 +109,55 @@ describe('resolveFrostContext', () => {
       frostSource: null,
       frostFree: false,
       frostBasis: null,
+      stationName: null,
+    });
+  });
+
+  const spokane = { name: 'Spokane Intl Airport', p50: '04-26', freezePct: 100 };
+
+  it("uses the station's median spring date and the zone's fall date", () => {
+    expect(resolveFrostContext(null, '6b', 2027, spokane)).toEqual({
+      lastSpringFrost: '2027-04-26',
+      firstFallFrost: '2027-10-24',
+      frostSource: 'zone_estimate',
+      frostFree: false,
+      frostBasis: 'station',
+      stationName: 'Spokane Intl Airport',
+    });
+  });
+
+  it('reports frost-free, with no dates, for a station that freezes in under half of years', () => {
+    const borrego = { name: 'Borrego Desert Park', p50: '01-10', freezePct: 44.6 };
+    expect(resolveFrostContext(null, '9b', 2027, borrego)).toEqual({
+      lastSpringFrost: null,
+      firstFallFrost: null,
+      frostSource: null,
+      frostFree: true,
+      frostBasis: 'station',
+      stationName: 'Borrego Desert Park',
+    });
+  });
+
+  it('dates a zone 10 garden from its station, with no fall date', () => {
+    const station = { name: 'Some Station', p50: '01-20', freezePct: 60 };
+    expect(resolveFrostContext(null, '10a', 2027, station)).toEqual({
+      lastSpringFrost: '2027-01-20',
+      firstFallFrost: null,
+      frostSource: 'zone_estimate',
+      frostFree: false,
+      frostBasis: 'station',
+      stationName: 'Some Station',
+    });
+  });
+
+  it('ignores the station when the account has its own dates', () => {
+    expect(resolveFrostContext({ last: '2024-04-20', first: '2024-10-15' }, '6b', 2027, spokane)).toEqual({
+      lastSpringFrost: '2027-04-20',
+      firstFallFrost: '2027-10-15',
+      frostSource: 'account_frost',
+      frostFree: false,
+      frostBasis: null,
+      stationName: null,
     });
   });
 });

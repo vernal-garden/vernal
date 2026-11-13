@@ -7,7 +7,7 @@ import { MONTH_LONG, parseDay, shortDate } from './guideDates';
 
 type Frost = GuideGarden['frost'];
 
-export type FrostState = 'own' | 'noaa' | 'rough' | 'frostFree' | 'none';
+export type FrostState = 'own' | 'noaa' | 'rough' | 'station' | 'stationFrostFree' | 'frostFree' | 'none';
 
 // The leading integer of a zone string: '6b' -> 6, ' 10a' -> 10.
 export function zoneNumber(zone: string): number | null {
@@ -17,10 +17,12 @@ export function zoneNumber(zone: string): number | null {
 
 export function frostState(frost: Frost): FrostState {
   if (frost.frostSource === 'account_frost') return 'own';
+  if (frost.frostFree && frost.frostBasis === 'station') return 'stationFrostFree';
   if (frost.frostFree) return 'frostFree';
   if (frost.frostSource === 'zone_estimate') {
     if (frost.frostBasis === 'noaa') return 'noaa';
     if (frost.frostBasis === 'rough') return 'rough';
+    if (frost.frostBasis === 'station') return 'station';
   }
   return 'none';
 }
@@ -35,6 +37,10 @@ export function stripFrostLine(frost: Frost, zone: string): string | null {
       return d && n !== null ? `About ${shortDate(d)}, estimated from NOAA records for zone ${n}` : null;
     case 'rough':
       return d && n !== null ? `About ${shortDate(d)}, a rough estimate for zone ${n}` : null;
+    case 'station':
+      return d && frost.stationName ? `About ${shortDate(d)}, from the ${frost.stationName} weather record` : null;
+    case 'stationFrostFree':
+      return frost.stationName ? `Frost is rare at the ${frost.stationName} weather station.` : null;
     case 'frostFree':
       return n !== null ? `No last frost set. Zone ${n} is usually frost-free.` : null;
     case 'none':
@@ -46,8 +52,10 @@ export function framePrompt(frost: Frost): { text: string; link: string } | null
   switch (frostState(frost)) {
     case 'noaa':
     case 'rough':
+    case 'station':
       return { text: 'These windows use an estimated last frost.', link: 'Set your own date' };
     case 'frostFree':
+    case 'stationFrostFree':
       return { text: 'Get frost some years?', link: 'Set a last frost date' };
     default:
       return null;
@@ -72,6 +80,7 @@ export function springBannerText(frost: Frost): { text: string; link: string | n
       return { text: `Your last frost date is ${day}. Indoor starts due soon.`, link: null };
     case 'noaa':
     case 'rough':
+    case 'station':
       return { text: `Your estimated last frost is about ${day}. Indoor starts due soon.`, link: 'Set your own date' };
     default:
       return null;

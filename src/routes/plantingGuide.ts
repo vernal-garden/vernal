@@ -4,7 +4,11 @@ import { db } from '../lib/db';
 import { requireAuth, requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
-import { resolveFrostContext } from '../lib/frostDates';
+import { resolveFrostContext, type FrostBasis } from '../lib/frostDates';
+import { frostStationById, nearestFrostStation } from '../lib/frostStations';
+import { LOCATION_NOT_SET } from '../lib/constants';
+import { geocode, isGeocodeMiss } from '../lib/weather/geocode';
+import { logWeatherFailure } from '../lib/weather/upstream';
 import { invalidateMetrics } from '../lib/metricsCache';
 import {
   computeWindows,
@@ -27,6 +31,8 @@ interface GardenRow {
   name: string;
   zone: string;
   zone_location_label: string | null;
+  frost_station_id: string | null;
+  frost_station_label: string | null;
 }
 
 interface GuideRow {
@@ -147,6 +153,51 @@ async function rollback(client: PoolClient): Promise<void> {
   }
 }
 
+// ── Frost stations (Phase 65) ─────────────────────────────────────────────────
+
+// Station lookups each geocode a label, so one guide load does only a few; the
+// rest happen on later loads.
+const MAX_STATION_LOOKUPS = 3;
+
+function usableLabel(raw: string | null): string | null {
+  const label = raw?.trim();
+  return label && label !== LOCATION_NOT_SET ? label : null;
+}
+
+// Works out the station nearest a garden's label and stores it, updating `g` to
+// match. A geocode miss stores the label with no station, so it isn't retried;
+// any other geocode failure stores nothing, so a later load tries again, and
+// returns false: an outage hits every label alike, so the caller stops there.
+async function refreshFrostStation(g: GardenRow, label: string): Promise<boolean> {
+  let stationId: string | null;
+  try {
+    const { lat, lon } = await geocode(label);
+    stationId = nearestFrostStation(lat, lon)?.id ?? null;
+  } catch (err) {
+    if (!isGeocodeMiss(err)) {
+      logWeatherFailure('Frost station lookup failed', err);
+      return false;
+    }
+    stationId = null;
+  }
+  // Matching the raw label leaves alone a garden whose label was edited meanwhile.
+  // A failed write only costs this garden its station for now, not the guide.
+  try {
+    const { rowCount } = await db.query(
+      `UPDATE gardens SET frost_station_id = $1, frost_station_label = $2
+       WHERE id = $3 AND zone_location_label = $4`,
+      [stationId, label, g.id, g.zone_location_label],
+    );
+    if (rowCount) {
+      g.frost_station_id = stationId;
+      g.frost_station_label = label;
+    }
+  } catch (err) {
+    logger.error('Storing the frost station failed', err);
+  }
+  return true;
+}
+
 // ── GET /api/planting-guide ───────────────────────────────────────────────────
 
 router.get('/', async (req: Request, res: Response) => {
@@ -173,7 +224,8 @@ router.get('/', async (req: Request, res: Response) => {
 
   try {
     const { rows: gardens } = await db.query<GardenRow>(
-      `SELECT id::text, name, zone, zone_location_label FROM gardens
+      `SELECT id::text, name, zone, zone_location_label, frost_station_id, frost_station_label
+       FROM gardens
        WHERE (owner_id = $1 OR guest_session_id = $2)
          AND ($3::int IS NULL OR id = $3)
        ORDER BY id`,
@@ -194,12 +246,36 @@ router.get('/', async (req: Request, res: Response) => {
       if (rows[0]?.last) accountFrost = { last: rows[0].last, first: rows[0].first };
     }
 
+    // The account's own date wins over any station, so only look stations up
+    // without one. One garden at a time, so the cap holds and a slow provider
+    // costs at most one timeout; the first outage ends lookups for this load.
+    if (!accountFrost) {
+      let lookups = 0;
+      for (const g of gardens) {
+        const label = usableLabel(g.zone_location_label);
+        if (label === null || label === g.frost_station_label) continue;
+        if (lookups === MAX_STATION_LOOKUPS) break;
+        lookups++;
+        if (!(await refreshFrostStation(g, label))) break;
+      }
+    }
+
     const frostByGarden = new Map<
       string,
-      FrostContext & { firstFallFrost: string | null; frostBasis: 'noaa' | 'rough' | null }
+      FrostContext & {
+        firstFallFrost: string | null;
+        frostBasis: FrostBasis | null;
+        stationName: string | null;
+      }
     >();
     for (const g of gardens) {
-      frostByGarden.set(g.id, resolveFrostContext(accountFrost, g.zone, season));
+      // A station worked out from an older label no longer applies.
+      const label = usableLabel(g.zone_location_label);
+      const station =
+        label !== null && label === g.frost_station_label && g.frost_station_id
+          ? frostStationById(g.frost_station_id)
+          : null;
+      frostByGarden.set(g.id, resolveFrostContext(accountFrost, g.zone, season, station));
     }
 
     const gardenIds = gardens.map((g) => Number(g.id));
@@ -280,6 +356,7 @@ router.get('/', async (req: Request, res: Response) => {
             frostSource: frost.frostSource,
             frostFree: frost.frostFree,
             frostBasis: frost.frostBasis,
+            stationName: frost.stationName,
           },
         };
       }),

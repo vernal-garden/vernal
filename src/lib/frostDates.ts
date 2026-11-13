@@ -3,7 +3,7 @@
 
 import { applySeasonYear, type FrostContext } from './plantingSchedule';
 
-export type FrostBasis = 'noaa' | 'rough';
+export type FrostBasis = 'noaa' | 'rough' | 'station';
 
 export interface FrostEstimate {
   lastSpringFrost: string | null;
@@ -52,14 +52,23 @@ export function estimateFrostDates(zone: string, season: number): FrostEstimate 
   };
 }
 
+// A station spring freeze in under this share of years counts as frost-free.
+const STATION_FROST_FREE_BELOW_PCT = 50;
+
 // The frost dates a garden's windows are computed from for a season: the
 // account's own dates (moved onto the season's year) when it has a last spring
-// frost date, otherwise the garden zone's estimate.
+// frost date, otherwise the nearest NOAA station's median spring date (Phase
+// 65; the fall date still comes from the zone), otherwise the zone's estimate.
 export function resolveFrostContext(
   accountFrost: { last: string; first: string | null } | null,
   zone: string,
   season: number,
-): FrostContext & { firstFallFrost: string | null; frostBasis: FrostBasis | null } {
+  station: { name: string; p50: string; freezePct: number } | null = null,
+): FrostContext & {
+  firstFallFrost: string | null;
+  frostBasis: FrostBasis | null;
+  stationName: string | null;
+} {
   if (accountFrost) {
     return {
       lastSpringFrost: applySeasonYear(accountFrost.last, season),
@@ -67,14 +76,37 @@ export function resolveFrostContext(
       frostSource: 'account_frost',
       frostFree: false,
       frostBasis: null,
+      stationName: null,
     };
   }
   const est = estimateFrostDates(zone, season);
+  if (station && station.freezePct < STATION_FROST_FREE_BELOW_PCT) {
+    return {
+      lastSpringFrost: null,
+      firstFallFrost: null,
+      frostSource: null,
+      frostFree: true,
+      frostBasis: 'station',
+      stationName: station.name,
+    };
+  }
+  if (station) {
+    // No station's p50 is 02-29, so the plain concat is always a real date.
+    return {
+      lastSpringFrost: `${season}-${station.p50}`,
+      firstFallFrost: est.firstFallFrost,
+      frostSource: 'zone_estimate',
+      frostFree: false,
+      frostBasis: 'station',
+      stationName: station.name,
+    };
+  }
   return {
     lastSpringFrost: est.lastSpringFrost,
     firstFallFrost: est.firstFallFrost,
     frostSource: est.parsed && !est.frostFree ? 'zone_estimate' : null,
     frostFree: est.frostFree,
     frostBasis: est.basis,
+    stationName: null,
   };
 }
