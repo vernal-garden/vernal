@@ -1,9 +1,22 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
 import { currentSeason } from '../lib/plantingSchedule';
+import { db } from '../lib/db';
+import { geocode } from '../lib/weather/geocode';
+import { UpstreamError } from '../lib/weather/upstream';
+
+// Frost station lookups geocode the garden label; isGeocodeMiss stays real.
+vi.mock('../lib/weather/geocode', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/weather/geocode')>()),
+  geocode: vi.fn(),
+}));
+
+// The error geocode throws when Nominatim has no answer (its message is what
+// isGeocodeMiss checks).
+const geocodeMiss = () => new UpstreamError('No geocoding results for the account location');
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -150,6 +163,11 @@ beforeAll(async () => {
   await plant(await createBed(guestGarden, SEASON), guestGarden, SEASON, { cambiumSeedId: peaCambiumId });
 });
 
+// No test reaches the network: an unmocked lookup finds nothing.
+beforeEach(() => {
+  vi.mocked(geocode).mockReset().mockRejectedValue(geocodeMiss());
+});
+
 afterAll(() => pool.end());
 
 describe('GET /api/planting-guide', () => {
@@ -171,6 +189,7 @@ describe('GET /api/planting-guide', () => {
           frostSource: 'account_frost',
           frostFree: false,
           frostBasis: null,
+          stationName: null,
         },
       },
     ]);
@@ -248,6 +267,7 @@ describe('GET /api/planting-guide', () => {
       frostSource: 'zone_estimate',
       frostFree: false,
       frostBasis: 'noaa',
+      stationName: null,
     });
     expect(res.body.rows).toHaveLength(1);
     expect(res.body.rows[0].windows.directSow).toEqual({
@@ -275,6 +295,207 @@ describe('GET /api/planting-guide', () => {
 
   it('requires a session', async () => {
     expect((await request(app).get('/api/planting-guide')).status).toBe(401);
+  });
+});
+
+describe('GET /api/planting-guide frost stations', () => {
+  const SPOKANE = { lat: 47.62, lon: -117.53 };
+  const ZONE_6B_FROST = {
+    lastSpringFrost: `${SEASON}-04-24`,
+    firstFallFrost: `${SEASON}-10-24`,
+    frostSource: 'zone_estimate',
+    frostFree: false,
+    frostBasis: 'noaa',
+    stationName: null,
+  };
+
+  let accountCount = 0;
+  async function freshAgent(): Promise<Agent> {
+    const email = `guide-station-${++accountCount}@example.com`;
+    await createUser(email);
+    return loginAgent(email);
+  }
+
+  async function storedStation(gardenId: number) {
+    const { rows } = await pool.query<{ frost_station_id: string | null; frost_station_label: string | null }>(
+      'SELECT frost_station_id, frost_station_label FROM gardens WHERE id = $1',
+      [gardenId],
+    );
+    return rows[0];
+  }
+
+  it('dates a garden near Spokane from its station and stores the station', async () => {
+    vi.mocked(geocode).mockResolvedValue(SPOKANE);
+    const agent = await freshAgent();
+    const gardenId = await createGarden(agent, '6b', 'Spokane, WA');
+
+    const res = await agent.get('/api/planting-guide');
+    expect(res.status).toBe(200);
+    expect(res.body.gardens[0].frost).toEqual({
+      lastSpringFrost: `${SEASON}-04-26`,
+      firstFallFrost: `${SEASON}-10-24`,
+      frostSource: 'zone_estimate',
+      frostFree: false,
+      frostBasis: 'station',
+      stationName: 'Spokane Intl Airport',
+    });
+    expect(geocode).toHaveBeenCalledWith('Spokane, WA');
+    expect(await storedStation(gardenId)).toEqual({
+      frost_station_id: 'USW00024157',
+      frost_station_label: 'Spokane, WA',
+    });
+  });
+
+  it('does not look the station up again on a second load', async () => {
+    vi.mocked(geocode).mockResolvedValue(SPOKANE);
+    const agent = await freshAgent();
+    await createGarden(agent, '6b', 'Spokane, WA');
+
+    await agent.get('/api/planting-guide');
+    const res = await agent.get('/api/planting-guide');
+    expect(res.body.gardens[0].frost.stationName).toBe('Spokane Intl Airport');
+    expect(geocode).toHaveBeenCalledTimes(1);
+  });
+
+  it('looks the station up again after the garden label changes', async () => {
+    vi.mocked(geocode).mockResolvedValue(SPOKANE);
+    const agent = await freshAgent();
+    const gardenId = await createGarden(agent, '6b', 'Spokane, WA');
+    await agent.get('/api/planting-guide');
+
+    await pool.query(`UPDATE gardens SET zone_location_label = 'Cheney, WA' WHERE id = $1`, [gardenId]);
+    const res = await agent.get('/api/planting-guide');
+    expect(geocode).toHaveBeenCalledTimes(2);
+    expect(geocode).toHaveBeenLastCalledWith('Cheney, WA');
+    expect(res.body.gardens[0].frost.stationName).toBe('Spokane Intl Airport');
+    expect((await storedStation(gardenId)).frost_station_label).toBe('Cheney, WA');
+  });
+
+  it('stores the label with no station on a geocode miss, and does not retry it', async () => {
+    const agent = await freshAgent();
+    const gardenId = await createGarden(agent, '6b', 'Nowhere In Particular');
+
+    const res = await agent.get('/api/planting-guide');
+    expect(res.status).toBe(200);
+    expect(res.body.gardens[0].frost).toEqual(ZONE_6B_FROST);
+    expect(await storedStation(gardenId)).toEqual({
+      frost_station_id: null,
+      frost_station_label: 'Nowhere In Particular',
+    });
+
+    await agent.get('/api/planting-guide');
+    expect(geocode).toHaveBeenCalledTimes(1);
+  });
+
+  it('stores nothing on a network failure, and retries on the next load', async () => {
+    vi.mocked(geocode).mockRejectedValue(new UpstreamError('Nominatim unreachable'));
+    const agent = await freshAgent();
+    const gardenId = await createGarden(agent, '6b', 'Spokane, WA');
+
+    const res = await agent.get('/api/planting-guide');
+    expect(res.status).toBe(200);
+    expect(res.body.gardens[0].frost).toEqual(ZONE_6B_FROST);
+    expect(await storedStation(gardenId)).toEqual({ frost_station_id: null, frost_station_label: null });
+
+    await agent.get('/api/planting-guide');
+    expect(geocode).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops looking stations up for the request after a network failure', async () => {
+    vi.mocked(geocode).mockRejectedValue(new UpstreamError('Nominatim unreachable'));
+    const agent = await freshAgent();
+    const first = await createGarden(agent, '6b', 'Spokane, WA');
+    const second = await createGarden(agent, '6b', 'Cheney, WA');
+
+    const res = await agent.get('/api/planting-guide');
+    expect(res.status).toBe(200);
+    expect(geocode).toHaveBeenCalledTimes(1);
+    expect(res.body.gardens.map((g: { frost: unknown }) => g.frost)).toEqual([ZONE_6B_FROST, ZONE_6B_FROST]);
+    for (const gardenId of [first, second]) {
+      expect(await storedStation(gardenId)).toEqual({ frost_station_id: null, frost_station_label: null });
+    }
+  });
+
+  it('keeps the zone estimate when storing the station fails', async () => {
+    vi.mocked(geocode).mockResolvedValue(SPOKANE);
+    const agent = await freshAgent();
+    const gardenId = await createGarden(agent, '6b', 'Spokane, WA');
+    const realQuery = db.query.bind(db) as (...args: unknown[]) => Promise<unknown>;
+    const spy = vi.spyOn(db, 'query').mockImplementation(((...args: unknown[]) =>
+      typeof args[0] === 'string' && args[0].includes('SET frost_station_id')
+        ? Promise.reject(new Error('write failed'))
+        : realQuery(...args)) as typeof db.query);
+    try {
+      const res = await agent.get('/api/planting-guide');
+      expect(res.status).toBe(200);
+      expect(res.body.gardens[0].frost).toEqual(ZONE_6B_FROST);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await storedStation(gardenId)).toEqual({ frost_station_id: null, frost_station_label: null });
+  });
+
+  it('makes no lookups when the account has its own frost date', async () => {
+    vi.mocked(geocode).mockResolvedValue(SPOKANE);
+    const email = 'guide-station-own-date@example.com';
+    const accountId = await createUser(email);
+    await pool.query(`UPDATE accounts SET last_spring_frost_date = '2020-04-15' WHERE id = $1`, [accountId]);
+    const agent = await loginAgent(email);
+    const gardenId = await createGarden(agent, '6b', 'Spokane, WA');
+
+    const res = await agent.get('/api/planting-guide');
+    expect(res.body.gardens[0].frost.frostSource).toBe('account_frost');
+    expect(res.body.gardens[0].frost.stationName).toBeNull();
+    expect(geocode).not.toHaveBeenCalled();
+    expect((await storedStation(gardenId)).frost_station_label).toBeNull();
+  });
+
+  it('makes no lookup for a blank or unset label', async () => {
+    const agent = await freshAgent();
+    const gardenId = await createGarden(agent, '6b', 'Somewhere');
+    await pool.query(`UPDATE gardens SET zone_location_label = '   ' WHERE id = $1`, [gardenId]);
+    await agent.get('/api/planting-guide');
+    await pool.query(`UPDATE gardens SET zone_location_label = 'Not set' WHERE id = $1`, [gardenId]);
+    await agent.get('/api/planting-guide');
+    expect(geocode).not.toHaveBeenCalled();
+  });
+
+  it('reports a garden near Borrego Desert Park as frost-free from its station', async () => {
+    vi.mocked(geocode).mockResolvedValue({ lat: 33.26, lon: -116.4 });
+    const agent = await freshAgent();
+    await createGarden(agent, '9b', 'Borrego Springs, CA');
+
+    const res = await agent.get('/api/planting-guide');
+    expect(res.body.gardens[0].frost).toEqual({
+      lastSpringFrost: null,
+      firstFallFrost: null,
+      frostSource: null,
+      frostFree: true,
+      frostBasis: 'station',
+      stationName: 'Borrego Desert Park',
+    });
+  });
+
+  it('looks up at most three gardens per request', async () => {
+    vi.mocked(geocode).mockResolvedValue(SPOKANE);
+    const agent = await freshAgent();
+    for (const label of ['Spokane, WA', 'Cheney, WA', 'Airway Heights, WA', 'Medical Lake, WA']) {
+      await createGarden(agent, '6b', label);
+    }
+
+    const first = await agent.get('/api/planting-guide');
+    expect(geocode).toHaveBeenCalledTimes(3);
+    expect(first.body.gardens.map((g: { frost: { stationName: string | null } }) => g.frost.stationName)).toEqual([
+      'Spokane Intl Airport',
+      'Spokane Intl Airport',
+      'Spokane Intl Airport',
+      null,
+    ]);
+
+    const second = await agent.get('/api/planting-guide');
+    expect(geocode).toHaveBeenCalledTimes(4);
+    expect(geocode).toHaveBeenLastCalledWith('Medical Lake, WA');
+    expect(second.body.gardens[3].frost.stationName).toBe('Spokane Intl Airport');
   });
 });
 

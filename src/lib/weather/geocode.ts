@@ -89,6 +89,11 @@ export async function geocode(label: string): Promise<GeoLocation> {
   return pending;
 }
 
+// True only for "Nominatim has no answer for this label", not for an outage.
+export function isGeocodeMiss(err: unknown): boolean {
+  return err instanceof UpstreamError && err.message === NO_RESULTS;
+}
+
 // Test hook: forget cached locations, lookups in progress and limiter state.
 export function resetGeocoder(): void {
   geocodeCache.clear();

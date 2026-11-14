@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { geocode, resetGeocoder } from './geocode';
+import { geocode, isGeocodeMiss, resetGeocoder } from './geocode';
+import { UpstreamError } from './upstream';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -144,6 +145,27 @@ describe('geocode caching and rate limiting', () => {
 
     await Promise.all(['T1', 'T2', 'T3', 'T4', 'T5', 'T6'].map((label) => geocode(label)));
     expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+});
+
+describe('isGeocodeMiss', () => {
+  it('is true for the no-results error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
+    const err = await geocode('Nowhere — is-miss-test').catch((e: unknown) => e);
+    expect(isGeocodeMiss(err)).toBe(true);
+  });
+
+  it('is false for a network failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+    const err = await geocode('Flaky — is-miss-test').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect(isGeocodeMiss(err)).toBe(false);
+  });
+
+  it('is false for a plain Error or a non-error', () => {
+    expect(isGeocodeMiss(new Error('No geocoding results for the account location'))).toBe(false);
+    expect(isGeocodeMiss('No geocoding results for the account location')).toBe(false);
+    expect(isGeocodeMiss(undefined)).toBe(false);
   });
 });
 
