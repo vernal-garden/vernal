@@ -1,4 +1,5 @@
 import stationData from '../data/noaa/frostStations.json';
+import { LOCATION_NOT_SET } from './constants';
 
 export interface FrostStation {
   id: string;
@@ -44,4 +45,23 @@ export function nearestFrostStation(lat: number, lon: number): FrostStation | nu
 
 export function frostStationById(id: string): FrostStation | null {
   return stationsById.get(id) ?? null;
+}
+
+// A garden's label, trimmed; null when it is empty or not set.
+export function usableLocationLabel(raw: string | null): string | null {
+  const label = raw?.trim();
+  return label && label !== LOCATION_NOT_SET ? label : null;
+}
+
+// The station stored on a garden, only while the label it was worked out from
+// is still the garden's label.
+export function storedFrostStation(g: {
+  zone_location_label: string | null;
+  frost_station_id: string | null;
+  frost_station_label: string | null;
+}): FrostStation | null {
+  const label = usableLocationLabel(g.zone_location_label);
+  return label !== null && label === g.frost_station_label && g.frost_station_id
+    ? frostStationById(g.frost_station_id)
+    : null;
 }

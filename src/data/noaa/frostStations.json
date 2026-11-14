@@ -9345,7 +9345,7 @@
   },
   {
     "id": "USC00105708",
-    "name": "Mccall",
+    "name": "McCall",
     "lat": 44.8872,
     "lon": -116.1047,
     "p50": "06-22",
@@ -9353,7 +9353,7 @@
   },
   {
     "id": "USC00105716",
-    "name": "Mccammon",
+    "name": "McCammon",
     "lat": 42.6522,
     "lon": -112.1936,
     "p50": "05-23",
@@ -13881,7 +13881,7 @@
   },
   {
     "id": "USC00256290",
-    "name": "O'neill",
+    "name": "O'Neill",
     "lat": 42.4594,
     "lon": -98.6564,
     "p50": "05-03",
@@ -14737,7 +14737,7 @@
   },
   {
     "id": "USC00295560",
-    "name": "Mcgaffey 5 SE",
+    "name": "McGaffey 5 SE",
     "lat": 35.3364,
     "lon": -108.4447,
     "p50": "06-05",
@@ -18617,7 +18617,7 @@
   },
   {
     "id": "USW00094040",
-    "name": "Mccook Municipal Airport",
+    "name": "McCook Municipal Airport",
     "lat": 40.2064,
     "lon": -100.5914,
     "p50": "05-01",
@@ -18673,7 +18673,7 @@
   },
   {
     "id": "USW00094182",
-    "name": "Mccall Airport",
+    "name": "McCall Airport",
     "lat": 44.8889,
     "lon": -116.1017,
     "p50": "06-10",
@@ -20321,7 +20321,7 @@
   },
   {
     "id": "USC00115515",
-    "name": "Mcleansboro",
+    "name": "McLeansboro",
     "lat": 38.0844,
     "lon": -88.5425,
     "p50": "04-11",
@@ -21609,7 +21609,7 @@
   },
   {
     "id": "USC00145152",
-    "name": "Mcpherson",
+    "name": "McPherson",
     "lat": 38.3772,
     "lon": -97.6097,
     "p50": "04-18",
@@ -22385,7 +22385,7 @@
   },
   {
     "id": "USC00154955",
-    "name": "Louisville Mcalpine",
+    "name": "Louisville McAlpine",
     "lat": 38.2778,
     "lon": -85.7917,
     "p50": "03-31",
@@ -22433,7 +22433,7 @@
   },
   {
     "id": "USC00155280",
-    "name": "Mcdaniels",
+    "name": "McDaniels",
     "lat": 37.6497,
     "lon": -86.4308,
     "p50": "04-11",
@@ -24633,7 +24633,7 @@
   },
   {
     "id": "USC00264950",
-    "name": "Mcgill",
+    "name": "McGill",
     "lat": 39.4136,
     "lon": -114.7733,
     "p50": "05-28",
@@ -25113,7 +25113,7 @@
   },
   {
     "id": "USC00295516",
-    "name": "Mccarty Rch",
+    "name": "McCarty Rch",
     "lat": 35.6022,
     "lon": -103.3644,
     "p50": "04-20",
@@ -25937,7 +25937,7 @@
   },
   {
     "id": "USC00332067",
-    "name": "Dayton Mcd",
+    "name": "Dayton MCD",
     "lat": 39.7633,
     "lon": -84.1911,
     "p50": "04-18",
@@ -27529,7 +27529,7 @@
   },
   {
     "id": "USC00365573",
-    "name": "Mckeesport",
+    "name": "McKeesport",
     "lat": 40.3392,
     "lon": -79.8603,
     "p50": "05-02",
@@ -32937,7 +32937,7 @@
   },
   {
     "id": "USC00045449",
-    "name": "Mccloud",
+    "name": "McCloud",
     "lat": 41.2517,
     "lon": -122.1383,
     "p50": "05-28",
@@ -33313,7 +33313,7 @@
   },
   {
     "id": "USC00101956",
-    "name": "Coeur D'alene",
+    "name": "Coeur D'Alene",
     "lat": 47.6822,
     "lon": -116.7967,
     "p50": "04-22",
@@ -36265,7 +36265,7 @@
   },
   {
     "id": "USC00345713",
-    "name": "Mcgee Creek Dam",
+    "name": "McGee Creek Dam",
     "lat": 34.3097,
     "lon": -95.8675,
     "p50": "03-27",
@@ -36777,7 +36777,7 @@
   },
   {
     "id": "USC00355392",
-    "name": "Mcnary Dam #2",
+    "name": "McNary Dam #2",
     "lat": 45.9306,
     "lon": -119.2956,
     "p50": "03-30",
@@ -39369,7 +39369,7 @@
   },
   {
     "id": "USC00455231",
-    "name": "Mcnary Dam",
+    "name": "McNary Dam",
     "lat": 45.9406,
     "lon": -119.2978,
     "p50": "03-27",
@@ -39577,7 +39577,7 @@
   },
   {
     "id": "USW00003811",
-    "name": "Jackson Mckellar Airport",
+    "name": "Jackson McKellar Airport",
     "lat": 35.5931,
     "lon": -88.9167,
     "p50": "04-05",
@@ -39841,7 +39841,7 @@
   },
   {
     "id": "USW00013773",
-    "name": "Quantico Mcas",
+    "name": "Quantico MCAS",
     "lat": 38.5,
     "lon": -77.3,
     "p50": "03-28",
@@ -39889,7 +39889,7 @@
   },
   {
     "id": "USW00013891",
-    "name": "Knoxville Mcghee Tyson Airport",
+    "name": "Knoxville McGhee Tyson Airport",
     "lat": 35.8181,
     "lon": -83.9858,
     "p50": "04-01",
@@ -40697,7 +40697,7 @@
   },
   {
     "id": "USW00093950",
-    "name": "Mcalester Regional Airport",
+    "name": "McAlester Regional Airport",
     "lat": 34.8822,
     "lon": -95.7831,
     "p50": "03-31",
@@ -42577,7 +42577,7 @@
   },
   {
     "id": "USC00095666",
-    "name": "Mcdonough 5 ENE",
+    "name": "McDonough 5 ENE",
     "lat": 33.4769,
     "lon": -84.0336,
     "p50": "03-31",
@@ -43289,7 +43289,7 @@
   },
   {
     "id": "USC00222385",
-    "name": "D'lo 2 SW",
+    "name": "D'Lo 2 SW",
     "lat": 31.9544,
     "lon": -89.9328,
     "p50": "03-10",
@@ -44553,7 +44553,7 @@
   },
   {
     "id": "USC00355362",
-    "name": "Mckenzie Rvr Rs",
+    "name": "McKenzie Rvr Rs",
     "lat": 44.1792,
     "lon": -122.1164,
     "p50": "05-01",
@@ -45137,7 +45137,7 @@
   },
   {
     "id": "USC00385628",
-    "name": "Mcclellanville",
+    "name": "McClellanville",
     "lat": 33.0667,
     "lon": -79.4667,
     "p50": "03-17",
@@ -45145,7 +45145,7 @@
   },
   {
     "id": "USC00385633",
-    "name": "Mccoll 3 NNW",
+    "name": "McColl 3 NNW",
     "lat": 34.7056,
     "lon": -79.5683,
     "p50": "03-26",
@@ -45153,7 +45153,7 @@
   },
   {
     "id": "USC00385660",
-    "name": "Mccormick",
+    "name": "McCormick",
     "lat": 33.9125,
     "lon": -82.2878,
     "p50": "03-28",
@@ -45937,7 +45937,7 @@
   },
   {
     "id": "USC00413257",
-    "name": "Ft Mckavett",
+    "name": "Ft McKavett",
     "lat": 30.8272,
     "lon": -100.1103,
     "p50": "04-02",
@@ -46409,7 +46409,7 @@
   },
   {
     "id": "USC00415707",
-    "name": "Mccamey",
+    "name": "McCamey",
     "lat": 31.1331,
     "lon": -102.2217,
     "p50": "03-12",
@@ -46425,7 +46425,7 @@
   },
   {
     "id": "USC00415757",
-    "name": "Mcgregor",
+    "name": "McGregor",
     "lat": 31.435,
     "lon": -97.4011,
     "p50": "03-15",
@@ -46433,7 +46433,7 @@
   },
   {
     "id": "USC00415766",
-    "name": "Mckinney Municipal Airport",
+    "name": "McKinney Municipal Airport",
     "lat": 33.1903,
     "lon": -96.5914,
     "p50": "03-17",
@@ -47329,7 +47329,7 @@
   },
   {
     "id": "USC00455224",
-    "name": "Mcmillin Rsvr",
+    "name": "McMillin Rsvr",
     "lat": 47.1358,
     "lon": -122.2558,
     "p50": "04-11",
@@ -47561,7 +47561,7 @@
   },
   {
     "id": "USW00003728",
-    "name": "Mcclellanville 7 NE",
+    "name": "McClellanville 7 NE",
     "lat": 33.1533,
     "lon": -79.3636,
     "p50": "02-28",
@@ -47857,7 +47857,7 @@
   },
   {
     "id": "USW00013754",
-    "name": "Cherry Point Mcas",
+    "name": "Cherry Point MCAS",
     "lat": 34.9,
     "lon": -76.8833,
     "p50": "03-19",
@@ -48361,7 +48361,7 @@
   },
   {
     "id": "USW00024232",
-    "name": "Salem Mcnary Field",
+    "name": "Salem McNary Field",
     "lat": 44.905,
     "lon": -123.0011,
     "p50": "04-03",
@@ -48617,7 +48617,7 @@
   },
   {
     "id": "USW00053914",
-    "name": "Mckinney Municipal Airport",
+    "name": "McKinney Municipal Airport",
     "lat": 33.1803,
     "lon": -96.5903,
     "p50": "03-18",
@@ -48873,7 +48873,7 @@
   },
   {
     "id": "USW00093727",
-    "name": "New River Mcaf",
+    "name": "New River MCAF",
     "lat": 34.7,
     "lon": -77.3833,
     "p50": "03-23",
@@ -48945,7 +48945,7 @@
   },
   {
     "id": "USW00093831",
-    "name": "Beaufort Mcas",
+    "name": "Beaufort MCAS",
     "lat": 32.4833,
     "lon": -80.7167,
     "p50": "02-28",
@@ -49009,7 +49009,7 @@
   },
   {
     "id": "USW00093919",
-    "name": "Mccomb/Pike Co/John E Lewis Airport",
+    "name": "McComb/Pike Co/John E Lewis Airport",
     "lat": 31.1828,
     "lon": -90.4708,
     "p50": "03-11",
@@ -49089,7 +49089,7 @@
   },
   {
     "id": "USW00094273",
-    "name": "Mcminnville Municipal Airport",
+    "name": "McMinnville Municipal Airport",
     "lat": 45.1947,
     "lon": -123.1339,
     "p50": "04-15",
@@ -52289,7 +52289,7 @@
   },
   {
     "id": "USC00415701",
-    "name": "Mcallen",
+    "name": "McAllen",
     "lat": 26.1917,
     "lon": -98.2511,
     "p50": "01-09",
@@ -52297,7 +52297,7 @@
   },
   {
     "id": "USC00415721",
-    "name": "Mccook",
+    "name": "McCook",
     "lat": 26.565,
     "lon": -98.1236,
     "p50": "01-22",
@@ -52353,7 +52353,7 @@
   },
   {
     "id": "USC00417186",
-    "name": "Port O'connor",
+    "name": "Port O'Connor",
     "lat": 28.4342,
     "lon": -96.4278,
     "p50": "02-04",
@@ -52569,7 +52569,7 @@
   },
   {
     "id": "USW00003154",
-    "name": "Camp Pendleton Mcas",
+    "name": "Camp Pendleton MCAS",
     "lat": 33.3,
     "lon": -117.35,
     "p50": "02-16",
@@ -52897,7 +52897,7 @@
   },
   {
     "id": "USW00012959",
-    "name": "Mcallen Miller Intl Airport",
+    "name": "McAllen Miller Intl Airport",
     "lat": 26.1839,
     "lon": -98.2539,
     "p50": "01-09",
@@ -52977,7 +52977,7 @@
   },
   {
     "id": "USW00013878",
-    "name": "Brunswick Malcolm Mckinnon Airport",
+    "name": "Brunswick Malcolm McKinnon Airport",
     "lat": 31.1522,
     "lon": -81.3908,
     "p50": "02-09",
@@ -53065,7 +53065,7 @@
   },
   {
     "id": "USW00023169",
-    "name": "Las Vegas Mccarran Airport",
+    "name": "Las Vegas McCarran Airport",
     "lat": 36.0719,
     "lon": -115.1633,
     "p50": "01-20",
@@ -53249,7 +53249,7 @@
   },
   {
     "id": "USW00024286",
-    "name": "Crescent City Mcnamara Airport",
+    "name": "Crescent City McNamara Airport",
     "lat": 41.7803,
     "lon": -124.2367,
     "p50": "01-30",

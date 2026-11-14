@@ -15,6 +15,8 @@ export interface FrostStation {
 const KEEP = new Set([
   'N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW', 'NNE', 'ENE', 'ESE', 'SSE', 'SSW', 'WSW', 'WNW', 'NNW',
   'WFO', 'WWTP', 'NWS', 'ANG',
+  // Acronyms that start with MC: Marine Corps Air Station / Air Facility, and MCD.
+  'MCAS', 'MCAF', 'MCD',
 ]);
 const EXPAND: Record<string, string> = {
   AP: 'Airport',
@@ -29,7 +31,11 @@ const SMALL = new Set(['OF', 'THE', 'AND']);
 function titleCase(token: string): string {
   return token
     .toLowerCase()
-    .replace(/(^|[-/])([a-z])/g, (_m, sep: string, c: string) => sep + c.toUpperCase());
+    .replace(/(^|[-/])([a-z])/g, (_m, sep: string, c: string) => sep + c.toUpperCase())
+    // Scottish Mc prefix: Mccall -> McCall (needs 2+ more letters; Mac stays alone).
+    .replace(/(^|[-/])Mc([a-z])(?=[a-z])/g, (_m, sep: string, c: string) => `${sep}Mc${c.toUpperCase()}`)
+    // Letter after an apostrophe: O'neill -> O'Neill, but not a trailing 's / 'n.
+    .replace(/'([a-z])(?=[a-z])/g, (_m, c: string) => `'${c.toUpperCase()}`);
 }
 
 /** 'SPOKANE INTL AP, WA US' -> 'Spokane Intl Airport' */

@@ -565,6 +565,50 @@ describe('timing', () => {
   });
 });
 
+// A station stored on the garden dates timing like the planting guide does.
+describe('timing with a frost station', () => {
+  // Zone 7b's last frost is 2025-04-07, so a frost-tender direct-sow window is
+  // 04-14 .. 05-05. Spokane's median is 04-26, giving 05-03 .. 05-24. A sowing on
+  // 04-20 is on time by the zone but early by the station.
+  const DIRECT = { frostTolerance: 'none', maturityMin: 50, maturityMax: 60 };
+
+  async function gardenWithSowing(email: string, gardenLabel: string, stationLabel: string) {
+    const { agent, accountId } = await account(email, 'supporter');
+    const gardenId = await createGarden(accountId, 'Plot');
+    await pool.query(
+      `UPDATE gardens SET zone_location_label = $1, frost_station_id = 'USW00024157',
+                          frost_station_label = $2 WHERE id = $3`,
+      [gardenLabel, stationLabel, gardenId],
+    );
+    const bed = await createBed(gardenId, S2);
+    const seedId = await createPersonalSeed(accountId, 'Beans', DIRECT);
+    const p = await plant(bed, gardenId, S2, { seedId }, '2025-04-20');
+    const ev = await sowingEvent(gardenId, { seedId }, S2, '2025-04-20', p);
+    await harvest(gardenId, { seedId }, '2025-06-25', 1, 'kg', { sowingEventId: ev });
+    return agent;
+  }
+
+  it('uses the stored station date when the account has no frost dates', async () => {
+    const agent = await gardenWithSowing('timing-station@example.com', 'Spokane, WA', 'Spokane, WA');
+    const body = await dashboard(agent, { season: S2 });
+    expect(body.timing).toHaveLength(1);
+    expect(body.timing[0]).toMatchObject({
+      window: { name: 'directSow', start: '2025-05-03', end: '2025-05-24' },
+      status: 'early',
+    });
+    expect(body.gardens).toEqual([{ id: expect.any(String), name: 'Plot' }]);
+  });
+
+  it('falls back to the zone date once the label no longer matches the station', async () => {
+    const agent = await gardenWithSowing('timing-stale@example.com', 'Cheney, WA', 'Spokane, WA');
+    const body = await dashboard(agent, { season: S2 });
+    expect(body.timing[0]).toMatchObject({
+      window: { name: 'directSow', start: '2025-04-14', end: '2025-05-05' },
+      status: 'on_time',
+    });
+  });
+});
+
 // ── Days to harvest: linked sowing event only ────────────────────────────────
 
 describe('days to harvest uses the linked sowing event', () => {

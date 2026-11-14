@@ -38,6 +38,18 @@ describe('displayName', () => {
     ['BURLEY MUNI AP, ID US', 'Burley Municipal Airport'],
     ['VALLEY OF THE GODS, UT US', 'Valley of the Gods'],
     ['APACHE 4ENE MESONET, OK US', 'Apache 4ENE Mesonet'],
+    ['MCCALL, ID US', 'McCall'],
+    ['MCPHERSON, KS US', 'McPherson'],
+    ['LOUISVILLE MCALPINE, KY US', 'Louisville McAlpine'],
+    ['MCCOMB/PIKE CO/JOHN E LEWIS AP, MS US', 'McComb/Pike Co/John E Lewis Airport'],
+    ["O'NEILL, NE US", "O'Neill"],
+    ["COEUR D'ALENE, ID US", "Coeur D'Alene"],
+    ["COLLEGEVILLE ST JOHN'S, MN US", "Collegeville St John's"],
+    ["WASTE ISOLT'N PILOT PLT, NM US", "Waste Isolt'n Pilot Plt"],
+    ['MC HENRY 3W, ND US', 'Mc Henry 3W'],
+    ['QUANTICO MCAS, VA US', 'Quantico MCAS'],
+    ['NEW RIVER MCAF, NC US', 'New River MCAF'],
+    ['DAYTON MCD, OH US', 'Dayton MCD'],
   ])('%s -> %s', (raw, expected) => {
     expect(displayName(raw)).toBe(expected);
   });

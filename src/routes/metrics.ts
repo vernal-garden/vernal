@@ -3,6 +3,7 @@ import { db } from '../lib/db';
 import { requireAuth, requireSupporter } from '../middleware/auth';
 import { isNumericId } from '../lib/validation';
 import { resolveFrostContext } from '../lib/frostDates';
+import { storedFrostStation } from '../lib/frostStations';
 import { computeWindows, currentSeason, type Overrides } from '../lib/plantingSchedule';
 import { bedAreaSqFt, type BedAreaInput } from '../lib/bedArea';
 import * as metricsCache from '../lib/metricsCache';
@@ -83,6 +84,9 @@ interface GardenRow {
   id: string;
   name: string;
   zone: string;
+  zone_location_label: string | null;
+  frost_station_id: string | null;
+  frost_station_label: string | null;
 }
 
 interface EntryRow {
@@ -296,7 +300,8 @@ function formatTotal(t: PlantTotal) {
 
 async function loadGardens(accountId: number): Promise<GardenRow[]> {
   const { rows } = await db.query<GardenRow>(
-    'SELECT id::text, name, zone FROM gardens WHERE owner_id = $1 ORDER BY id',
+    `SELECT id::text, name, zone, zone_location_label, frost_station_id, frost_station_label
+     FROM gardens WHERE owner_id = $1 ORDER BY id`,
     [accountId],
   );
   return rows;
@@ -476,13 +481,15 @@ async function buildTiming(
     accountId,
     gardens.map((g) => Number(g.id)),
   );
-  const zoneByGarden = new Map(gardens.map((g) => [g.id, g.zone]));
+  const gardenById = new Map(gardens.map((g) => [g.id, g]));
 
   const rows: TimingRow[] = [];
   for (const c of candidates) {
     const plantKey = plantKeyOf(c);
     if (plantKey === null) continue;
-    const frost = resolveFrostContext(accountFrost, zoneByGarden.get(c.garden_id)!, season);
+    // The station stored by the planting guide, so timing agrees with it.
+    const garden = gardenById.get(c.garden_id)!;
+    const frost = resolveFrostContext(accountFrost, garden.zone, season, storedFrostStation(garden));
     const windows = computeWindows(
       {
         weeksToTransplant: c.weeks_to_transplant,

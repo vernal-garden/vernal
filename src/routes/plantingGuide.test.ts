@@ -6,6 +6,7 @@ import app from '../index';
 import { currentSeason } from '../lib/plantingSchedule';
 import { db } from '../lib/db';
 import { geocode } from '../lib/weather/geocode';
+import * as metricsCache from '../lib/metricsCache';
 import { UpstreamError } from '../lib/weather/upstream';
 
 // Frost station lookups geocode the garden label; isGeocodeMiss stays real.
@@ -344,6 +345,25 @@ describe('GET /api/planting-guide frost stations', () => {
       frost_station_id: 'USW00024157',
       frost_station_label: 'Spokane, WA',
     });
+  });
+
+  it('drops the cached dashboard when it stores a station', async () => {
+    vi.mocked(geocode).mockResolvedValue(SPOKANE);
+    const email = `guide-station-cache-${++accountCount}@example.com`;
+    const accountId = await createUser(email);
+    const agent = await loginAgent(email);
+    await createGarden(agent, '6b', 'Spokane, WA');
+    // The dashboard's own cache key shape.
+    const cacheKey = `${accountId}:${SEASON}:all`;
+    metricsCache.set(cacheKey, { stale: true });
+
+    await agent.get('/api/planting-guide').expect(200);
+    expect(metricsCache.get(cacheKey)).toBeUndefined();
+
+    // A load that stores nothing leaves the cache alone.
+    metricsCache.set(cacheKey, { stale: true });
+    await agent.get('/api/planting-guide').expect(200);
+    expect(metricsCache.get(cacheKey)).toEqual({ stale: true });
   });
 
   it('does not look the station up again on a second load', async () => {
