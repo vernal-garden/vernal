@@ -505,7 +505,7 @@ test.describe('feedback bubble', () => {
   test('hidden on the verification link and "This wasn\'t me" pages', async ({ page }) => {
     const fab = page.getByRole('button', { name: 'Send feedback' });
     // Shown elsewhere, so its absence below means something.
-    await page.goto('/privacy');
+    await page.goto('/terms');
     await expect(fab).toBeVisible();
 
     const user = await createTestUser({ email: 'takeover-feedback-hidden@example.com', password: PASSWORD });
@@ -532,16 +532,26 @@ test.describe('wording', () => {
       'Please verify your email address. Until you do, whoever controls this address can take over this account or have it removed.',
     );
   });
+});
 
-  test('the privacy page explains unverified accounts', async ({ page }) => {
+test.describe('privacy redirect', () => {
+  test('sends /privacy to the website after the switch', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-11-16T00:00:01-08:00'));
+    await page.route('https://vernal.garden/**', (r) =>
+      r.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>stub</body></html>' }),
+    );
     await page.goto('/privacy');
-    const entry = page.locator('li', { has: page.locator('strong', { hasText: 'Unverified accounts:' }) });
-    await expect(entry).toHaveText(
-      "Unverified accounts: if an account’s email address is never verified, the next person to prove they control that address, by verifying it, resetting the password, or signing in with Google, is asked whether they created the account. If they say yes, the account stays as it is. If they say no, or use the “This wasn’t me” link in the verification email, we treat the account as created by someone else and delete it after 30 days. Someone who says no while signing in gets a new account of their own. Questions about an account removed this way can go to hello@vernal.garden during that period.",
+    await expect(page).toHaveURL('https://vernal.garden/privacy');
+  });
+
+  test('keeps /privacy in the app before the switch', async ({ page, baseURL }) => {
+    await page.route('https://vernal.garden/**', (r) =>
+      r.fulfill({ status: 200, contentType: 'text/html', body: '<html><body>stub</body></html>' }),
     );
-    await expect(entry.getByRole('link', { name: 'hello@vernal.garden' })).toHaveAttribute(
-      'href',
-      'mailto:hello@vernal.garden',
-    );
+    await page.clock.setFixedTime(new Date('2026-11-15T23:59:59-08:00'));
+    await page.goto('/privacy');
+    await expect(page.getByTestId('privacy-page')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Who we are' })).toBeVisible();
+    await expect(page).toHaveURL(new URL('/privacy', baseURL).href);
   });
 });
