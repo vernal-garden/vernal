@@ -1,25 +1,10 @@
 import * as Sentry from '@sentry/react';
-
-// Removes token-bearing query params (reset, email-confirm, verify links).
-function stripTokens(value: unknown): unknown {
-  return typeof value === 'string' ? value.replace(/([?&])token=[^&#]*/g, '$1token=[REDACTED]') : value;
-}
-
-function scrubData(data: Record<string, unknown> | undefined): void {
-  if (!data) return;
-  for (const key of ['url', 'from', 'to']) {
-    if (key in data) data[key] = stripTokens(data[key]);
-  }
-}
-
-const SPAN_DATA_KEYS = ['http.query', 'url.query', 'url.full', 'http.url', 'url'];
-
-function scrubSpanData(data: Record<string, unknown> | undefined): void {
-  if (!data) return;
-  for (const key of SPAN_DATA_KEYS) {
-    if (key in data) data[key] = stripTokens(data[key]);
-  }
-}
+import {
+  scrubBreadcrumbEmails,
+  scrubEventEmails,
+  stripBreadcrumbQueries,
+  stripEventQueries,
+} from './lib/sentryEmail';
 
 // Capture the one-time token before Sentry.init so it never reaches error or
 // performance reports, then remove it from the address bar straight away.
@@ -67,23 +52,15 @@ Sentry.init({
   integrations: [
     Sentry.browserTracingIntegration(),
   ],
+  // Query strings (reset tokens, searched addresses) are stripped everywhere a
+  // URL is recorded, then any remaining address is masked.
   beforeSend(event) {
-    if (event.request?.url) event.request.url = stripTokens(event.request.url) as string;
-    event.breadcrumbs?.forEach((crumb) => scrubData(crumb.data));
-    return event;
+    return scrubEventEmails(stripEventQueries(event));
   },
   beforeSendTransaction(event) {
-    if (event.request?.url) event.request.url = stripTokens(event.request.url) as string;
-    if (event.transaction) event.transaction = stripTokens(event.transaction) as string;
-    event.spans?.forEach((span) => {
-      if (span.description) span.description = stripTokens(span.description) as string;
-      scrubSpanData(span.data as Record<string, unknown> | undefined);
-    });
-    scrubSpanData(event.contexts?.trace?.data as Record<string, unknown> | undefined);
-    return event;
+    return scrubEventEmails(stripEventQueries(event));
   },
   beforeBreadcrumb(crumb) {
-    scrubData(crumb.data);
-    return crumb;
+    return scrubBreadcrumbEmails(stripBreadcrumbQueries(crumb));
   },
 });
