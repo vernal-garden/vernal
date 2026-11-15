@@ -1,8 +1,29 @@
+import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import LegalPageLayout, { ContactLink, List, P, Section, legalLinkStyle } from '../components/legal/LegalPageLayout';
 import { GOVERNING_STATE, OPERATOR_NAME } from '../lib/legal';
+import { privacyRedirectTarget } from '../lib/privacyRedirect';
 
 export default function PrivacyPage() {
+  const target = privacyRedirectTarget(Date.now());
+
+  useEffect(() => {
+    if (target) window.location.replace(target);
+  }, [target]);
+
+  if (target) {
+    return (
+      <LegalPageLayout title="Privacy Policy" testId="privacy-page">
+        <P>
+          Opening the privacy policy…{' '}
+          <a href={target} style={legalLinkStyle}>
+            {target}
+          </a>
+        </P>
+      </LegalPageLayout>
+    );
+  }
+
   return (
     <LegalPageLayout title="Privacy Policy" testId="privacy-page">
       <P>
