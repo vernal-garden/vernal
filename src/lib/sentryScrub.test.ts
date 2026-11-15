@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Event } from '@sentry/node';
-import { scrubEvent } from './sentryScrub';
+import { scrubEvent, maskEmails } from './sentryScrub';
 
 describe('scrubEvent', () => {
   it('masks email addresses in the message and exception values', () => {
@@ -95,5 +95,69 @@ describe('scrubEvent', () => {
       'http.url': 'https://x/b',
       authorization: '[REDACTED]',
     });
+  });
+
+  it('masks addresses in extra, contexts, tags, span data and breadcrumb data, nested and in arrays', () => {
+    const out = scrubEvent({
+      tags: { who: 'a@b.com', count: 3 },
+      extra: { a: 'x@y.com', l1: { l2: { v: 'deep@y.com' } }, list: ['p@q.com', { n: 'r@s.com' }] },
+      contexts: { c: { l1: { l2: 'ctx@y.com' }, list: ['c2@y.com'] } },
+      spans: [{ data: { v: 'sp@y.com', l1: { l2: 'sp2@y.com' }, list: ['sp3@y.com'] } }],
+      breadcrumbs: [{ category: 'x', data: { v: 'bc@y.com', l1: { l2: 'bc2@y.com' }, list: ['bc3@y.com'] } }],
+    } as unknown as Event);
+    expect(out.tags).toEqual({ who: '[EMAIL]', count: 3 });
+    expect(out.extra).toEqual({
+      a: '[EMAIL]',
+      l1: { l2: { v: '[EMAIL]' } },
+      list: ['[EMAIL]', { n: '[EMAIL]' }],
+    });
+    expect(out.contexts).toEqual({ c: { l1: { l2: '[EMAIL]' }, list: ['[EMAIL]'] } });
+    expect((out as unknown as { spans: Array<{ data: unknown }> }).spans[0].data).toEqual({
+      v: '[EMAIL]',
+      l1: { l2: '[EMAIL]' },
+      list: ['[EMAIL]'],
+    });
+    expect(out.breadcrumbs![0].data).toEqual({ v: '[EMAIL]', l1: { l2: '[EMAIL]' }, list: ['[EMAIL]'] });
+  });
+
+  it('masks addresses in the transaction, request url and span description and still strips queries', () => {
+    const out = scrubEvent({
+      transaction: 'GET /u/jo@example.com?token=x',
+      request: { url: 'https://app.vernal.garden/u/jo@example.com/page?token=y' },
+      spans: [{ description: 'GET /u/jo@example.com?token=z' }],
+    } as unknown as Event);
+    // The address pattern also swallows adjacent path characters, which is fine: it over-masks.
+    expect(out.transaction).toBe('GET [EMAIL]');
+    expect(out.request?.url).toBe('[EMAIL]');
+    expect((out as unknown as { spans: Array<{ description: string }> }).spans[0].description).toBe('GET [EMAIL]');
+  });
+
+  it('masks addresses under URL-like keys holding arrays or objects', () => {
+    const out = scrubEvent({
+      extra: { to: ['a@b.com'], from: { address: 'a@b.com' } },
+    } as unknown as Event);
+    expect(out.extra).toEqual({ to: ['[EMAIL]'], from: { address: '[EMAIL]' } });
+  });
+
+  it('keeps sensitive keys as [REDACTED] rather than [EMAIL]', () => {
+    const out = scrubEvent({
+      extra: { password: 'jo@example.com', token: 'jo@example.com', nested: { authorization: 'jo@example.com' } },
+    } as unknown as Event);
+    expect(out.extra).toEqual({
+      password: '[REDACTED]',
+      token: '[REDACTED]',
+      nested: { authorization: '[REDACTED]' },
+    });
+  });
+});
+
+describe('maskEmails', () => {
+  it('masks both inputs when called twice in a row', () => {
+    expect(maskEmails('first a@b.com here')).toBe('first [EMAIL] here');
+    expect(maskEmails('second c@d.org there')).toBe('second [EMAIL] there');
+  });
+
+  it('leaves text with no address unchanged', () => {
+    expect(maskEmails('nothing to see at 5 pm')).toBe('nothing to see at 5 pm');
   });
 });
