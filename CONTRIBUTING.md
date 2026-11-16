@@ -14,6 +14,8 @@ The seed database (Cambium) is central to what makes Vernal useful, and it needs
 
 The growth visualization system needs illustrated stages for a long plant list, roughly 5 to 6 stages per plant, from seed to harvest-ready. The style guide is at [vernal.garden/illustrations](https://vernal.garden/illustrations). If you're interested in contributing, open an [Issue](https://github.com/vernal-garden/vernal/issues) to say so.
 
+Before I use an illustration, I’ll ask you to accept the Vernal Individual Contributor License Agreement by email. It lets me use your artwork in Vernal, and you keep ownership of it.
+
 ## Code Contributions
 
 Not open yet. The codebase is too early to contribute to in any useful way. When that changes, this file gets updated and a note in the repo will say what's actually open.
@@ -21,5 +23,3 @@ Not open yet. The codebase is too early to contribute to in any useful way. When
 ## A Note on Conduct
 
 This repository is for serious, good-faith engagement. That's the expectation.
-
-Before I use an illustration, I’ll ask you to accept the Vernal Individual Contributor License Agreement by email. It lets me use your artwork in Vernal, and you keep ownership of it.
