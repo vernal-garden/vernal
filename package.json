@@ -20,6 +20,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "account": "tsx scripts/account.ts",
     "seed:cambium": "tsx scripts/seed-cambium.ts",
+    "import:cambium-n1": "tsx scripts/import-cambium-n1.ts",
     "clean:test-seeds": "tsx scripts/clean-test-seeds.ts",
     "backfill:lifetime-pi": "tsx scripts/backfill-lifetime-payment-intents.ts",
     "cleanup:r2-orphans": "tsx scripts/cleanup-r2-orphans.ts",

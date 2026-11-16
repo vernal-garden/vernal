@@ -118,6 +118,7 @@ export async function refreshGardenBadges(): Promise<{ affected: number }> {
           )
           AND c.relationship = 'antagonistic'
           AND c.confidence >= $1
+          AND c.status = 'active'
         WHERE p1.garden_id = g.id
           AND p1.cambium_seed_id IS NOT NULL
           AND p1.season = $2::int

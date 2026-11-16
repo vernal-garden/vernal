@@ -18,7 +18,7 @@ router.use('/:id/photos', seedPhotosRouter);
 
 const VALID_SUNLIGHT = new Set(['full_sun', 'partial_shade', 'full_shade']);
 const VALID_WATERING = new Set(['low', 'moderate', 'high']);
-const VALID_FROST = new Set(['none', 'light', 'hard']);
+const VALID_FROST = new Set(['none', 'light', 'hard', 'warm']);
 const VALID_ORIGINS = new Set(['user_created', 'cambium_imported', 'cambium_linked']);
 
 const SEED_CAP_ERROR = `You can have up to ${LIMITS.seedsPerAccount} seeds.`;
@@ -61,6 +61,7 @@ interface SeedRow {
   is_favourite: boolean;
   illustration_key: string | null;
   planting_depth_inches: string | null;    // NUMERIC(5,2) → string from pg
+  in_row_spacing_inches: string | null;    // NUMERIC(6,2) → string from pg
   row_spacing_inches: string | null;       // NUMERIC(6,2) → string from pg
   germination_days_min: number | null;
   germination_days_max: number | null;
@@ -88,6 +89,7 @@ interface CambiumSeedRow {
   succession_interval_weeks: number | null;
   illustration_key: string | null;
   planting_depth_inches: string | null;
+  in_row_spacing_inches: string | null;
   row_spacing_inches: string | null;
   germination_days_min: number | null;
   germination_days_max: number | null;
@@ -104,7 +106,7 @@ const SEED_SELECT = `
   sunlight, watering_needs, hardiness_zone_min, hardiness_zone_max,
   frost_tolerance, weeks_to_transplant, succession_interval_weeks,
   user_notes, user_rating, is_favourite, illustration_key,
-  planting_depth_inches, row_spacing_inches,
+  planting_depth_inches, in_row_spacing_inches, row_spacing_inches,
   germination_days_min, germination_days_max,
   germination_temp_min_f, germination_temp_max_f,
   tags, created_at, updated_at
@@ -136,6 +138,7 @@ function formatSeed(row: SeedRow) {
     isFavourite: row.is_favourite,
     illustrationKey: row.illustration_key,
     plantingDepthInches: row.planting_depth_inches != null ? Number(row.planting_depth_inches) : null,
+    inRowSpacingInches: row.in_row_spacing_inches != null ? Number(row.in_row_spacing_inches) : null,
     rowSpacingInches: row.row_spacing_inches != null ? Number(row.row_spacing_inches) : null,
     germinationDaysMin: row.germination_days_min,
     germinationDaysMax: row.germination_days_max,
@@ -319,6 +322,14 @@ router.post('/', writeLimiter, async (req, res) => {
     plantingDepthInches = body.plantingDepthInches;
   }
 
+  let inRowSpacingInches: number | null = null;
+  if (body.inRowSpacingInches != null) {
+    if (typeof body.inRowSpacingInches !== 'number' || !isFinite(body.inRowSpacingInches) || body.inRowSpacingInches <= 0) {
+      return res.status(400).json({ error: 'inRowSpacingInches must be a positive number' });
+    }
+    inRowSpacingInches = body.inRowSpacingInches;
+  }
+
   let rowSpacingInches: number | null = null;
   if (body.rowSpacingInches != null) {
     if (typeof body.rowSpacingInches !== 'number' || !isFinite(body.rowSpacingInches) || body.rowSpacingInches <= 0) {
@@ -442,12 +453,12 @@ router.post('/', writeLimiter, async (req, res) => {
          planting_depth_inches, row_spacing_inches,
          germination_days_min, germination_days_max,
          germination_temp_min_f, germination_temp_max_f,
-         tags
+         tags, in_row_spacing_inches
        ) VALUES (
          $1, $2, $3, $4, 'user_created', 'private',
          $5, $6, $7, $8, $9, $10, $11,
          $12, $13, $14, $15, $16, $17, $18,
-         $19, $20, $21, $22, $23, $24, $25
+         $19, $20, $21, $22, $23, $24, $25, $26
        )
        RETURNING ${SEED_SELECT}`,
       [
@@ -459,7 +470,7 @@ router.post('/', writeLimiter, async (req, res) => {
         plantingDepthInches, rowSpacingInches,
         germinationDaysMin, germinationDaysMax,
         germinationTempMinF, germinationTempMaxF,
-        tags,
+        tags, inRowSpacingInches,
       ],
     );
     await client.query('COMMIT');
@@ -496,7 +507,7 @@ router.post('/add-from-cambium', writeLimiter, async (req, res) => {
               sunlight, watering_needs, hardiness_zone_min, hardiness_zone_max,
               frost_tolerance, weeks_to_transplant, succession_interval_weeks,
               illustration_key,
-              planting_depth_inches, row_spacing_inches,
+              planting_depth_inches, in_row_spacing_inches, row_spacing_inches,
               germination_days_min, germination_days_max,
               germination_temp_min_f, germination_temp_max_f
        FROM cambium.seeds
@@ -540,12 +551,14 @@ router.post('/add-from-cambium', writeLimiter, async (req, res) => {
          illustration_key,
          planting_depth_inches, row_spacing_inches,
          germination_days_min, germination_days_max,
-         germination_temp_min_f, germination_temp_max_f
+         germination_temp_min_f, germination_temp_max_f,
+         in_row_spacing_inches
        ) VALUES (
          $1, $2, $3, $4, 'cambium_imported', 'private', $5,
          $6, $7, $8, $9, $10, $11, $12,
          $13, $14, $15, $16,
-         $17, $18, $19, $20, $21, $22
+         $17, $18, $19, $20, $21, $22,
+         $23
        )
        RETURNING ${SEED_SELECT}`,
       [
@@ -558,6 +571,7 @@ router.post('/add-from-cambium', writeLimiter, async (req, res) => {
         src.planting_depth_inches, src.row_spacing_inches,
         src.germination_days_min, src.germination_days_max,
         src.germination_temp_min_f, src.germination_temp_max_f,
+        src.in_row_spacing_inches,
       ],
     );
     await client.query('COMMIT');
@@ -719,6 +733,16 @@ router.patch('/:id', writeLimiter, async (req, res) => {
       }
       updates.push(`planting_depth_inches = $${idx++}`);
       values.push(body.plantingDepthInches);
+    }
+
+    if (body.inRowSpacingInches !== undefined) {
+      if (body.inRowSpacingInches !== null) {
+        if (typeof body.inRowSpacingInches !== 'number' || !isFinite(body.inRowSpacingInches) || body.inRowSpacingInches <= 0) {
+          return res.status(400).json({ error: 'inRowSpacingInches must be a positive number' });
+        }
+      }
+      updates.push(`in_row_spacing_inches = $${idx++}`);
+      values.push(body.inRowSpacingInches);
     }
 
     if (body.rowSpacingInches !== undefined) {

@@ -229,12 +229,13 @@ describe('GET /api/planting-guide', () => {
     expect(res.body.gardens[0].zoneLocationLabel).toBeNull();
   });
 
-  it('normalizes an unknown stored frost tolerance to none', async () => {
+  it('normalizes a missing stored frost tolerance to none', async () => {
     // A future season keeps this planting out of the other tests' rows.
+    // Migration 040's CHECK rules out unknown values, so NULL is the case left.
     const future = SEASON + 1;
     const { rows } = await pool.query<{ id: number }>(
       `INSERT INTO cambium.seeds (common_name, source, frost_tolerance)
-       VALUES ('Mystery Squash', 'editorial', 'moderate') RETURNING id`,
+       VALUES ('Mystery Squash', 'editorial', NULL) RETURNING id`,
     );
     await plant(await createBed(gardenB, future), gardenB, future, { cambiumSeedId: rows[0].id });
     const res = await agentB.get(`/api/planting-guide?season=${future}`);

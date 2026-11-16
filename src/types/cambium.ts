@@ -20,6 +20,7 @@ export interface SeedDetail extends SeedSummary {
   weeksToTransplant: number | null;
   successionIntervalWeeks: number | null;
   plantingDepthInches: number | null;
+  inRowSpacingInches: number | null;
   rowSpacingInches: number | null;
   germinationDaysMin: number | null;
   germinationDaysMax: number | null;

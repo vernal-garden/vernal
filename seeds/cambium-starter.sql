@@ -23,19 +23,20 @@ SELECT common_name, scientific_name, plant_family,
        hardiness_zone_min, hardiness_zone_max,
        frost_tolerance, weeks_to_transplant, succession_interval_weeks,
        moderation_status, source
+-- Row order sets the seed ids and matches dev/prod (existing_id in seeds/cambium-n1/seeds.csv depends on it).
 FROM (VALUES
   ('Tomato',      'Solanum lycopersicum',  'Solanaceae',      24::numeric,  60,  85, 'full_sun',      'moderate', '10', '12', 'none',  6,    NULL::int, 'active', 'editorial'),
-  ('Carrot',      'Daucus carota',         'Apiaceae',         3::numeric,  70, 100, 'full_sun',      'moderate', '3',  '10', 'light', NULL::int, NULL::int, 'active', 'editorial'),
   ('Garlic',      'Allium sativum',        'Amaryllidaceae',   6::numeric, 240, 270, 'full_sun',      'low',      '4',  '9',  'hard',  NULL::int, NULL::int, 'active', 'editorial'),
-  ('Onion',       'Allium cepa',           'Amaryllidaceae',   4::numeric, 100, 120, 'full_sun',      'moderate', '5',  '10', 'light', 10,   NULL::int, 'active', 'editorial'),
-  ('Lettuce',     'Lactuca sativa',        'Asteraceae',      10::numeric,  45,  75, 'partial_shade', 'moderate', '4',  '9',  'light', 4,    NULL::int, 'active', 'editorial'),
-  ('Basil',       'Ocimum basilicum',      'Lamiaceae',       12::numeric,  60,  75, 'full_sun',      'moderate', '10', '12', 'none',  6,    NULL::int, 'active', 'editorial'),
-  ('Green Bean',  'Phaseolus vulgaris',    'Fabaceae',         6::numeric,  50,  65, 'full_sun',      'moderate', '3',  '10', 'none',  NULL::int, NULL::int, 'active', 'editorial'),
   ('Cucumber',    'Cucumis sativus',       'Cucurbitaceae',   18::numeric,  50,  70, 'full_sun',      'high',     '4',  '11', 'none',  3,    NULL::int, 'active', 'editorial'),
-  ('Cabbage',     'Brassica oleracea',     'Brassicaceae',    18::numeric,  70, 120, 'full_sun',      'moderate', '1',  '9',  'hard',  6,    NULL::int, 'active', 'editorial'),
-  ('Spinach',     'Spinacia oleracea',     'Amaranthaceae',    6::numeric,  37,  50, 'partial_shade', 'moderate', '3',  '9',  'hard',  NULL::int, NULL::int, 'active', 'editorial'),
   ('Pepper',      'Capsicum annuum',       'Solanaceae',      18::numeric,  70,  90, 'full_sun',      'moderate', '9',  '11', 'none',  8,    NULL::int, 'active', 'editorial'),
-  ('Pea',         'Pisum sativum',         'Fabaceae',         4::numeric,  60,  70, 'full_sun',      'moderate', '3',  '9',  'light', NULL::int, NULL::int, 'active', 'editorial')
+  ('Pea',         'Pisum sativum',         'Fabaceae',         4::numeric,  60,  70, 'full_sun',      'moderate', '3',  '9',  'light', NULL::int, NULL::int, 'active', 'editorial'),
+  ('Spinach',     'Spinacia oleracea',     'Amaranthaceae',    6::numeric,  37,  50, 'partial_shade', 'moderate', '3',  '9',  'hard',  NULL::int, NULL::int, 'active', 'editorial'),
+  ('Carrot',      'Daucus carota',         'Apiaceae',         3::numeric,  70, 100, 'full_sun',      'moderate', '3',  '10', 'light', NULL::int, NULL::int, 'active', 'editorial'),
+  ('Cabbage',     'Brassica oleracea',     'Brassicaceae',    18::numeric,  70, 120, 'full_sun',      'moderate', '1',  '9',  'hard',  6,    NULL::int, 'active', 'editorial'),
+  ('Onion',       'Allium cepa',           'Amaryllidaceae',   4::numeric, 100, 120, 'full_sun',      'moderate', '5',  '10', 'light', 10,   NULL::int, 'active', 'editorial'),
+  ('Green Bean',  'Phaseolus vulgaris',    'Fabaceae',         6::numeric,  50,  65, 'full_sun',      'moderate', '3',  '10', 'none',  NULL::int, NULL::int, 'active', 'editorial'),
+  ('Lettuce',     'Lactuca sativa',        'Asteraceae',      10::numeric,  45,  75, 'partial_shade', 'moderate', '4',  '9',  'light', 4,    NULL::int, 'active', 'editorial'),
+  ('Basil',       'Ocimum basilicum',      'Lamiaceae',       12::numeric,  60,  75, 'full_sun',      'moderate', '10', '12', 'none',  6,    NULL::int, 'active', 'editorial')
 ) AS v(common_name, scientific_name, plant_family,
        spacing_inches, maturity_days_min, maturity_days_max,
        sunlight, watering_needs,

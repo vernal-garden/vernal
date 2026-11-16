@@ -1,0 +1,1 @@
+The data files in this folder are licensed under ODbL 1.0 (the database) and DbCL 1.0 (individual entries), not AGPL-3.0. They move to the Cambium repository after launch. Copyright 2026 Robert P. Horton, Jr.

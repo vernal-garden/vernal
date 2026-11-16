@@ -126,7 +126,7 @@ export async function getSeedById(id: number): Promise<SeedDetail | null> {
             sunlight, watering_needs,
             hardiness_zone_min, hardiness_zone_max,
             frost_tolerance, weeks_to_transplant, succession_interval_weeks,
-            planting_depth_inches, row_spacing_inches,
+            planting_depth_inches, in_row_spacing_inches, row_spacing_inches,
             germination_days_min, germination_days_max,
             germination_temp_min_f, germination_temp_max_f,
             source
@@ -161,6 +161,7 @@ export async function getSeedById(id: number): Promise<SeedDetail | null> {
     weeksToTransplant: (row.weeks_to_transplant as number | null) ?? null,
     successionIntervalWeeks: (row.succession_interval_weeks as number | null) ?? null,
     plantingDepthInches: row.planting_depth_inches != null ? Number(row.planting_depth_inches) : null,
+    inRowSpacingInches: row.in_row_spacing_inches != null ? Number(row.in_row_spacing_inches) : null,
     rowSpacingInches: row.row_spacing_inches != null ? Number(row.row_spacing_inches) : null,
     germinationDaysMin: (row.germination_days_min as number | null) ?? null,
     germinationDaysMax: (row.germination_days_max as number | null) ?? null,
@@ -194,20 +195,20 @@ export async function getCompanionsForSeed(
 
   // A pair can have a row in each direction, and they can disagree. Read both
   // directions and resolve each neighbour once: antagonistic wins, then
-  // beneficial, then neutral. Rows below the threshold count as absent. The
-  // filter applies after resolving, so an antagonistic pair never shows up
-  // under relationship=beneficial.
+  // beneficial, then neutral. Rows below the threshold, and held rows, count
+  // as absent. The filter applies after resolving, so an antagonistic pair
+  // never shows up under relationship=beneficial.
   const result = await db.query(
     `WITH pair_rows AS (
        SELECT c.companion_seed_id AS neighbour_id, TRUE AS own_direction,
               c.relationship, c.confidence, c.notes, c.source
        FROM cambium.companions c
-       WHERE c.seed_id = $1 AND c.confidence >= $2
+       WHERE c.seed_id = $1 AND c.confidence >= $2 AND c.status = 'active'
        UNION ALL
        SELECT c.seed_id AS neighbour_id, FALSE AS own_direction,
               c.relationship, c.confidence, c.notes, c.source
        FROM cambium.companions c
-       WHERE c.companion_seed_id = $1 AND c.confidence >= $2
+       WHERE c.companion_seed_id = $1 AND c.confidence >= $2 AND c.status = 'active'
      ),
      resolved AS (
        SELECT DISTINCT ON (p.neighbour_id)
