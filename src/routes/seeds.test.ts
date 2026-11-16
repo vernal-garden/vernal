@@ -154,6 +154,36 @@ describe('POST /api/seeds — full growing fields', () => {
   });
 });
 
+describe('POST /api/seeds — Phase 68 fields', () => {
+  it("accepts frostTolerance 'warm' and inRowSpacingInches on create", async () => {
+    const res = await agent1.post('/api/seeds').send({
+      commonName: 'Warm Basil',
+      plantFamily: 'Lamiaceae',
+      frostTolerance: 'warm',
+      inRowSpacingInches: 10.5,
+      rowSpacingInches: 18,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.frostTolerance).toBe('warm');
+    expect(res.body.inRowSpacingInches).toBe(10.5);
+    expect(res.body.rowSpacingInches).toBe(18);
+  });
+
+  it('defaults inRowSpacingInches to null on create', async () => {
+    const res = await agent1.post('/api/seeds').send({ commonName: 'Plain Bean', plantFamily: 'Fabaceae' });
+    expect(res.status).toBe(201);
+    expect(res.body.inRowSpacingInches).toBeNull();
+  });
+
+  it('rejects a non-positive inRowSpacingInches on create', async () => {
+    const res = await agent1.post('/api/seeds').send({
+      commonName: 'Bad Spacing', plantFamily: 'Fam', inRowSpacingInches: 0,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/inRowSpacingInches/);
+  });
+});
+
 // ── 3. POST validation errors ─────────────────────────────────────────────────
 
 describe('POST /api/seeds — validation', () => {
@@ -292,6 +322,24 @@ describe('PATCH /api/seeds/:id', () => {
     expect(res.body.userRating).toBe(5);
     expect(res.body.isFavourite).toBe(true);
     expect(res.body.tags).toEqual(['tomato', 'easy']);
+  });
+
+  it("accepts frostTolerance 'warm' and inRowSpacingInches on update", async () => {
+    const res = await agent1
+      .patch(`/api/seeds/${patchSeedId}`)
+      .send({ frostTolerance: 'warm', inRowSpacingInches: 6 });
+    expect(res.status).toBe(200);
+    expect(res.body.frostTolerance).toBe('warm');
+    expect(res.body.inRowSpacingInches).toBe(6);
+  });
+
+  it('clears inRowSpacingInches with null and rejects a non-positive value on update', async () => {
+    const bad = await agent1.patch(`/api/seeds/${patchSeedId}`).send({ inRowSpacingInches: -1 });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toMatch(/inRowSpacingInches/);
+    const res = await agent1.patch(`/api/seeds/${patchSeedId}`).send({ inRowSpacingInches: null });
+    expect(res.status).toBe(200);
+    expect(res.body.inRowSpacingInches).toBeNull();
   });
 
   it('rejects patching origin', async () => {
@@ -459,6 +507,26 @@ describe('POST /api/seeds/add-from-cambium', () => {
       .post('/api/seeds/add-from-cambium')
       .send({ cambiumSeedId: flaggedCambiumSeedId });
     expect(res.status).toBe(400);
+  });
+
+  it("copies in_row_spacing_inches and a 'warm' frost value from cambium", async () => {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (
+         common_name, plant_family, moderation_status, source,
+         frost_tolerance, in_row_spacing_inches, row_spacing_inches
+       ) VALUES ('Cambium Okra', 'Malvaceae', 'active', 'editorial', 'warm', 12.5, 36)
+       RETURNING id`,
+    );
+    const res = await agent1.post('/api/seeds/add-from-cambium').send({ cambiumSeedId: rows[0].id });
+    expect(res.status).toBe(201);
+    expect(res.body.frostTolerance).toBe('warm');
+    expect(res.body.inRowSpacingInches).toBe(12.5);
+    expect(res.body.rowSpacingInches).toBe(36);
+
+    const detail = await request(app).get(`/api/catalogue/seeds/${rows[0].id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.inRowSpacingInches).toBe(12.5);
+    expect(detail.body.frostTolerance).toBe('warm');
   });
 });
 

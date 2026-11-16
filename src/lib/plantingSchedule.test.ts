@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   computeWindows,
   currentSeason,
+  normalizeFrostTolerance,
   type FrostContext,
   type Overrides,
   type Timing,
@@ -109,6 +110,31 @@ describe('computeWindows', () => {
       2027,
     );
     expect(w.missingReason).toBe('frost_free');
+  });
+
+  it('derives warm transplant L+14..L+28 and anchors harvest on it', () => {
+    const w = computeWindows({ ...TOMATO, frostTolerance: 'warm' }, NO_OVERRIDES, ZONE_FROST, 2027);
+    expect(w.indoorStart).toEqual({ start: '2027-02-21', end: '2027-03-07', source: 'zone_estimate' });
+    expect(w.transplant).toEqual({ start: '2027-04-25', end: '2027-05-09', source: 'zone_estimate' });
+    expect(w.directSow).toBeNull();
+    expect(w.harvest).toEqual({ start: '2027-06-24', end: '2027-07-14', source: 'zone_estimate' });
+  });
+
+  it('derives warm direct sow L+14..L+35', () => {
+    const w = computeWindows({ ...PEA, frostTolerance: 'warm' }, NO_OVERRIDES, ZONE_FROST, 2027);
+    expect(w.directSow).toEqual({ start: '2027-04-25', end: '2027-05-16', source: 'zone_estimate' });
+    expect(w.transplant).toBeNull();
+  });
+});
+
+describe('normalizeFrostTolerance', () => {
+  it('keeps warm as warm', () => {
+    expect(normalizeFrostTolerance('warm')).toBe('warm');
+  });
+
+  it('still treats null and unknown values as none', () => {
+    expect(normalizeFrostTolerance(null)).toBe('none');
+    expect(normalizeFrostTolerance('semi')).toBe('none');
   });
 });
 

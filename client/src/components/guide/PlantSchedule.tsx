@@ -187,7 +187,7 @@ function ScheduleBody({
         <>
           <DateSection title="Start indoors" field="indoorStart" window={indoorStart} {...fieldProps} />
           <DateSection title="Transplant out" field="transplant" window={transplant} {...fieldProps}>
-            {row.frostTolerance === 'none' && (
+            {(row.frostTolerance === 'none' || row.frostTolerance === 'warm') && (
               <p style={{ margin: 0, fontSize: 13, color: 'var(--c-text-2)' }}>
                 Wait until after your last frost date before transplanting.
               </p>

@@ -71,6 +71,7 @@ export interface CatalogueSeedDetail {
   source: 'openfarm' | 'community' | 'editorial';
   companions: CompanionEntry[];
   plantingDepthInches: number | null;
+  inRowSpacingInches: number | null;
   rowSpacingInches: number | null;
   germinationDaysMin: number | null;
   germinationDaysMax: number | null;
@@ -113,6 +114,7 @@ export interface PersonalSeedDetail {
   userRating: number | null;
   isFavourite: boolean;
   plantingDepthInches: number | null;
+  inRowSpacingInches: number | null;
   rowSpacingInches: number | null;
   germinationDaysMin: number | null;
   germinationDaysMax: number | null;

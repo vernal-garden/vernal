@@ -35,7 +35,7 @@ function wateringLabel(v: string | null): string | null {
 
 function frostLabel(v: string | null): string | null {
   if (!v) return null;
-  return { none: 'None', light: 'Light', hard: 'Hard' }[v] ?? v;
+  return { none: 'None', light: 'Light', hard: 'Hard', warm: 'Very tender (needs warm soil)' }[v] ?? v;
 }
 
 function rangeStr(min: number | null, max: number | null, unit: string): string | null {
@@ -134,6 +134,7 @@ const dangerSolidBtnStyle: React.CSSProperties = {
 function buildDataEntries(d: CatalogueSeedDetail | PersonalSeedDetail): DataGridEntry[] {
   return [
     { label: 'Spacing', value: d.spacingInches !== null ? `${d.spacingInches}"` : null },
+    { label: 'In-row spacing', value: d.inRowSpacingInches !== null ? `${d.inRowSpacingInches}"` : null },
     { label: 'Row spacing', value: d.rowSpacingInches !== null ? `${d.rowSpacingInches}"` : null },
     { label: 'Planting depth', value: d.plantingDepthInches !== null ? `${d.plantingDepthInches}"` : null },
     { label: 'Maturity', value: rangeStr(d.maturityDaysMin, d.maturityDaysMax, 'days') },

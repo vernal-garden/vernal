@@ -592,6 +592,46 @@ describe('refreshGardenBadges', () => {
     expect(byId[gardenLowConfidence]).toBe(false);
     expect(byId[gardenBeneficial]).toBe(false);
   });
+
+  it('ignores held companion rows for has_companion_warnings and keeps active ones', async () => {
+    const ownerId = await createAccount();
+
+    async function gardenWith(first: number, second: number): Promise<number> {
+      const gardenId = await createGarden(ownerId);
+      const bedId = await createBed(gardenId);
+      await createPlanting(bedId, gardenId, { cambiumSeedId: first });
+      await createPlanting(bedId, gardenId, { cambiumSeedId: second });
+      return gardenId;
+    }
+
+    const heldA = await createCambiumSeed();
+    const heldB = await createCambiumSeed();
+    await pool.query(
+      `INSERT INTO cambium.companions (seed_id, companion_seed_id, relationship, confidence, status)
+       VALUES ($1, $2, 'antagonistic', 90, 'held')`,
+      [heldA, heldB],
+    );
+    const gardenHeld = await gardenWith(heldA, heldB);
+
+    const activeA = await createCambiumSeed();
+    const activeB = await createCambiumSeed();
+    await pool.query(
+      `INSERT INTO cambium.companions (seed_id, companion_seed_id, relationship, confidence, status)
+       VALUES ($1, $2, 'antagonistic', 90, 'active')`,
+      [activeA, activeB],
+    );
+    const gardenActive = await gardenWith(activeA, activeB);
+
+    await refreshGardenBadges();
+
+    const { rows } = await pool.query<{ id: number; has_companion_warnings: boolean }>(
+      `SELECT id, has_companion_warnings FROM gardens WHERE id = ANY($1::int[])`,
+      [[gardenHeld, gardenActive]],
+    );
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r.has_companion_warnings]));
+    expect(byId[gardenHeld]).toBe(false);
+    expect(byId[gardenActive]).toBe(true);
+  });
 });
 
 describe('purgeExpiredGuests', () => {

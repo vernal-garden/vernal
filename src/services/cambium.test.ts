@@ -275,6 +275,26 @@ describe('getCompanionsForSeed', () => {
       expect(await relationOf(a, b)).toBeUndefined();
     });
 
+    it('excludes held companion rows in either direction and keeps active ones', async () => {
+      const a = await makeSeed('held_a');
+      const heldFwd = await makeSeed('held_fwd');
+      const heldRev = await makeSeed('held_rev');
+      const active = await makeSeed('held_active');
+      await makeRow(a, heldFwd, 'antagonistic');
+      await makeRow(heldRev, a, 'beneficial');
+      await makeRow(a, active, 'beneficial');
+      await pool.query(
+        `UPDATE cambium.companions SET status = 'held'
+          WHERE (seed_id = $1 AND companion_seed_id = $2) OR (seed_id = $3 AND companion_seed_id = $1)`,
+        [a, heldFwd, heldRev],
+      );
+      expect(await relationOf(a, heldFwd)).toBeUndefined();
+      expect(await relationOf(a, heldRev)).toBeUndefined();
+      expect(await relationOf(heldFwd, a)).toBeUndefined();
+      expect(await relationOf(heldRev, a)).toBeUndefined();
+      expect(await relationOf(a, active)).toBe('beneficial');
+    });
+
     it('applies the relationship filter after resolving the pair', async () => {
       const a = await makeSeed('filter_a');
       const b = await makeSeed('filter_b');

@@ -29,6 +29,7 @@ interface FormState {
   frostTolerance: string;
   successionIntervalWeeks: string;
   userNotes: string;
+  inRowSpacingInches: string;
   rowSpacingInches: string;
   plantingDepthInches: string;
   germinationDaysMin: string;
@@ -70,6 +71,7 @@ function seedToForm(seed: PersonalSeedDetail): FormState {
     frostTolerance: seed.frostTolerance ?? '',
     successionIntervalWeeks: toStr(seed.successionIntervalWeeks),
     userNotes: seed.userNotes ?? '',
+    inRowSpacingInches: toStr(seed.inRowSpacingInches),
     rowSpacingInches: toStr(seed.rowSpacingInches),
     plantingDepthInches: toStr(seed.plantingDepthInches),
     germinationDaysMin: toStr(seed.germinationDaysMin),
@@ -87,7 +89,7 @@ function emptyForm(): FormState {
     weeksToTransplant: '', sunlight: '', wateringNeeds: '',
     hardinessZoneMin: '', hardinessZoneMax: '', frostTolerance: '',
     successionIntervalWeeks: '', userNotes: '',
-    rowSpacingInches: '', plantingDepthInches: '',
+    inRowSpacingInches: '', rowSpacingInches: '', plantingDepthInches: '',
     germinationDaysMin: '', germinationDaysMax: '',
     germinationTempMinF: '', germinationTempMaxF: '',
     tags: [],
@@ -143,6 +145,8 @@ function buildAddPayload(f: FormState, spacingUnit: 'in' | 'cm', tempUnit: 'F' |
   if (f.scientificName.trim()) payload.scientificName = f.scientificName.trim();
   const sp = parseInches(f.spacingInches, spacingUnit);
   if (sp !== null) payload.spacingInches = sp;
+  const irsp = parseInches(f.inRowSpacingInches, spacingUnit);
+  if (irsp !== null) payload.inRowSpacingInches = irsp;
   const rsp = parseInches(f.rowSpacingInches, spacingUnit);
   if (rsp !== null) payload.rowSpacingInches = rsp;
   const pd = parseInches(f.plantingDepthInches, spacingUnit);
@@ -183,6 +187,8 @@ function buildEditPayload(
 
   const sp = parseInches(f.spacingInches, spacingUnit);
   if (sp !== (orig.spacingInches ?? null)) payload.spacingInches = sp;
+  const irsp = parseInches(f.inRowSpacingInches, spacingUnit);
+  if (irsp !== (orig.inRowSpacingInches ?? null)) payload.inRowSpacingInches = irsp;
   const rsp = parseInches(f.rowSpacingInches, spacingUnit);
   if (rsp !== (orig.rowSpacingInches ?? null)) payload.rowSpacingInches = rsp;
   const pd = parseInches(f.plantingDepthInches, spacingUnit);
@@ -572,6 +578,7 @@ export default function SeedForm({ mode, initialSeed, onClose, onSaved }: SeedFo
         hardinessZoneMax: detail.hardinessZoneMax ?? prev.hardinessZoneMax,
         frostTolerance: detail.frostTolerance ?? prev.frostTolerance,
         successionIntervalWeeks: toStr(detail.successionIntervalWeeks),
+        inRowSpacingInches: toStr(detail.inRowSpacingInches),
         rowSpacingInches: toStr(detail.rowSpacingInches),
         plantingDepthInches: toStr(detail.plantingDepthInches),
         germinationDaysMin: toStr(detail.germinationDaysMin),
@@ -742,6 +749,7 @@ export default function SeedForm({ mode, initialSeed, onClose, onSaved }: SeedFo
                     setForm(prev => ({
                       ...prev,
                       spacingInches: convert(prev.spacingInches),
+                      inRowSpacingInches: convert(prev.inRowSpacingInches),
                       rowSpacingInches: convert(prev.rowSpacingInches),
                       plantingDepthInches: convert(prev.plantingDepthInches),
                     }));
@@ -816,6 +824,7 @@ export default function SeedForm({ mode, initialSeed, onClose, onSaved }: SeedFo
             <select value={form.frostTolerance} onChange={e => setField('frostTolerance', e.target.value)} style={selectStyle}>
               <option value="">&mdash; select &mdash;</option>
               <option value="none">None</option>
+              <option value="warm">Very tender (needs warm soil)</option>
               <option value="light">Light</option>
               <option value="hard">Hard</option>
             </select>
@@ -856,6 +865,12 @@ export default function SeedForm({ mode, initialSeed, onClose, onSaved }: SeedFo
 
             {advancedOpen && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-4)', marginTop: 'var(--sp-4)' }}>
+
+                {/* In-row spacing */}
+                <div>
+                  <FieldLabel>In-row spacing ({spacingUnit})</FieldLabel>
+                  <input type="number" min={0} step={0.1} value={form.inRowSpacingInches} onChange={e => setField('inRowSpacingInches', e.target.value)} placeholder={spacingUnit} style={inputStyle} />
+                </div>
 
                 {/* Row spacing */}
                 <div>

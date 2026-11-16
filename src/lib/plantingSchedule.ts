@@ -76,12 +76,13 @@ function customWindow(override: string, season: number): Window {
   return { start: d, end: d, source: 'custom' };
 }
 
-export type FrostTolerance = 'none' | 'light' | 'hard';
+export type FrostTolerance = 'none' | 'light' | 'hard' | 'warm';
 
-// Anything other than 'light' or 'hard' (including null or an unknown stored
-// value) is treated as frost-tender.
+// 'light', 'hard' and 'warm' (very tender, needs warm soil) are kept as-is.
+// Anything else (including null or an unknown stored value) is treated as
+// frost-tender ('none').
 export function normalizeFrostTolerance(v: string | null): FrostTolerance {
-  return v === 'light' || v === 'hard' ? v : 'none';
+  return v === 'light' || v === 'hard' || v === 'warm' ? v : 'none';
 }
 
 export function computeWindows(
@@ -113,12 +114,14 @@ export function computeWindows(
     transplant =
       tolerance === 'hard' ? span(L, -21, 0, source)
       : tolerance === 'light' ? span(L, -7, 7, source)
+      : tolerance === 'warm' ? span(L, 14, 28, source)
       : span(L, 7, 21, source);
   }
   if (canDerive && !transplants) {
     directSow =
       tolerance === 'hard' ? span(L, -42, -14, source)
       : tolerance === 'light' ? span(L, -14, 14, source)
+      : tolerance === 'warm' ? span(L, 14, 35, source)
       : span(L, 7, 28, source);
   }
 

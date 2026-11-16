@@ -45,7 +45,7 @@ export interface GuideRow {
   plantFamily: string | null;
   plantingCount: number;
   successionIntervalWeeks: number | null;
-  frostTolerance: 'none' | 'light' | 'hard';
+  frostTolerance: 'none' | 'light' | 'hard' | 'warm';
   weeksToTransplant: number | null;
   maturityDaysMin: number | null;
   maturityDaysMax: number | null;
