@@ -21,3 +21,5 @@ Not open yet. The codebase is too early to contribute to in any useful way. When
 ## A Note on Conduct
 
 This repository is for serious, good-faith engagement. That's the expectation.
+
+Before I use an illustration, I’ll ask you to accept the Vernal Individual Contributor License Agreement by email. It lets me use your artwork in Vernal, and you keep ownership of it.
