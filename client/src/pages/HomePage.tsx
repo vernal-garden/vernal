@@ -528,7 +528,7 @@ export default function HomePage() {
     conflictSnapshotRef.current = new Set(conflictedIds);
     pendingPlacementRef.current = true;
     if (placementWindowTimerRef.current) clearTimeout(placementWindowTimerRef.current);
-    const result = await placePlanting(bedId, payload, seed.commonName, seed.cambiumIdentity);
+    const result = await placePlanting(bedId, payload, seed.commonName, seed.cambiumIdentity, seed.illustrationKey);
     const placed = result.ok;
     if (result.blocked) {
       showToast(`This square already has ${result.occupantName ?? 'a plant'}.`, 'error');
@@ -928,6 +928,7 @@ export default function HomePage() {
               spacingInches: seed.spacingInches ?? 6,
               spacingOnRecord: seed.spacingInches ?? null,
               cambiumIdentity: seed.cambiumSourceId ?? null,
+              illustrationKey: seed.illustrationKey ?? null,
             });
           }}
         />

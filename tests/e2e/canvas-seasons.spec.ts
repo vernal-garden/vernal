@@ -98,7 +98,7 @@ test('a harvest-ready marker offers Log harvest and Mark as harvested', async ({
   await page.goto(`/?garden=${gardenId}`);
   await openMarkerPopover(page, PLANT);
   const popover = inspectPopover(page, PLANT);
-  await expect(popover).toContainText('Harvest-ready');
+  await expect(popover).toContainText('Ready to harvest');
   await expect(popover).toContainText('Planted Jan 2');
   await expect(popover.getByRole('button', { name: 'Mark as harvested' })).toBeVisible();
   await expect(popover.getByRole('button', { name: 'Remove plant' })).toBeVisible();
@@ -126,7 +126,7 @@ test('Mark as harvested removes the option on the next open', async ({ page }) =
   await popover.getByRole('button', { name: 'Close' }).click();
   await expect(popover).toHaveCount(0);
   await openMarkerPopover(page, PLANT);
-  await expect(popover).toContainText('Harvest-ready');
+  await expect(popover).toContainText('Ready to harvest');
   await expect(popover.getByRole('link', { name: 'Log harvest' })).toBeVisible();
   await expect(popover.getByRole('button', { name: 'Mark as harvested' })).toHaveCount(0);
 

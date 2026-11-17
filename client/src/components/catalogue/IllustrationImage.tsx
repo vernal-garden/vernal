@@ -1,5 +1,6 @@
 // client/src/components/catalogue/IllustrationImage.tsx
 import { useEffect, useState } from 'react';
+import { ILLUSTRATIONS, illustrationUrl } from '../../lib/illustrations';
 
 interface Props {
   illustrationKey: string | null;
@@ -47,7 +48,15 @@ export default function IllustrationImage({ illustrationKey, size = 80, classNam
     setFailed(false);
   }, [illustrationKey]);
 
-  if (!illustrationKey || failed) {
+  // A known art key shows its stage-1 file; a path or https URL is used as
+  // before; anything else gets the fallback.
+  const src = illustrationKey && Object.prototype.hasOwnProperty.call(ILLUSTRATIONS, illustrationKey)
+    ? illustrationUrl(illustrationKey, 1)
+    : illustrationKey && (illustrationKey.startsWith('/') || illustrationKey.startsWith('https://'))
+      ? illustrationKey
+      : null;
+
+  if (!src || failed) {
     return (
       <span className={className} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
         <PlantFallbackSvg size={size} />
@@ -57,7 +66,7 @@ export default function IllustrationImage({ illustrationKey, size = 80, classNam
 
   return (
     <img
-      src={illustrationKey}
+      src={src}
       alt=""
       width={size}
       height={size}

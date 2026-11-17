@@ -995,3 +995,113 @@ describe('Freeform bed planting cap and point bounds', () => {
     expect(patch.body.error).toBe('point.x and point.y must be between -100000 and 100000');
   });
 });
+
+// ── Phase 69: illustrationKey, Cambium seed first, then the personal seed ───
+
+describe('Phase 69: GET plantings includes illustrationKey', () => {
+  let bedId: string;
+  const ids: Record<'cambium' | 'linked' | 'plain' | 'unkeyed' | 'own' | 'override', string> = {
+    cambium: '', linked: '', plain: '', unkeyed: '', own: '', override: '',
+  };
+
+  beforeAll(async () => {
+    const bedRes = await agent.post(`/api/gardens/${gardenId}/beds`).send({
+      type: 'grid',
+      label: 'P69 Art Bed',
+      grid: { x: 0, y: 0, cols: 4, rows: 4 },
+    });
+    bedId = bedRes.body.id;
+
+    const { rows: keyed } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source, illustration_key)
+       VALUES ('P69 Tomato', 'active', 'editorial', 'tomato'),
+              ('P69 Carrot', 'active', 'editorial', 'carrot'),
+              ('P69 Unkeyed', 'active', 'editorial', NULL)
+       RETURNING id`,
+    );
+    const [tomatoId, carrotId, unkeyedId] = keyed.map(r => r.id);
+
+    // Personal copy of the carrot with no key of its own: the key comes from Cambium.
+    const { rows: linked } = await pool.query<{ id: number }>(
+      `INSERT INTO seeds (owner_id, common_name, origin, contribution_status, cambium_source_id)
+       VALUES ($1, 'P69 Linked Carrot', 'cambium_imported', 'private', $2)
+       RETURNING id`,
+      [accountId, carrotId],
+    );
+
+    // A personal seed with its own key and no Cambium link, and a linked copy
+    // whose own key differs from Cambium's (Cambium wins).
+    const { rows: keyedPersonal } = await pool.query<{ id: number }>(
+      `INSERT INTO seeds (owner_id, common_name, origin, contribution_status, cambium_source_id, illustration_key)
+       VALUES ($1, 'P69 Own Pea', 'user_created', 'private', NULL, 'pea'),
+              ($1, 'P69 Override Carrot', 'cambium_imported', 'private', $2, 'tomato')
+       RETURNING id`,
+      [accountId, carrotId],
+    );
+
+    const url = `/api/gardens/${gardenId}/beds/${bedId}/plantings`;
+    const place = async (body: Record<string, unknown>) => {
+      const res = await agent.post(url).send(body);
+      expect(res.status).toBe(201);
+      return res.body.id as string;
+    };
+    ids.cambium = await place({ cambiumSeedId: tomatoId, cell: { x: 0, y: 0 } });
+    ids.linked = await place({ seedId: linked[0].id, cell: { x: 1, y: 0 } });
+    ids.plain = await place({ seedId: personalSeedId, cell: { x: 2, y: 0 } });
+    ids.unkeyed = await place({ cambiumSeedId: unkeyedId, cell: { x: 3, y: 0 } });
+    ids.own = await place({ seedId: keyedPersonal[0].id, cell: { x: 0, y: 1 } });
+    ids.override = await place({ seedId: keyedPersonal[1].id, cell: { x: 1, y: 1 } });
+  });
+
+  async function keysById(path: string): Promise<Map<string, unknown>> {
+    const res = await agent.get(path);
+    expect(res.status).toBe(200);
+    return new Map(
+      res.body.data.map((p: { id: string; illustrationKey: unknown }) => [p.id, p.illustrationKey]),
+    );
+  }
+
+  it('garden-wide GET: cambium planting gets the Cambium key', async () => {
+    const keys = await keysById(`/api/gardens/${gardenId}/plantings`);
+    expect(keys.get(ids.cambium)).toBe('tomato');
+  });
+
+  it('garden-wide GET: personal seed with cambium_source_id gets the source key', async () => {
+    const keys = await keysById(`/api/gardens/${gardenId}/plantings`);
+    expect(keys.get(ids.linked)).toBe('carrot');
+  });
+
+  it('garden-wide GET: illustrationKey is null with no Cambium link or no key', async () => {
+    const keys = await keysById(`/api/gardens/${gardenId}/plantings`);
+    expect(keys.has(ids.plain)).toBe(true);
+    expect(keys.get(ids.plain)).toBeNull();
+    expect(keys.has(ids.unkeyed)).toBe(true);
+    expect(keys.get(ids.unkeyed)).toBeNull();
+  });
+
+  it('garden-wide GET: personal seed with no Cambium link falls back to its own key', async () => {
+    const keys = await keysById(`/api/gardens/${gardenId}/plantings`);
+    expect(keys.get(ids.own)).toBe('pea');
+  });
+
+  it('garden-wide GET: the Cambium key wins over the personal seed key', async () => {
+    const keys = await keysById(`/api/gardens/${gardenId}/plantings`);
+    expect(keys.get(ids.override)).toBe('carrot');
+  });
+
+  it('bed GET returns the same illustrationKey values', async () => {
+    const keys = await keysById(`/api/gardens/${gardenId}/beds/${bedId}/plantings`);
+    expect(keys.get(ids.cambium)).toBe('tomato');
+    expect(keys.get(ids.linked)).toBe('carrot');
+    expect(keys.get(ids.plain)).toBeNull();
+    expect(keys.get(ids.unkeyed)).toBeNull();
+    expect(keys.get(ids.own)).toBe('pea');
+    expect(keys.get(ids.override)).toBe('carrot');
+  });
+
+  it('PATCH response includes illustrationKey', async () => {
+    const res = await agent.patch(`/api/plantings/${ids.linked}`).send({ quantity: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.illustrationKey).toBe('carrot');
+  });
+});

@@ -23,6 +23,10 @@ export interface Planting {
   seedId: string | null;
   cambiumSeedId: string | null;
   companionSeedId: string | null;
+  // Growth-stage art key: on server rows the Cambium seed's illustration_key,
+  // else the personal seed's; the armed seed's key on the optimistic row;
+  // null when there is none.
+  illustrationKey: string | null;
   spacingInches: number | null;
   commonName?: string | null;
   quantity: number;
@@ -42,6 +46,7 @@ export interface ArmedSeed {
   spacingInches: number;
   spacingOnRecord: number | null;   // the seed's real spacing; null if none
   cambiumIdentity: string | null;   // catalogue: its own id; personal: its cambiumSourceId, or null
+  illustrationKey: string | null;   // growth-stage art key, or null
 }
 
 export interface PlacePlantingResult {
@@ -148,6 +153,8 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     // The armed seed's Cambium identity, so the temp marker matches the
     // same-plant check before the server row arrives.
     cambiumIdentity?: string | null,
+    // The armed seed's art key, so the temp marker can show its art.
+    illustrationKey?: string | null,
   ): Promise<PlacePlantingResult> => {
     if (!gardenId) return { ok: false };
     const tempId = `temp-${Date.now()}`;
@@ -164,6 +171,7 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       seedId: payload.seedId ?? null,
       cambiumSeedId: payload.cambiumSeedId ?? null,
       companionSeedId: payload.cambiumSeedId ?? cambiumIdentity ?? null,
+      illustrationKey: illustrationKey ?? null,
       spacingInches: null,
       quantity: payload.quantity ?? 1,
       plantingDate: payload.plantingDate ?? null,

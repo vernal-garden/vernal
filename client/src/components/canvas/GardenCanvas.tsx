@@ -2,7 +2,7 @@ import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayou
 import type { CSSProperties, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import Konva from 'konva';
-import { Circle, Layer, Line, Group, Path, Rect, Shape, Stage, Text } from 'react-konva';
+import { Circle, Image as KonvaImage, Layer, Line, Group, Path, Rect, Shape, Stage, Text } from 'react-konva';
 import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
 import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
@@ -10,7 +10,9 @@ import { apiUrl, apiErrorMessage } from '../../lib/api';
 import { conflictLines } from '../../lib/conflicts';
 import FitLine from './FitLine';
 import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
-import { STAGE_NAMES, isHarvestReady } from '../../lib/growthStages';
+import { isHarvestReady, stageLabel } from '../../lib/growthStages';
+import { cropClass, illustrationUrl } from '../../lib/illustrations';
+import { useIllustration } from '../../lib/illustrationImages';
 import { shortDate } from '../../lib/guideDates';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { drawStageMark, markerTier } from './stageMarks';
@@ -509,6 +511,12 @@ const PlantingMarker = memo(function PlantingMarker({
   const sceneFunc = useCallback((ctx: Konva.Context) => {
     if (stage !== null) drawStageMark(ctx, stage, MARKER_RADIUS);
   }, [stage]);
+  const tier = markerTier(2 * MARKER_RADIUS * scale);
+  const { anchored } = planting.growth;
+  const showMark = !plain && tier === 'large' && anchored && stage !== null;
+  // Before the plain return so the hook always runs. Art is only requested
+  // when the mark shows; null draws today's mark.
+  const art = useIllustration(showMark && stage !== null ? illustrationUrl(planting.illustrationKey, stage) : null);
 
   if (plain) {
     return (
@@ -520,10 +528,7 @@ const PlantingMarker = memo(function PlantingMarker({
 
   const seedId = planting.cambiumSeedId ?? planting.seedId ?? planting.id;
   const color = markerColor(seedId);
-  const tier = markerTier(2 * MARKER_RADIUS * scale);
   const ready = isHarvestReady(planting);
-  const { anchored } = planting.growth;
-  const showMark = tier === 'large' && anchored && stage !== null;
   const showLabel = tier === 'medium' || (tier === 'large' && !showMark);
   const showHarvest = ready && tier !== 'small';
   // Phase 54: the plant count, on a dark band across the marker's lower part,
@@ -541,9 +546,18 @@ const PlantingMarker = memo(function PlantingMarker({
         fill={tier === 'small' && ready ? '#E6B85C' : color}
         opacity={0.88}
       />
-      {showMark && (
+      {showMark && (art ? (
+        <KonvaImage
+          image={art}
+          x={-MARKER_RADIUS * 0.75}
+          y={-MARKER_RADIUS * 0.75}
+          width={MARKER_RADIUS * 1.5}
+          height={MARKER_RADIUS * 1.5}
+          listening={false}
+        />
+      ) : (
         <Shape sceneFunc={sceneFunc} listening={false} />
-      )}
+      ))}
       {showCount && (
         <Path
           data="M -10.82 3.6 A 11.4 11.4 0 0 0 10.82 3.6 Z"
@@ -2354,7 +2368,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         <div style={{ paddingRight: 'var(--sp-3)' }}>
           {anchored && stage ? (
             <div style={{ fontSize: 13, color: 'var(--c-text-2)' }}>
-              <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>{STAGE_NAMES[stage]}</div>
+              <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>{stageLabel(stage, cropClass(planting.illustrationKey))}</div>
               {planting.plantingDate && <div>Planted {shortDate(planting.plantingDate)}</div>}
             </div>
           ) : (

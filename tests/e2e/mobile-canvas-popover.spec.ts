@@ -38,7 +38,7 @@ test('tapping a marker opens the popover without Remove plant', async ({ page })
   await openMarkerPopover(page, PLANT, { tap: true });
 
   const popover = inspectPopover(page, PLANT);
-  await expect(popover).toContainText('Harvest-ready');
+  await expect(popover).toContainText('Ready to harvest');
   await expect(popover.getByRole('link', { name: 'Log harvest' })).toBeVisible();
   await expect(popover.getByRole('button', { name: 'Mark as harvested' })).toBeVisible();
   await expect(popover.getByRole('button', { name: 'Close' })).toBeVisible();
