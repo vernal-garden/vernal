@@ -3,6 +3,9 @@ import * as api from '../lib/api';
 import { currentSeasonPacific } from '../lib/guideDates';
 import type { GrowthStage } from '../lib/growthStages';
 
+// How a planting went into its bed: sown from seed, or transplanted as a start.
+export type StartMethod = 'sown' | 'transplanted';
+
 export interface PlantingGrowth {
   stagePct: number | null;
   harvestReady: boolean;
@@ -30,7 +33,9 @@ export interface Planting {
   spacingInches: number | null;
   commonName?: string | null;
   quantity: number;
-  plantingDate: string | null;
+  startMethod: StartMethod;
+  // The day it went into this bed (YYYY-MM-DD). Growth stages follow it.
+  plantingDate: string;
   cell: { x: number; y: number } | null;
   point: { x: number; y: number } | null;
   growth: PlantingGrowth;
@@ -139,6 +144,27 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     syncPlantings({ ...prev, [bedId]: (prev[bedId] ?? []).filter(p => p.id !== plantingId) });
   }, [syncPlantings]);
 
+  // Records that the canvas has shown these plantings' current stage, so the
+  // entrance/pulse does not repeat. Local state updates first; the PATCH is
+  // best-effort and failures are ignored.
+  const markStagesDisplayed = useCallback((plantingIds: string[]) => {
+    if (!gardenId || plantingIds.length === 0) return;
+    const ids = new Set(plantingIds);
+    const prev = plantingsRef.current;
+    const next: PlantingsByBedId = {};
+    for (const [bedId, list] of Object.entries(prev)) {
+      next[bedId] = list.map(p =>
+        ids.has(p.id) ? { ...p, growth: { ...p.growth, displayedStage: p.growth.stage } } : p,
+      );
+    }
+    syncPlantings(next);
+    for (let i = 0; i < plantingIds.length; i += 500) {
+      api.patch(`/api/gardens/${gardenId}/plantings/displayed-stage`, {
+        plantingIds: plantingIds.slice(i, i + 500),
+      }).catch(() => {});
+    }
+  }, [gardenId, syncPlantings]);
+
   const placePlanting = useCallback(async (
     bedId: string,
     payload: {
@@ -147,7 +173,8 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       cell?: { x: number; y: number };
       point?: { x: number; y: number };
       quantity?: number;
-      plantingDate?: string;
+      startMethod: StartMethod;
+      plantingDate: string;
     },
     commonName?: string,
     // The armed seed's Cambium identity, so the temp marker matches the
@@ -163,6 +190,7 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     const cellOccupied = payload.cell != null && (plantingsRef.current[bedId] ?? []).some(p =>
       p.cell != null && p.cell.x === payload.cell!.x && p.cell.y === payload.cell!.y,
     );
+    const optimisticStage: GrowthStage = payload.startMethod === 'transplanted' ? 2 : 1;
     const optimistic: Planting = {
       id: tempId,
       bedId,
@@ -174,10 +202,14 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       illustrationKey: illustrationKey ?? null,
       spacingInches: null,
       quantity: payload.quantity ?? 1,
-      plantingDate: payload.plantingDate ?? null,
+      startMethod: payload.startMethod,
+      plantingDate: payload.plantingDate,
       cell: payload.cell ?? null,
       point: payload.point ?? null,
-      growth: EMPTY_GROWTH,
+      // Placing a plant sows it: show its first stage's art at once (a start
+      // goes in as a seedling). displayedStage matches so nothing reads it as
+      // a stage change.
+      growth: { ...EMPTY_GROWTH, stage: optimisticStage, displayedStage: optimisticStage, anchored: true },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       _commonName: commonName,
@@ -215,6 +247,9 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       }
       seqRef.current += 1;
       setLatestPlacing({ id: result.id, seq: seqRef.current });
+      // The user watched it go in, so its first stage counts as seen; without
+      // this the next garden/season load would replay its entrance.
+      if (created.growth.anchored && created.growth.stage !== null) markStagesDisplayed([created.id]);
       return { ok: true, merged: false, planting: created };
     } catch (e) {
       if (!cellOccupied) _removePlanting(tempId, bedId);
@@ -227,7 +262,7 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       setError(e instanceof Error ? e.message : 'Failed to place planting');
       return { ok: false };
     }
-  }, [gardenId, season, _addPlanting, _removePlanting, syncPlantings]);
+  }, [gardenId, season, _addPlanting, _removePlanting, syncPlantings, markStagesDisplayed]);
 
   const deletePlanting = useCallback(async (plantingId: string, bedId: string): Promise<void> => {
     const snapshot = plantingsRef.current;
@@ -320,27 +355,6 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     }
   }, [syncPlantings]);
 
-  // Records that the canvas has shown these plantings' current stage, so the
-  // entrance/pulse does not repeat. Local state updates first; the PATCH is
-  // best-effort and failures are ignored.
-  const markStagesDisplayed = useCallback((plantingIds: string[]) => {
-    if (!gardenId || plantingIds.length === 0) return;
-    const ids = new Set(plantingIds);
-    const prev = plantingsRef.current;
-    const next: PlantingsByBedId = {};
-    for (const [bedId, list] of Object.entries(prev)) {
-      next[bedId] = list.map(p =>
-        ids.has(p.id) ? { ...p, growth: { ...p.growth, displayedStage: p.growth.stage } } : p,
-      );
-    }
-    syncPlantings(next);
-    for (let i = 0; i < plantingIds.length; i += 500) {
-      api.patch(`/api/gardens/${gardenId}/plantings/displayed-stage`, {
-        plantingIds: plantingIds.slice(i, i + 500),
-      }).catch(() => {});
-    }
-  }, [gardenId, syncPlantings]);
-
   // "Mark as harvested": dismisses the harvest-ready indicator, then swaps in
   // the returned planting (indicatorDismissedAt set). Throws on failure so the
   // caller can show its own error; local state is untouched until success.
@@ -360,8 +374,35 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     });
   }, [syncPlantings]);
 
+  // "Change" in the inspection popover: how it went in and the day it went in.
+  // The server re-derives growth from them; the returned planting replaces the
+  // local one. Throws on failure so the caller can show its own error; local
+  // state is untouched until success. The new stage counts as seen, since the
+  // user just made the change.
+  const updatePlantingStart = useCallback(async (
+    plantingId: string,
+    bedId: string,
+    changes: { startMethod: StartMethod; plantingDate: string },
+  ): Promise<void> => {
+    const result = await api.patch<Planting>(`/api/plantings/${plantingId}`, changes);
+    if (!result) throw new Error('No planting returned');
+    const prev = plantingsRef.current;
+    syncPlantings({
+      ...prev,
+      [bedId]: (prev[bedId] ?? []).map(p =>
+        // Keep the local displayedStage: markStagesDisplayed may be ahead of
+        // the server row (its PATCH is best-effort).
+        p.id === plantingId
+          ? { ...result, growth: { ...result.growth, displayedStage: p.growth.displayedStage }, _commonName: p._commonName }
+          : p,
+      ),
+    });
+    if (result.growth.anchored && result.growth.stage !== null) markStagesDisplayed([plantingId]);
+  }, [syncPlantings, markStagesDisplayed]);
+
   return {
     plantingsByBedId, loading, error, errorKey, reload, placePlanting, deletePlanting, latestPlacing,
     updatePlantingPoint, updatePlantingQuantity, season, loadedKey, markStagesDisplayed, dismissIndicator,
+    updatePlantingStart,
   };
 }

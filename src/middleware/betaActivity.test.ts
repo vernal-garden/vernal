@@ -225,7 +225,6 @@ describe('isCountedWrite', () => {
     ['POST', '/api/seeds'],
     ['DELETE', '/api/seeds/5/photos/6'],
     ['POST', '/api/harvests'],
-    ['PUT', '/api/planting-guide/done'],
     ['PUT', '/api/planting-guide/overrides'],
     // Only the listed method+path pairs are excluded.
     ['PATCH', '/api/gardens/1/thumbnail'],
@@ -245,6 +244,8 @@ describe('isCountedWrite', () => {
     ['POST', '/api/seedsx'],
     ['POST', '/api/gardensx/1'],
     ['PUT', '/api/planting-guide'],
+    // The guide's done toggle is gone (Phase 70): placing a plant sows it.
+    ['PUT', '/api/planting-guide/done'],
     ['PUT', '/api/planting-guide/done/x'],
     ['POST', '/api/feedback'],
     ['POST', '/api/micro-feedback'],
@@ -299,13 +300,6 @@ describe('active weeks through the app', () => {
       [
         'a harvest create',
         () => f.agent.post('/api/harvests').send({ gardenId: Number(f.gardenId), seedId: Number(f.seedId) }),
-      ],
-      [
-        'PUT /planting-guide/done',
-        () =>
-          f.agent
-            .put('/api/planting-guide/done')
-            .send({ gardenId: Number(f.gardenId), seedId: Number(f.seedId), season, done: true }),
       ],
       [
         'PUT /planting-guide/overrides',

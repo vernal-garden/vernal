@@ -46,20 +46,6 @@ test.describe('signed in', () => {
     await expect(listItem(page, 'Tomato', 'Start indoors')).toBeVisible();
   });
 
-  test('the done checkbox stays ticked after a reload', async ({ page }) => {
-    await page.goto('/guide');
-    await viewButton(page, 'List').click();
-    const checkbox = page.getByRole('checkbox', { name: 'Tomato: Start indoors done' });
-    await expect(checkbox).not.toBeChecked();
-    const saved = page.waitForResponse((r) => r.url().includes('/api/planting-guide/done') && r.ok());
-    await checkbox.check();
-    await saved;
-
-    await page.reload();
-    await expect(page.getByRole('checkbox', { name: 'Tomato: Start indoors done' })).toBeChecked();
-    await expect(listItem(page, 'Tomato', 'Transplant out').getByText('Done', { exact: true })).toBeVisible();
-  });
-
   test('a custom transplant date can be set and reset', async ({ page }) => {
     await page.goto('/guide');
     await page.getByRole('button', { name: 'Open schedule for Tomato' }).click();
@@ -88,7 +74,7 @@ test.describe('signed in', () => {
     const inputs = dialog.getByLabel('Your date');
     await expect(inputs).toHaveCount(2);
     for (const input of await inputs.all()) await expect(input).toBeDisabled();
-    await expect(dialog.getByText('Done for this season')).toHaveCount(0);
+    await expect(dialog.getByRole('link', { name: 'Log harvest' })).toHaveCount(0);
   });
 
   test('?open=seed:<id> opens that plant’s schedule', async ({ page }) => {

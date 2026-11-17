@@ -7,7 +7,7 @@ import { writeLimiter } from '../middleware/rateLimiters';
 import { escapeLike, isNumericId } from '../lib/validation';
 import { LIMITS, withinCap } from '../lib/limits';
 import { currentSeason, isIsoDate } from '../lib/plantingSchedule';
-import { seasonOf } from '../lib/season';
+import { seasonOf, todayPacific } from '../lib/season';
 import { invalidateMetrics } from '../lib/metricsCache';
 import { recomputeHarvestableCount } from '../lib/gardenBadges';
 import { storage, isStorageConfigError } from '../lib/storage';
@@ -39,17 +39,6 @@ const MAX_PLANT_OPTIONS = 30;
 const STORAGE_UNAVAILABLE = 'Photo storage is not configured.';
 const TOO_MANY_PHOTOS = `Up to ${MAX_PHOTOS} photos per harvest.`;
 const NOT_AN_IMAGE = "That file isn't a supported image.";
-
-const PACIFIC_DATE = new Intl.DateTimeFormat('en-CA', {
-  timeZone: TZ,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-});
-
-function todayPacific(): string {
-  return PACIFIC_DATE.format(new Date());
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

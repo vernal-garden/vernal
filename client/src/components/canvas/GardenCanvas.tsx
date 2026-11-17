@@ -1,10 +1,10 @@
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import Konva from 'konva';
 import { Circle, Image as KonvaImage, Layer, Line, Group, Path, Rect, Shape, Stage, Text } from 'react-konva';
 import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
-import type { Planting, ArmedSeed, PlantingsByBedId } from '../../hooks/usePlantings';
+import type { Planting, ArmedSeed, PlantingsByBedId, StartMethod } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
 import { apiUrl, apiErrorMessage } from '../../lib/api';
 import { conflictLines } from '../../lib/conflicts';
@@ -13,10 +13,11 @@ import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
 import { isHarvestReady, stageLabel } from '../../lib/growthStages';
 import { cropClass, illustrationUrl } from '../../lib/illustrations';
 import { useIllustration } from '../../lib/illustrationImages';
-import { shortDate } from '../../lib/guideDates';
+import { shortDate, todayPacific } from '../../lib/guideDates';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { drawStageMark, markerTier } from './stageMarks';
-import { PLANTS_HERE_MAX, isSamePlant, plantCount, plantsLabel, prefillQuantity } from '../../lib/placement';
+import { PLANTS_HERE_MAX, isSamePlant, lastStartMethod, plantCount, plantsLabel, prefillQuantity } from '../../lib/placement';
+import StartMethodControl from './StartMethodControl';
 
 Konva.hitOnDragEnabled = true;
 
@@ -111,7 +112,10 @@ interface Props {
     cell: { x: number; y: number } | null,
     point: { x: number; y: number } | null,
     qty: number,
-    date: string | null,
+    startMethod: StartMethod,
+    date: string,
+    // True only when the date differs from today (Pacific).
+    dateEdited: boolean,
   ) => void;
   onConfirmRemoval: (planting: Planting) => void;
   // Phase 50: "Mark as harvested" in the inspection popover. Rejects on failure.
@@ -120,6 +124,8 @@ interface Props {
   // caller saves it and reports failures itself; the canvas ignores any
   // rejection defensively.
   onUpdateQuantity?: (planting: Planting, quantity: number) => Promise<void>;
+  // Phase 70: "Change" in the inspection popover (desktop). Rejects on failure.
+  onUpdateStart?: (planting: Planting, changes: { startMethod: StartMethod; plantingDate: string }) => Promise<void>;
   // Phase 20: companion indicators
   conflictedIds?: Set<string>;
   conflictsByPlantingId?: Map<string, Set<string>>;
@@ -526,8 +532,8 @@ const PlantingMarker = memo(function PlantingMarker({
     );
   }
 
-  const seedId = planting.cambiumSeedId ?? planting.seedId ?? planting.id;
-  const color = markerColor(seedId);
+  const colorId = planting.companionSeedId ?? planting.seedId ?? planting.id;
+  const color = markerColor(colorId);
   const ready = isHarvestReady(planting);
   const showLabel = tier === 'medium' || (tier === 'large' && !showMark);
   const showHarvest = ready && tier !== 'small';
@@ -654,7 +660,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   onCreateBed, onUpdateBedGeometry,
   onScaleChange, onOverlapWarning, mode, panActive, gardenId,
   garden, plantingsByBedId, plantingsLoading, armedSeed,
-  onConfirmPlacement, onConfirmRemoval, onMarkHarvested, onUpdateQuantity,
+  onConfirmPlacement, onConfirmRemoval, onMarkHarvested, onUpdateQuantity, onUpdateStart,
   // Phase 20
   conflictedIds, conflictsByPlantingId, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
@@ -760,6 +766,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   }, []);
   const [placementQty, setPlacementQty] = useState(1);
   const [placementDate, setPlacementDate] = useState('');
+  const [placementStartMethod, setPlacementStartMethod] = useState<StartMethod>('sown');
+  const placementDateId = useId();
+  const startEditDateId = useId();
 
   // Phase 54: a different armed seed while the popover is open re-runs the
   // pre-fill; otherwise a typed value holds until the popover closes.
@@ -771,6 +780,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const bed = bedsRef.current.find(b => b.id === pending.bedId);
     if (!bed) return;
     setPlacementQty(prefillQuantity(bed.type, armed.spacingOnRecord));
+    setPlacementStartMethod(lastStartMethod(plantingsByBedIdRef.current, armed));
   }, [armedSeedKey]);
 
   // Phase 54: desktop preview of an occupied (different plant) grid cell under
@@ -797,11 +807,18 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const pendingInspectRef = useRef<PendingInspect | null>(null);
   const [harvestBusy, setHarvestBusy] = useState(false);
   const [harvestError, setHarvestError] = useState<string | null>(null);
+  // Phase 70: the open "Change" form (how it went in, and the day).
+  const [startEdit, setStartEdit] = useState<{ plantingId: string; startMethod: StartMethod; plantingDate: string } | null>(null);
+  const [startBusy, setStartBusy] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
   const setPendingInspectSynced = useCallback((v: PendingInspect | null) => {
     pendingInspectRef.current = v;
     setPendingInspect(v);
     setHarvestBusy(false);
     setHarvestError(null);
+    setStartEdit(null);
+    setStartBusy(false);
+    setStartError(null);
   }, []);
   const inspectPopoverRef = useRef<HTMLDivElement>(null);
   const [inspectH, setInspectH] = useState(150);
@@ -921,8 +938,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
   // Measure the inspection popover so edge-flipping uses its real height.
   // Re-measures when it opens for a planting or that planting changes
-  // (e.g. "Mark as harvested" removes the button), the error toggles, or its
-  // "Conflicts with" lines change.
+  // (e.g. "Mark as harvested" removes the button), the error toggles, its
+  // "Conflicts with" lines change, or the Change form opens or closes.
   const inspectedPlanting = pendingInspect
     ? (plantingsByBedId[pendingInspect.bedId] ?? []).find(p => p.id === pendingInspect.plantingId) ?? null
     : null;
@@ -933,7 +950,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   useLayoutEffect(() => {
     const el = inspectPopoverRef.current;
     if (el && el.offsetHeight !== inspectH) setInspectH(el.offsetHeight);
-  }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH, inspectConflictsKey]);
+  }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH, inspectConflictsKey, startEdit, startBusy, startError]);
 
   const inspectedBed = pendingBed ? beds.find(b => b.id === pendingBed.bedId) ?? null : null;
   useLayoutEffect(() => {
@@ -2057,7 +2074,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           });
           setBlockedHoverSynced(null);
           setPlacementQty(prefillQuantity(selBed.type, armed.spacingOnRecord));
-          setPlacementDate('');
+          setPlacementStartMethod(lastStartMethod(plantingsByBedIdRef.current, armed));
+          setPlacementDate(todayPacific());
           return;
         }
       }
@@ -2201,7 +2219,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       : null;
 
     const popW = 248;
-    const popH = 260;
+    const popH = 360;
     let left = pendingPlacement.screenX + 12;
     if (left + popW > size.w - 8) left = pendingPlacement.screenX - popW - 12;
     let top = pendingPlacement.screenY - popH / 2;
@@ -2230,15 +2248,23 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             style={{ width: '100%', boxSizing: 'border-box', padding: '6px 10px', borderRadius: 6, border: '1px solid #d0c8b8', fontSize: 13, fontFamily: 'inherit' }}
           />
         </div>
+        <div style={{ marginBottom: 10 }}>
+          <StartMethodControl value={placementStartMethod} onChange={setPlacementStartMethod} />
+        </div>
         <div style={{ marginBottom: 14 }}>
-          <label style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9a8e7e', marginBottom: 4 }}>
-            Planting date (optional)
+          <label htmlFor={placementDateId} style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9a8e7e', marginBottom: 4 }}>
+            Planting date
           </label>
           <input
+            id={placementDateId}
             type="date" value={placementDate}
+            aria-describedby={`${placementDateId}-help`}
             onChange={e => setPlacementDate(e.target.value)}
             style={{ width: '100%', boxSizing: 'border-box', padding: '6px 10px', borderRadius: 6, border: '1px solid #d0c8b8', fontSize: 13, fontFamily: 'inherit' }}
           />
+          <div id={`${placementDateId}-help`} style={{ marginTop: 4, fontSize: 12, color: 'var(--c-text-2)' }}>
+            The day it goes in this bed.
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
@@ -2249,12 +2275,17 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           </button>
           <button
             onClick={() => {
+              // A cleared field means today.
+              const today = todayPacific();
+              const date = placementDate || today;
               onConfirmPlacement(
                 pendingPlacement.bedId,
                 pendingPlacement.cell ?? null,
                 pendingPlacement.point ?? null,
                 placementQty,
-                placementDate || null,
+                placementStartMethod,
+                date,
+                date !== today,
               );
               setPendingPlacementSynced(null);
             }}
@@ -2298,6 +2329,36 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         if (!stillOpen()) return;
         setHarvestBusy(false);
         setHarvestError(apiErrorMessage(e, "Couldn't mark as harvested. Try again."));
+      }
+    };
+
+    // Phase 70: "Sown Mar 4", or "Sowing Mar 4" while the date is ahead.
+    const future = planting.plantingDate > todayPacific();
+    const startVerb = planting.startMethod === 'transplanted'
+      ? (future ? 'Transplanting' : 'Transplanted')
+      : (future ? 'Sowing' : 'Sown');
+    // Change is offered where Remove plant is: desktop only.
+    const canChangeStart = !isMobile && onUpdateStart != null;
+    const editing = canChangeStart && startEdit?.plantingId === planting.id ? startEdit : null;
+
+    const saveStart = async () => {
+      if (!onUpdateStart || !editing || startBusy) return;
+      setStartBusy(true);
+      setStartError(null);
+      const stillOpen = () => pendingInspectRef.current?.plantingId === planting.id;
+      try {
+        await onUpdateStart(planting, {
+          startMethod: editing.startMethod,
+          // A cleared field means today, as when placing.
+          plantingDate: editing.plantingDate || todayPacific(),
+        });
+        if (!stillOpen()) return;
+        setStartBusy(false);
+        setStartEdit(null);
+      } catch (e) {
+        if (!stillOpen()) return;
+        setStartBusy(false);
+        setStartError(apiErrorMessage(e, "Couldn't save. Try again."));
       }
     };
 
@@ -2366,22 +2427,87 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         )}
 
         <div style={{ paddingRight: 'var(--sp-3)' }}>
-          {anchored && stage ? (
-            <div style={{ fontSize: 13, color: 'var(--c-text-2)' }}>
+          <div style={{ fontSize: 13, color: 'var(--c-text-2)' }}>
+            {anchored && stage && (
               <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>{stageLabel(stage, cropClass(planting.illustrationKey))}</div>
-              {planting.plantingDate && <div>Planted {shortDate(planting.plantingDate)}</div>}
-            </div>
-          ) : (
-            <div style={{ fontSize: 13, color: 'var(--c-text-2)' }}>
-              <p style={{ margin: 0 }}>Mark it sown in the planting guide to track its growth.</p>
-              <Link
-                to={key ? `/guide?open=${key}&season=${planting.season}` : '/guide'}
-                style={popoverLinkStyle}
-              >
-                Planting guide
-              </Link>
-            </div>
-          )}
+            )}
+            {editing ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
+                <StartMethodControl
+                  value={editing.startMethod}
+                  onChange={m => setStartEdit({ ...editing, startMethod: m })}
+                  disabled={startBusy}
+                />
+                <div>
+                  <label htmlFor={startEditDateId} style={{ display: 'block', fontWeight: 600, color: 'var(--c-text)', marginBottom: 2 }}>
+                    Planting date
+                  </label>
+                  <input
+                    id={startEditDateId}
+                    type="date"
+                    value={editing.plantingDate}
+                    disabled={startBusy}
+                    aria-describedby={`${startEditDateId}-help`}
+                    onChange={e => setStartEdit({ ...editing, plantingDate: e.target.value })}
+                    style={{
+                      width: '100%', minHeight: 44, boxSizing: 'border-box', padding: '0 var(--sp-2)',
+                      border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)',
+                      background: 'var(--c-surface)', color: 'var(--c-text)', fontSize: 13, fontFamily: 'inherit',
+                    }}
+                  />
+                  <div id={`${startEditDateId}-help`} style={{ marginTop: 2, fontSize: 12, color: 'var(--c-text-2)' }}>
+                    The day it goes in this bed.
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+                  <button
+                    type="button"
+                    onClick={() => { setStartEdit(null); setStartError(null); }}
+                    disabled={startBusy}
+                    style={{
+                      ...popoverButtonStyle, flex: 1,
+                      border: '1px solid var(--c-border)', background: 'transparent', color: 'var(--c-text)',
+                      cursor: startBusy ? 'default' : 'pointer',
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveStart}
+                    disabled={startBusy}
+                    style={{
+                      ...popoverButtonStyle, flex: 1, border: 'none',
+                      background: 'var(--c-primary)', color: 'var(--c-text-on-primary)',
+                      opacity: startBusy ? 0.6 : 1, cursor: startBusy ? 'default' : 'pointer',
+                    }}
+                  >
+                    {startBusy ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+                {startError && (
+                  <div role="alert" style={{ fontSize: 12, color: 'var(--c-danger)' }}>{startError}</div>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-2)' }}>
+                <span>{startVerb} {shortDate(planting.plantingDate)}</span>
+                {canChangeStart && (
+                  <button
+                    type="button"
+                    aria-label={`Change how and when ${name} went in`}
+                    onClick={() => {
+                      setStartError(null);
+                      setStartEdit({ plantingId: planting.id, startMethod: planting.startMethod, plantingDate: planting.plantingDate });
+                    }}
+                    style={{ ...popoverLinkStyle, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit' }}
+                  >
+                    Change
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
 
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-2)',

@@ -15,7 +15,7 @@ const COUNTED_PREFIXES = [
   '/api/seeds',
   '/api/harvests',
 ];
-const COUNTED_EXACT = new Set(['/api/planting-guide/done', '/api/planting-guide/overrides']);
+const COUNTED_EXACT = new Set(['/api/planting-guide/overrides']);
 
 // Writes the client makes on its own (a canvas snapshot, catching the shown
 // stage up to the nightly one) or that ask for review rather than change the

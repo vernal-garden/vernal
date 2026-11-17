@@ -3,7 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
-import { currentSeason } from '../lib/season';
+import { currentSeason, todayPacific } from '../lib/season';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -399,6 +399,20 @@ describe('Test 14: PATCH dismissIndicator idempotent', () => {
     expect(second.status).toBe(200);
     expect(second.body.growth.indicatorDismissedAt).toBe(firstTs);
   });
+
+  it('dismissing leaves the growth stage alone (no re-derive)', async () => {
+    await pool.query(
+      `UPDATE plantings SET growth_stage = 5, growth_stage_pct = 100, harvest_ready = true
+       WHERE id = $1`,
+      [gridPlantingId],
+    );
+    const res = await agent
+      .patch(`/api/plantings/${gridPlantingId}`)
+      .send({ dismissIndicator: true });
+    expect(res.status).toBe(200);
+    expect(res.body.growth.stage).toBe(5);
+    expect(res.body.growth.stagePct).toBe(100);
+  });
 });
 
 // ── Test 15: PATCH/DELETE against another user's planting → 404 ──────────────
@@ -634,6 +648,11 @@ describe('Phase 50: growth.stage / displayedStage / anchored', () => {
       'UPDATE plantings SET growth_stage = 3, displayed_growth_stage = 2 WHERE id = $1',
       [stagedId],
     );
+    // Placement now derives a stage (Phase 70); a null stage is a legacy row.
+    await pool.query(
+      'UPDATE plantings SET growth_stage = NULL, growth_stage_pct = NULL WHERE id = $1',
+      [unstagedId],
+    );
   });
 
   it('GET list exposes stage, displayedStage and anchored', async () => {
@@ -681,6 +700,8 @@ describe('Phase 50: PATCH /api/gardens/:gardenId/plantings/displayed-stage', () 
          updated_at = '2020-01-01T00:00:00Z' WHERE id = ANY($1::int[])`,
       [[p1, p2]],
     );
+    // Placement now derives a stage (Phase 70); a null stage is a legacy row.
+    await pool.query('UPDATE plantings SET growth_stage = NULL WHERE id = $1', [pNull]);
 
     const og = await otherAgent.post('/api/gardens').send({
       name: 'Other Stage Garden', style: 'grid', zone: '7b', growingMethod: 'in_ground',
@@ -1103,5 +1124,243 @@ describe('Phase 69: GET plantings includes illustrationKey', () => {
     const res = await agent.patch(`/api/plantings/${ids.linked}`).send({ quantity: 2 });
     expect(res.status).toBe(200);
     expect(res.body.illustrationKey).toBe('carrot');
+  });
+});
+
+// ── Phase 70: placing a plant sows it ────────────────────────────────────────
+
+describe('Phase 70: growth from placement', () => {
+  // Its own account, so these writes don't run into the main agent's write limit.
+  let p70Agent: ReturnType<typeof request.agent>;
+  let p70GardenId: string;
+  let bedId: string;
+  let seedCounter = 0;
+  const url = () => `/api/gardens/${p70GardenId}/beds/${bedId}/plantings`;
+
+  // A fresh Cambium seed per test, so each has its own sowing event.
+  async function timedSeed(maturityDays: number | null = 65): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source, maturity_days_min, maturity_days_max)
+       VALUES ($1, 'active', 'editorial', $2, $2) RETURNING id`,
+      [`P70 Plant ${++seedCounter}`, maturityDays],
+    );
+    return rows[0].id;
+  }
+
+  // The Pacific date n days before today, as YYYY-MM-DD.
+  async function daysAgo(n: number): Promise<string> {
+    const { rows } = await pool.query<{ d: string }>(
+      `SELECT ((NOW() AT TIME ZONE 'America/Los_Angeles')::date - $1::int)::text AS d`,
+      [n],
+    );
+    return rows[0].d;
+  }
+
+  async function sowingEvents(cambiumSeedId: number) {
+    const { rows } = await pool.query<{ id: string; planting_id: string | null; marked_done_at: Date | null }>(
+      `SELECT id::text, planting_id::text, marked_done_at FROM sowing_events
+       WHERE garden_id = $1 AND cambium_seed_id = $2 ORDER BY id`,
+      [p70GardenId, cambiumSeedId],
+    );
+    return rows;
+  }
+
+  async function noonPacific(date: string): Promise<string> {
+    const { rows } = await pool.query<{ t: Date }>(
+      `SELECT ($1::date + time '12:00') AT TIME ZONE 'America/Los_Angeles' AS t`,
+      [date],
+    );
+    return rows[0].t.toISOString();
+  }
+
+  beforeAll(async () => {
+    await createUser('planting-p70@example.com');
+    p70Agent = await loginAgent('planting-p70@example.com');
+    const garden = await p70Agent.post('/api/gardens').send({
+      name: 'P70 Garden', style: 'grid', zone: '7b', growingMethod: 'in_ground',
+    });
+    p70GardenId = garden.body.id;
+    const res = await p70Agent.post(`/api/gardens/${p70GardenId}/beds`).send({
+      type: 'grid',
+      label: 'P70 Bed',
+      grid: { x: 0, y: 0, cols: 4, rows: 8 },
+    });
+    bedId = res.body.id;
+  });
+
+  it('POST without a date stores today (Pacific) and returns stage 1', async () => {
+    const seed = await timedSeed(60);
+    const res = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 0, y: 0 } });
+    expect(res.status).toBe(201);
+    expect(res.body.plantingDate).toBe(todayPacific());
+    expect(res.body.startMethod).toBe('sown');
+    expect(res.body.growth.stage).toBe(1);
+  });
+
+  it('POST transplanted returns stage 2', async () => {
+    const seed = await timedSeed(60);
+    const res = await p70Agent.post(url()).send({
+      cambiumSeedId: seed, cell: { x: 1, y: 0 }, startMethod: 'transplanted',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.startMethod).toBe('transplanted');
+    expect(res.body.growth.stage).toBe(2);
+  });
+
+  it('POST with a bad startMethod → 400; with a null plantingDate → 400', async () => {
+    const seed = await timedSeed();
+    const bad = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 2, y: 0 }, startMethod: 'cloned' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("startMethod must be 'sown' or 'transplanted'");
+    const nullDate = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 2, y: 0 }, plantingDate: null });
+    expect(nullDate.status).toBe(400);
+    expect(nullDate.body.error).toBe('plantingDate is required');
+  });
+
+  it('PATCH plantingDate null → 400; bad date or startMethod → 400', async () => {
+    const seed = await timedSeed();
+    const placed = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 3, y: 0 } });
+    const nullDate = await p70Agent.patch(`/api/plantings/${placed.body.id}`).send({ plantingDate: null });
+    expect(nullDate.status).toBe(400);
+    expect(nullDate.body.error).toBe('plantingDate is required');
+    const badDate = await p70Agent.patch(`/api/plantings/${placed.body.id}`).send({ plantingDate: '5/1/2026' });
+    expect(badDate.status).toBe(400);
+    expect(badDate.body.error).toBe('plantingDate must be a date string (YYYY-MM-DD)');
+    const badMethod = await p70Agent.patch(`/api/plantings/${placed.body.id}`).send({ startMethod: 'cloned' });
+    expect(badMethod.status).toBe(400);
+  });
+
+  it('PATCH re-dates the planting and the response carries the new stage', async () => {
+    const seed = await timedSeed(65);
+    const placed = await p70Agent.post(url()).send({
+      cambiumSeedId: seed, cell: { x: 0, y: 1 }, startMethod: 'transplanted',
+    });
+    expect(placed.body.growth.stage).toBe(2);
+    const date = await daysAgo(100);
+    const res = await p70Agent.patch(`/api/plantings/${placed.body.id}`).send({ plantingDate: date });
+    expect(res.status).toBe(200);
+    expect(res.body.plantingDate).toBe(date);
+    expect(res.body.growth).toMatchObject({ stage: 5, stagePct: 100, harvestReady: true });
+    // The sowing event follows the new date.
+    expect((await sowingEvents(seed))[0].marked_done_at?.toISOString()).toBe(await noonPacific(date));
+  });
+
+  it('PATCH startMethod re-derives the stage', async () => {
+    const seed = await timedSeed(60);
+    const placed = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 1, y: 1 } });
+    expect(placed.body.growth.stage).toBe(1);
+    const res = await p70Agent.patch(`/api/plantings/${placed.body.id}`).send({ startMethod: 'transplanted' });
+    expect(res.status).toBe(200);
+    expect(res.body.startMethod).toBe('transplanted');
+    expect(res.body.growth.stage).toBe(2);
+  });
+
+  it('places a plant and returns its growth fields populated in the same response', async () => {
+    const seed = await timedSeed(60);
+    const res = await p70Agent.post(url()).send({
+      cambiumSeedId: seed, cell: { x: 2, y: 1 }, plantingDate: await daysAgo(30),
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.growth.stagePct).toBe(50);
+    expect(res.body.growth.stage).toBe(3);
+    expect(res.body.growth.anchored).toBe(true);
+    expect(res.body.growth.harvestReady).toBe(false);
+    expect(res.body.growth.harvestWindowEnd).not.toBeNull();
+  });
+
+  it('POST marks the sowing event done at noon Pacific on the planting date', async () => {
+    const seed = await timedSeed();
+    const date = await daysAgo(3);
+    const res = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 3, y: 1 }, plantingDate: date });
+    expect(res.status).toBe(201);
+    const events = await sowingEvents(seed);
+    expect(events).toHaveLength(1);
+    expect(events[0].planting_id).toBe(res.body.id);
+    expect(events[0].marked_done_at?.toISOString()).toBe(await noonPacific(date));
+  });
+
+  it('DELETE of the last planting un-does the event and keeps the row', async () => {
+    const seed = await timedSeed();
+    const a = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 0, y: 2 }, plantingDate: await daysAgo(10) });
+    const laterDate = await daysAgo(4);
+    const b = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 1, y: 2 }, plantingDate: laterDate });
+
+    // With one planting left, the event follows its date.
+    expect((await p70Agent.delete(`/api/plantings/${a.body.id}`)).status).toBe(204);
+    let events = await sowingEvents(seed);
+    expect(events).toHaveLength(1);
+    expect(events[0].marked_done_at?.toISOString()).toBe(await noonPacific(laterDate));
+
+    expect((await p70Agent.delete(`/api/plantings/${b.body.id}`)).status).toBe(204);
+    events = await sowingEvents(seed);
+    expect(events).toHaveLength(1);
+    expect(events[0].marked_done_at).toBeNull();
+  });
+
+  it("a merge keeps the existing planting's date and start method", async () => {
+    const seed = await timedSeed();
+    const firstDate = await daysAgo(20);
+    const first = await p70Agent.post(url()).send({
+      cambiumSeedId: seed, cell: { x: 2, y: 2 }, plantingDate: firstDate, quantity: 2,
+    });
+    expect(first.status).toBe(201);
+    const merged = await p70Agent.post(url()).send({
+      cambiumSeedId: seed, cell: { x: 2, y: 2 }, plantingDate: await daysAgo(1),
+      startMethod: 'transplanted', quantity: 3,
+    });
+    expect(merged.status).toBe(200);
+    expect(merged.body.merged).toBe(true);
+    expect(merged.body.id).toBe(first.body.id);
+    expect(merged.body.quantity).toBe(5);
+    expect(merged.body.plantingDate).toBe(firstDate);
+    expect(merged.body.startMethod).toBe('sown');
+    const events = await sowingEvents(seed);
+    expect(events).toHaveLength(1);
+    expect(events[0].marked_done_at?.toISOString()).toBe(await noonPacific(firstDate));
+  });
+
+  it('a planting with a NULL planting_date reads as its created_at Pacific date', async () => {
+    const seed = await timedSeed();
+    // Older code could still write NULL while the column is nullable.
+    const { rows } = await pool.query<{ id: string; created: string }>(
+      `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, cell_x, cell_y, planting_date, created_at)
+       VALUES ($1, $2, $3, $4, 3, 3, NULL, '2026-03-02T05:00:00Z')
+       RETURNING id::text, (created_at AT TIME ZONE 'America/Los_Angeles')::date::text AS created`,
+      [bedId, p70GardenId, CURRENT_YEAR, seed],
+    );
+    // 05:00 UTC on March 2 is still March 1 in Pacific time.
+    expect(rows[0].created).toBe('2026-03-01');
+    for (const path of [`/api/gardens/${p70GardenId}/plantings`, url()]) {
+      const res = await p70Agent.get(path);
+      expect(res.status).toBe(200);
+      const found = res.body.data.find((p: { id: string }) => p.id === rows[0].id);
+      expect(found.plantingDate).toBe('2026-03-01');
+    }
+    const patched = await p70Agent.patch(`/api/plantings/${rows[0].id}`).send({ quantity: 2 });
+    expect(patched.status).toBe(200);
+    expect(patched.body.plantingDate).toBe('2026-03-01');
+  });
+
+  it('a failed sowing-event sync rolls the placement back → 500', async () => {
+    const seed = await timedSeed();
+    // Make the sync's insert fail for this seed only.
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION p70_fail_sync() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'sync failed'; END $$`);
+    await pool.query(`
+      CREATE TRIGGER p70_fail_sync BEFORE INSERT ON sowing_events
+      FOR EACH ROW WHEN (NEW.cambium_seed_id = ${seed}) EXECUTE FUNCTION p70_fail_sync()`);
+    try {
+      const res = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 3, y: 2 } });
+      expect(res.status).toBe(500);
+      const { rows } = await pool.query(
+        'SELECT 1 FROM plantings WHERE garden_id = $1 AND cambium_seed_id = $2',
+        [p70GardenId, seed],
+      );
+      expect(rows).toHaveLength(0);
+    } finally {
+      await pool.query('DROP TRIGGER IF EXISTS p70_fail_sync ON sowing_events');
+      await pool.query('DROP FUNCTION IF EXISTS p70_fail_sync()');
+    }
   });
 });

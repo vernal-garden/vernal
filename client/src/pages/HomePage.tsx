@@ -6,7 +6,7 @@ import { useGardenList } from '../hooks/useGardenList';
 import { useGarden } from '../hooks/useGarden';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../hooks/useGarden';
 import { usePlantings } from '../hooks/usePlantings';
-import type { Planting, ArmedSeed, PlantingsByBedId } from '../hooks/usePlantings';
+import type { Planting, ArmedSeed, PlantingsByBedId, StartMethod } from '../hooks/usePlantings';
 import { useGardenSeasons } from '../hooks/useGardenSeasons';
 import GardenCanvas from '../components/canvas/GardenCanvas';
 import type { GardenCanvasRef } from '../components/canvas/GardenCanvas';
@@ -28,7 +28,7 @@ import { notifyPlantingPlaced } from '../lib/guestBannerEvents';
 import { useMicroFeedback } from '../lib/microFeedback';
 import * as api from '../lib/api';
 import { useIsMobile } from '../hooks/useIsMobile';
-import { PLANTS_HERE_MAX, plantCount } from '../lib/placement';
+import { PLANTS_HERE_MAX, placementFollowUp, plantCount } from '../lib/placement';
 
 // Garden ids that have already logged a canvas_session during this page load.
 // Module-level so re-renders and StrictMode double effects can't fire it twice.
@@ -110,6 +110,7 @@ export default function HomePage() {
   const {
     plantingsByBedId, loading: plantingsLoading, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint,
     updatePlantingQuantity, loadedKey: plantingsLoadedKey, markStagesDisplayed, dismissIndicator,
+    updatePlantingStart,
   } = usePlantings(resolvedId, currentSeason);
 
   // Phase 50: past-season overlay. Component state only (never saved). Keyed
@@ -502,7 +503,9 @@ export default function HomePage() {
     cell: { x: number; y: number } | null,
     point: { x: number; y: number } | null,
     qty: number,
-    date: string | null,
+    startMethod: StartMethod,
+    date: string,
+    dateEdited: boolean,
   ) => {
     if (!armedSeed) return;
     const seed = armedSeed;
@@ -513,10 +516,12 @@ export default function HomePage() {
       cell?: { x: number; y: number };
       point?: { x: number; y: number };
       quantity?: number;
-      plantingDate?: string;
+      startMethod: StartMethod;
+      plantingDate: string;
     } = {
       quantity: qty,
-      ...(date ? { plantingDate: date } : {}),
+      startMethod,
+      plantingDate: date,
       ...(cell ? { cell } : {}),
       ...(point ? { point } : {}),
       ...(seed.source === 'catalogue' ? { cambiumSeedId: seed.id } : { seedId: seed.id }),
@@ -550,14 +555,15 @@ export default function HomePage() {
     } else {
       pendingPlacementRef.current = false;
     }
-    if (
-      placed &&
-      date &&
-      account?.subscriptionTier === 'free' &&
-      !account?.supporterPromptShown
-    ) {
+    const followUp = placementFollowUp({
+      placed,
+      dateEdited,
+      tier: account?.subscriptionTier,
+      supporterPromptShown: account?.supporterPromptShown,
+    });
+    if (followUp === 'supporter') {
       setSupporterPromptOpen(true);
-    } else if (placed) {
+    } else if (followUp === 'feedback') {
       requestFeedback('planted');
     }
   }, [armedSeed, placePlanting, plantingsByBedId, account, conflictedIds, requestFeedback, showToast]);
@@ -569,6 +575,15 @@ export default function HomePage() {
   const handleMarkHarvested = useCallback(async (planting: Planting) => {
     await dismissIndicator(planting.id, planting.bedId);
   }, [dismissIndicator]);
+
+  // Phase 70: "Change" in the inspection popover. Rejects so the popover can
+  // show its own inline error.
+  const handleUpdateStart = useCallback(async (
+    planting: Planting,
+    changes: { startMethod: StartMethod; plantingDate: string },
+  ) => {
+    await updatePlantingStart(planting.id, planting.bedId, changes);
+  }, [updatePlantingStart]);
 
   // Phase 54: "Plants here" in the inspection popover. The hook reverts the
   // count on failure; the toast reports it, unless the plant is gone (404, or
@@ -633,6 +648,7 @@ export default function HomePage() {
         onConfirmRemoval={handleConfirmRemoval}
         onMarkHarvested={handleMarkHarvested}
         onUpdateQuantity={handleUpdateQuantity}
+        onUpdateStart={handleUpdateStart}
         conflictedIds={conflictedIds}
         conflictsByPlantingId={conflictsByPlantingId}
         conflictedBedIds={conflictedBedIds}

@@ -18,6 +18,7 @@ import {
   type Overrides,
 } from '../lib/plantingSchedule';
 import { logger } from '../lib/logger';
+import { seedKeyString, seedKeyWhere, type SeedKey } from '../lib/sowingSync';
 import type { SessionData } from '../types';
 
 const router = Router();
@@ -67,24 +68,8 @@ interface SowingEventRow {
   marked_done_at: Date | null;
 }
 
-// A planting, preference or sowing event is keyed by its personal seed when it
-// has one, otherwise by its Cambium seed.
-type SeedKey = { kind: 'seed'; id: number } | { kind: 'cambium'; id: number };
-
 function rowKey(gardenId: string, seedId: string | null, cambiumSeedId: string | null): string {
   return seedId !== null ? `${gardenId}:seed:${seedId}` : `${gardenId}:cambium:${cambiumSeedId}`;
-}
-
-function seedKeyString(key: SeedKey): string {
-  return `${key.kind}:${key.id}`;
-}
-
-// SQL predicate matching a SeedKey against seed_id / cambium_seed_id columns.
-// `param` is the placeholder holding key.id.
-function seedKeyWhere(key: SeedKey, param: string): string {
-  return key.kind === 'seed'
-    ? `seed_id = ${param}`
-    : `seed_id IS NULL AND cambium_seed_id = ${param}`;
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────
@@ -498,108 +483,6 @@ router.put('/overrides', requireAuth, writeLimiter, async (req: Request, res: Re
   } catch (err) {
     if (client) await rollback(client);
     logger.error('PUT /api/planting-guide/overrides failed', err);
-    return res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    client?.release();
-  }
-});
-
-// ── PUT /api/planting-guide/done ──────────────────────────────────────────────
-
-router.put('/done', writeLimiter, async (req: Request, res: Response) => {
-  const session = req.session as SessionData;
-  const body = bodyOf(req);
-  if (!body) return res.status(400).json({ error: 'body must be a JSON object' });
-
-  const gardenId = parsePositiveInt(body.gardenId);
-  if (gardenId === null) return res.status(400).json({ error: 'gardenId must be a positive integer' });
-
-  const seedKey = parseSeedKey(body);
-  if ('error' in seedKey) return res.status(400).json({ error: seedKey.error });
-
-  if (typeof body.season !== 'number' || parseSeason(body.season) === null) {
-    return res.status(400).json({ error: 'season must be an integer between 2000 and 2100' });
-  }
-  const season = body.season;
-
-  if (typeof body.done !== 'boolean') {
-    return res.status(400).json({ error: 'done must be a boolean' });
-  }
-  const done = body.done;
-
-  let client: PoolClient | null = null;
-  try {
-    if (!(await ownGarden(gardenId, session))) {
-      return res.status(404).json({ error: 'Garden not found' });
-    }
-    if (season < currentSeason(new Date())) {
-      return res.status(409).json({ error: 'Past seasons are read-only.' });
-    }
-    if (!(await seedExists(seedKey, session))) {
-      return res.status(400).json({ error: 'seed not found' });
-    }
-
-    client = await db.connect();
-    await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
-      `sow:${gardenId}:${seedKeyString(seedKey)}:${season}`,
-    ]);
-
-    const { rows: existing } = await client.query<{ id: string }>(
-      `SELECT id::text FROM sowing_events
-       WHERE garden_id = $1 AND ${seedKeyWhere(seedKey, '$2')} AND season = $3
-       ORDER BY id LIMIT 1`,
-      [gardenId, seedKey.id, season],
-    );
-    const eventId = existing[0]?.id ?? null;
-
-    let result: { id: string; marked_done_at: Date | null } | null = null;
-    if (done && eventId) {
-      const { rows } = await client.query<{ id: string; marked_done_at: Date | null }>(
-        `UPDATE sowing_events SET marked_done_at = now() WHERE id = $1
-         RETURNING id::text, marked_done_at`,
-        [eventId],
-      );
-      result = rows[0];
-    } else if (done) {
-      const { rows: plantingRows } = await client.query<{ id: number | null }>(
-        `SELECT MIN(id) AS id FROM plantings
-         WHERE garden_id = $1 AND ${seedKeyWhere(seedKey, '$2')} AND season = $3`,
-        [gardenId, seedKey.id, season],
-      );
-      const { rows } = await client.query<{ id: string; marked_done_at: Date | null }>(
-        `INSERT INTO sowing_events
-           (planting_id, garden_id, seed_id, cambium_seed_id, season, marked_done_at)
-         VALUES ($1, $2, $3, $4, $5, now())
-         RETURNING id::text, marked_done_at`,
-        [
-          plantingRows[0]?.id ?? null,
-          gardenId,
-          seedKey.kind === 'seed' ? seedKey.id : null,
-          seedKey.kind === 'cambium' ? seedKey.id : null,
-          season,
-        ],
-      );
-      result = rows[0];
-    } else if (eventId) {
-      // Undo keeps the row: harvest entries may already reference it.
-      const { rows } = await client.query<{ id: string; marked_done_at: Date | null }>(
-        `UPDATE sowing_events SET marked_done_at = NULL WHERE id = $1
-         RETURNING id::text, marked_done_at`,
-        [eventId],
-      );
-      result = rows[0];
-    }
-
-    await client.query('COMMIT');
-    if (session.account) invalidateMetrics(session.account.id);
-    return res.json({
-      sowingEventId: result?.id ?? null,
-      markedDoneAt: result?.marked_done_at ?? null,
-    });
-  } catch (err) {
-    if (client) await rollback(client);
-    logger.error('PUT /api/planting-guide/done failed', err);
     return res.status(500).json({ error: 'Internal server error' });
   } finally {
     client?.release();

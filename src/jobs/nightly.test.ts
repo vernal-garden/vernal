@@ -158,15 +158,18 @@ async function createPlanting(
     plantingDate?: string; // YYYY-MM-DD; overrides plantingDateDaysAgo
     indicatorDismissed?: boolean;
     season?: number;
+    startMethod?: 'sown' | 'transplanted';
   } = {},
 ): Promise<number> {
   const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO plantings
-       (bed_id, garden_id, season, seed_id, cambium_seed_id, planting_date, indicator_dismissed_at, cell_x, cell_y)
+       (bed_id, garden_id, season, seed_id, cambium_seed_id, planting_date, indicator_dismissed_at,
+        start_method, cell_x, cell_y)
      VALUES ($1, $2, $3, $4, $5,
              COALESCE($8::date,
                CASE WHEN $6::int IS NULL THEN NULL ELSE ${PACIFIC_TODAY} - $6::int END),
              CASE WHEN $7::bool THEN NOW() ELSE NULL END,
+             $9,
              -- COUNT-derived cell_x only satisfies the one-per-cell unique index
              -- (this suite never deletes plantings mid-test).
              (SELECT COUNT(*)::int FROM plantings WHERE bed_id = $1), 0)
@@ -180,6 +183,7 @@ async function createPlanting(
       overrides.plantingDateDaysAgo ?? null,
       overrides.indicatorDismissed ?? false,
       overrides.plantingDate ?? null,
+      overrides.startMethod ?? 'sown',
     ],
   );
   return rows[0].id;
@@ -250,11 +254,10 @@ describe('deriveGrowth', () => {
     return { ownerId, gardenId, bedId };
   }
 
-  it('marks an anchored planting at 100% maturity harvest-ready with growth_stage 5', async () => {
+  it('marks a planting at 100% maturity harvest-ready with growth_stage 5', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
-    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
@@ -265,11 +268,10 @@ describe('deriveGrowth', () => {
     expect(row.windowEnd).toBe(await pacificDateKey(-60 + 60 + 14));
   });
 
-  it('marks an anchored planting at 50% maturity as growth_stage 3 and not harvest-ready', async () => {
+  it('marks a planting at 50% maturity as growth_stage 3 and not harvest-ready', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
-    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
@@ -279,61 +281,21 @@ describe('deriveGrowth', () => {
     expect(row.harvestReady).toBe(false);
   });
 
-  it('clears growth fields for a planting with a planting_date but no done sowing event', async () => {
+  it('grows a dated planting without any done sowing event', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
-    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
-    await createSowingEvent(gardenId, { seedId, markedDoneDaysAgo: null });
-    // Stale values from an earlier run must be reset, not left behind.
-    await pool.query(
-      `UPDATE plantings SET growth_stage_pct = 80, growth_stage = 4, harvest_ready = true,
-         harvest_window_end = CURRENT_DATE WHERE id = $1`,
-      [plantingId],
-    );
-
-    await deriveGrowth();
-
-    const row = await readGrowth(plantingId);
-    expect(row.pct).toBeNull();
-    expect(row.stage).toBeNull();
-    expect(row.harvestReady).toBe(false);
-    expect(row.windowEnd).toBeNull();
-  });
-
-  it('ignores done sowing events for another season or another seed', async () => {
-    const { ownerId, gardenId, bedId } = await setup();
-    const seedId = await createPersonalSeed(ownerId, 60);
-    const otherSeedId = await createPersonalSeed(ownerId, 60);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
-    await createSowingEvent(gardenId, { seedId, season: CURRENT_YEAR - 1 });
-    await createSowingEvent(gardenId, { seedId: otherSeedId });
+    await createSowingEvent(gardenId, { seedId, markedDoneDaysAgo: null });
 
     await deriveGrowth();
 
     const row = await readGrowth(plantingId);
-    expect(row.pct).toBeNull();
-    expect(row.stage).toBeNull();
+    expect(row.pct).toBe(50);
+    expect(row.stage).toBe(3);
+    expect(row.windowEnd).toBe(await pacificDateKey(-30 + 60 + 14));
   });
 
-  it('does not anchor a personal-seed planting on a done event that only has its Cambium id', async () => {
-    const { ownerId, gardenId, bedId } = await setup();
-    const seedId = await createPersonalSeed(ownerId, 60);
-    const cambiumSeedId = await createCambiumSeed();
-    const plantingId = await createPlanting(bedId, gardenId, {
-      seedId,
-      cambiumSeedId,
-      plantingDateDaysAgo: 30,
-    });
-    await createSowingEvent(gardenId, { cambiumSeedId });
-
-    await deriveGrowth();
-
-    const row = await readGrowth(plantingId);
-    expect(row.pct).toBeNull();
-    expect(row.stage).toBeNull();
-  });
-
-  it('anchors on planting_date when it is set, not on the sowing event date', async () => {
+  it('grows from planting_date and ignores the sowing event date', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
@@ -346,7 +308,80 @@ describe('deriveGrowth', () => {
     expect(row.windowEnd).toBe(await pacificDateKey(-30 + 60 + 14));
   });
 
-  it('anchors on the earliest done sowing event (Pacific date) when planting_date is null', async () => {
+  it('gives a future planting date stage 1 at 0%', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: -7 });
+
+    await deriveGrowth();
+
+    const row = await readGrowth(plantingId);
+    expect(row.pct).toBe(0);
+    expect(row.stage).toBe(1);
+    expect(row.harvestReady).toBe(false);
+  });
+
+  it('starts a transplanted planting at stage 2 on the day it is planted', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const sown = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 0 });
+    const transplanted = await createPlanting(bedId, gardenId, {
+      seedId,
+      plantingDateDaysAgo: 0,
+      startMethod: 'transplanted',
+    });
+
+    await deriveGrowth();
+
+    expect(await readGrowth(sown)).toMatchObject({ pct: 0, stage: 1 });
+    expect(await readGrowth(transplanted)).toMatchObject({ pct: 0, stage: 2 });
+  });
+
+  it('adds weeks_to_transplant to maturity for sown plantings only', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, null, 65);
+    await pool.query('UPDATE seeds SET weeks_to_transplant = 8 WHERE id = $1', [seedId]);
+    const sown = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 100 });
+    const transplanted = await createPlanting(bedId, gardenId, {
+      seedId,
+      plantingDateDaysAgo: 100,
+      startMethod: 'transplanted',
+    });
+
+    await deriveGrowth();
+
+    // Sown: 100 of 65 + 8 * 7 = 121 days.
+    const sownRow = await readGrowth(sown);
+    expect(sownRow.pct).toBe(82.64);
+    expect(sownRow.stage).toBe(4);
+    expect(sownRow.harvestReady).toBe(false);
+    expect(sownRow.windowEnd).toBe(await pacificDateKey(-100 + 121 + 14));
+    // Transplanted: 100 of 65 days.
+    const transplantedRow = await readGrowth(transplanted);
+    expect(transplantedRow.pct).toBe(100);
+    expect(transplantedRow.stage).toBe(5);
+    expect(transplantedRow.harvestReady).toBe(true);
+    expect(transplantedRow.windowEnd).toBe(await pacificDateKey(-100 + 65 + 14));
+  });
+
+  it('takes weeks_to_transplant from the Cambium seed when the planting has no personal seed', async () => {
+    const { gardenId, bedId } = await setup();
+    const cambiumSeedId = await createCambiumSeed();
+    await pool.query(
+      'UPDATE cambium.seeds SET maturity_days_min = 65, weeks_to_transplant = 8 WHERE id = $1',
+      [cambiumSeedId],
+    );
+    const plantingId = await createPlanting(bedId, gardenId, {
+      cambiumSeedId,
+      plantingDateDaysAgo: 100,
+    });
+
+    await deriveGrowth();
+
+    expect(await readGrowth(plantingId)).toMatchObject({ pct: 82.64, stage: 4 });
+  });
+
+  it('falls back to the Pacific date of created_at when planting_date is null', async () => {
     const { gardenId, bedId } = await setup();
     const cambiumSeedId = await createCambiumSeed();
     await pool.query(`UPDATE cambium.seeds SET maturity_days_max = 60 WHERE id = $1`, [
@@ -356,8 +391,15 @@ describe('deriveGrowth', () => {
       cambiumSeedId,
       plantingDateDaysAgo: null,
     });
+    // 23:30 Pacific: the UTC date is already the next day.
+    await pool.query(
+      `UPDATE plantings
+          SET created_at = (${PACIFIC_TODAY} - 30 + TIME '23:30') AT TIME ZONE 'America/Los_Angeles'
+        WHERE id = $1`,
+      [plantingId],
+    );
+    // A done event on another date no longer anchors it.
     await createSowingEvent(gardenId, { cambiumSeedId, markedDoneDaysAgo: 10 });
-    await createSowingEvent(gardenId, { cambiumSeedId, markedDoneDaysAgo: 30 });
 
     await deriveGrowth();
 
@@ -371,7 +413,6 @@ describe('deriveGrowth', () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 70, 50);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 50 });
-    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
@@ -387,7 +428,6 @@ describe('deriveGrowth', () => {
     const seedId = await createPersonalSeed(ownerId, null, 100);
     const at30 = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
     const at70 = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 70 });
-    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
@@ -400,19 +440,26 @@ describe('deriveGrowth', () => {
     expect(row70.harvestReady).toBe(false);
   });
 
-  it('leaves growth fields null when the seed has no maturity days', async () => {
+  it('gives stage 1 and null pct when the seed has no maturity days', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, null);
+    // weeks_to_transplant alone must not make maturity non-null.
+    await pool.query('UPDATE seeds SET weeks_to_transplant = 6 WHERE id = $1', [seedId]);
     const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 10 });
-    await createSowingEvent(gardenId, { seedId });
+    const transplanted = await createPlanting(bedId, gardenId, {
+      seedId,
+      plantingDateDaysAgo: 10,
+      startMethod: 'transplanted',
+    });
 
     await deriveGrowth();
 
     const row = await readGrowth(plantingId);
     expect(row.pct).toBeNull();
-    expect(row.stage).toBeNull();
+    expect(row.stage).toBe(1);
     expect(row.harvestReady).toBe(false);
     expect(row.windowEnd).toBeNull();
+    expect(await readGrowth(transplanted)).toMatchObject({ pct: null, stage: 2, windowEnd: null });
   });
 
   it('keeps stage 5 but harvest_ready false when indicator_dismissed_at is set', async () => {
@@ -423,7 +470,6 @@ describe('deriveGrowth', () => {
       plantingDateDaysAgo: 60,
       indicatorDismissed: true,
     });
-    await createSowingEvent(gardenId, { seedId });
 
     await deriveGrowth();
 
@@ -441,7 +487,6 @@ describe('deriveGrowth', () => {
       plantingDate: `${CURRENT_YEAR - 1}-06-15`,
       season: CURRENT_YEAR - 1,
     });
-    await createSowingEvent(gardenId, { seedId, season: CURRENT_YEAR - 1 });
 
     await deriveGrowth();
 
@@ -451,53 +496,56 @@ describe('deriveGrowth', () => {
     expect(row.harvestReady).toBe(false);
   });
 
+  it('derives only the listed plantings when given plantingIds', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const listed = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+    const other = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+
+    const result = await deriveGrowth({ plantingIds: [listed], db: pool });
+
+    expect(result.affected).toBe(1);
+    expect(await readGrowth(listed)).toMatchObject({ pct: 50, stage: 3 });
+    expect(await readGrowth(other)).toMatchObject({ pct: null, stage: null, windowEnd: null });
+  });
+
   it('leaves unchanged plantings untouched on a second run', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
-    const anchored = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
-    const unanchored = await createPlanting(bedId, gardenId, {
+    const first = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 30 });
+    const second = await createPlanting(bedId, gardenId, {
       seedId: await createPersonalSeed(ownerId, 60),
       plantingDateDaysAgo: 30,
     });
-    await createSowingEvent(gardenId, { seedId });
 
-    const first = await deriveGrowth();
-    expect(first.affected).toBe(1);
+    const firstRun = await deriveGrowth();
+    expect(firstRun.affected).toBe(2);
     const readUpdatedAt = async () => {
       const { rows } = await pool.query<{ id: number; updated_at: Date }>(
         `SELECT id, updated_at FROM plantings WHERE id = ANY($1::int[]) ORDER BY id`,
-        [[anchored, unanchored]],
+        [[first, second]],
       );
       return rows.map((r) => r.updated_at.toISOString());
     };
     const before = await readUpdatedAt();
 
-    const second = await deriveGrowth();
+    const secondRun = await deriveGrowth();
 
-    expect(second.affected).toBe(0);
+    expect(secondRun.affected).toBe(0);
     expect(await readUpdatedAt()).toEqual(before);
   });
 
   it('does not write displayed_growth_stage', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId, 60);
-    const anchored = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
-    const unanchored = await createPlanting(bedId, gardenId, {
-      seedId: await createPersonalSeed(ownerId, 60),
-      plantingDateDaysAgo: 60,
-    });
-    await createSowingEvent(gardenId, { seedId });
-    await pool.query(
-      `UPDATE plantings SET displayed_growth_stage = 2 WHERE id = ANY($1::int[])`,
-      [[anchored, unanchored]],
-    );
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
+    await pool.query(`UPDATE plantings SET displayed_growth_stage = 2 WHERE id = $1`, [plantingId]);
 
     await deriveGrowth();
 
-    const anchoredRow = await readGrowth(anchored);
-    expect(anchoredRow.stage).toBe(5);
-    expect(anchoredRow.displayedStage).toBe(2);
-    expect((await readGrowth(unanchored)).displayedStage).toBe(2);
+    const row = await readGrowth(plantingId);
+    expect(row.stage).toBe(5);
+    expect(row.displayedStage).toBe(2);
   });
 });
 

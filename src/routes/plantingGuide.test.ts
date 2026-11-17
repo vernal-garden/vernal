@@ -108,7 +108,6 @@ let gardenB: number;
 let guestGarden: number;
 let tomatoSeedId: number;      // personal seed owned by A
 let peaCambiumId: number;
-let firstPeaPlantingId: number;
 
 beforeAll(async () => {
   await resetDb();
@@ -154,7 +153,7 @@ beforeAll(async () => {
   const bedA = await createBed(gardenA, SEASON);
   await plant(bedA, gardenA, SEASON, { seedId: tomatoSeedId }, 2);
   await plant(bedA, gardenA, SEASON, { seedId: tomatoSeedId }, 3);
-  firstPeaPlantingId = await plant(bedA, gardenA, SEASON, { cambiumSeedId: peaCambiumId });
+  await plant(bedA, gardenA, SEASON, { cambiumSeedId: peaCambiumId });
   await plant(bedA, gardenA, SEASON, { cambiumSeedId: peaCambiumId });
   // Last season's planting — excluded from this season's guide.
   const oldBed = await createBed(gardenA, SEASON - 1);
@@ -535,15 +534,6 @@ describe('guest access', () => {
       .send({ gardenId: guestGarden, cambiumSeedId: peaCambiumId, directSow: `${SEASON}-03-01` });
     expect(res.status).toBe(401);
   });
-
-  it('can mark a seed done', async () => {
-    const res = await guest
-      .put('/api/planting-guide/done')
-      .send({ gardenId: guestGarden, cambiumSeedId: peaCambiumId, season: SEASON, done: true });
-    expect(res.status).toBe(200);
-    expect(res.body.sowingEventId).toEqual(expect.any(String));
-    expect(res.body.markedDoneAt).not.toBeNull();
-  });
 });
 
 describe('PUT /api/planting-guide/overrides', () => {
@@ -610,68 +600,5 @@ describe('PUT /api/planting-guide/overrides', () => {
       (await send({ gardenId: gardenA, seedId: tomatoSeedId, cambiumSeedId: peaCambiumId })).status,
     ).toBe(400);
     expect((await send({ gardenId: gardenA })).status).toBe(400);
-  });
-});
-
-describe('PUT /api/planting-guide/done', () => {
-  const body = (done: boolean) => ({
-    gardenId: gardenA,
-    cambiumSeedId: peaCambiumId,
-    season: SEASON,
-    done,
-  });
-
-  it('marks, unmarks and re-marks the same sowing event', async () => {
-    const first = await agentA.put('/api/planting-guide/done').send(body(true));
-    expect(first.status).toBe(200);
-    expect(first.body.markedDoneAt).not.toBeNull();
-    const eventId = first.body.sowingEventId;
-
-    const { rows } = await pool.query<{ planting_id: number }>(
-      'SELECT planting_id FROM sowing_events WHERE id = $1',
-      [eventId],
-    );
-    expect(rows[0].planting_id).toBe(firstPeaPlantingId);
-
-    const undo = await agentA.put('/api/planting-guide/done').send(body(false));
-    expect(undo.status).toBe(200);
-    expect(undo.body).toEqual({ sowingEventId: eventId, markedDoneAt: null });
-    const { rows: still } = await pool.query('SELECT id FROM sowing_events WHERE id = $1', [eventId]);
-    expect(still).toHaveLength(1);
-
-    const guide = await agentA.get('/api/planting-guide');
-    expect(rowNamed(guide.body, 'Pea').done).toEqual({ sowingEventId: eventId, markedDoneAt: null });
-
-    const again = await agentA.put('/api/planting-guide/done').send(body(true));
-    expect(again.status).toBe(200);
-    expect(again.body.sowingEventId).toBe(eventId);
-    expect(again.body.markedDoneAt).not.toBeNull();
-  });
-
-  it('returns 409 for a past season', async () => {
-    const res = await agentA
-      .put('/api/planting-guide/done')
-      .send({ ...body(true), season: SEASON - 1 });
-    expect(res.status).toBe(409);
-    expect(res.body).toEqual({ error: 'Past seasons are read-only.' });
-  });
-
-  it('rejects both seed keys or a missing done flag', async () => {
-    const both = await agentA
-      .put('/api/planting-guide/done')
-      .send({ ...body(true), seedId: tomatoSeedId });
-    expect(both.status).toBe(400);
-
-    const missing = await agentA.put('/api/planting-guide/done').send({
-      gardenId: gardenA,
-      cambiumSeedId: peaCambiumId,
-      season: SEASON,
-    });
-    expect(missing.status).toBe(400);
-  });
-
-  it("returns 404 for another account's garden", async () => {
-    const res = await agentB.put('/api/planting-guide/done').send(body(true));
-    expect(res.status).toBe(404);
   });
 });

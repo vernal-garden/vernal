@@ -61,8 +61,15 @@ export function isDone(row: GuideRow): boolean {
   return row.done?.markedDoneAt != null;
 }
 
-// The window the "done" checkbox belongs to: the indoor start, or the direct
-// sow when there is no indoor start.
+// "Log harvest" shows once the plant is in the ground and its harvest window
+// has opened. `today` is a Pacific YYYY-MM-DD, compared as a string.
+export function canLogHarvest(row: GuideRow, today: string, readOnly: boolean): boolean {
+  const harvest = row.windows.harvest;
+  return !readOnly && isDone(row) && harvest != null && today >= harvest.start;
+}
+
+// The sowing item the "Planted" tag belongs to: the indoor start, or the
+// direct sow when there is no indoor start.
 export function sowingKind(row: GuideRow): WindowKind | null {
   if (row.windows.indoorStart) return 'indoorStart';
   if (row.windows.directSow) return 'directSow';
