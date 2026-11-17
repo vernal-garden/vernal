@@ -88,7 +88,9 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
     setDetailLoading(true);
     try {
       const path = source === 'catalogue' ? `/api/catalogue/seeds/${id}` : `/api/seeds/${id}`;
-      const data = await api.get<{ commonName?: string; spacingInches?: number | null; cambiumSourceId?: string | null }>(path);
+      const data = await api.get<{
+        commonName?: string; spacingInches?: number | null; cambiumSourceId?: string | null; illustrationKey?: string | null;
+      }>(path);
       const sd: SeedDetail = {
         commonName: data?.commonName ?? fallbackName,
         spacingInches: data?.spacingInches ?? 6,
@@ -101,6 +103,7 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
         spacingInches: sd.spacingInches,
         spacingOnRecord: data?.spacingInches ?? null,
         cambiumIdentity: source === 'catalogue' ? id : (data?.cambiumSourceId ?? null),
+        illustrationKey: data?.illustrationKey ?? null,
       });
     } catch {
       setDetail(null);
