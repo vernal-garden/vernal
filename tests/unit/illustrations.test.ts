@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { ILLUSTRATIONS, cropClass, illustrationUrl } from '../../client/src/lib/illustrations';
+import { ILLUSTRATIONS, catalogueArtUrl, cropClass, illustrationUrl } from '../../client/src/lib/illustrations';
 import { stageLabel, type GrowthStage } from '../../client/src/lib/growthStages';
 
 const ART_DIR = path.resolve(__dirname, '../../client/public/illustrations');
@@ -257,6 +257,31 @@ describe('illustrationUrl', () => {
     expect(illustrationUrl('no-such-crop', 3)).toBeNull();
     expect(illustrationUrl('toString', 3)).toBeNull();
     expect(illustrationUrl(null, 3)).toBeNull();
+  });
+});
+
+describe('catalogueArtUrl', () => {
+  it('returns the stage 5 file for tomato', () => {
+    expect(catalogueArtUrl('tomato')).toBe('/illustrations/tomato-5-harvest.svg');
+  });
+
+  it('returns a -5-harvest.svg URL for every key in ILLUSTRATIONS', () => {
+    for (const key of Object.keys(ILLUSTRATIONS)) {
+      expect(catalogueArtUrl(key)).toMatch(/-5-harvest\.svg$/);
+    }
+  });
+
+  it('returns null for an unknown key', () => {
+    expect(catalogueArtUrl('not-a-plant')).toBeNull();
+  });
+
+  it('returns paths and https URLs unchanged', () => {
+    expect(catalogueArtUrl('/some/path.svg')).toBe('/some/path.svg');
+    expect(catalogueArtUrl('https://example.com/a.svg')).toBe('https://example.com/a.svg');
+  });
+
+  it('returns null for null', () => {
+    expect(catalogueArtUrl(null)).toBeNull();
   });
 });
 

@@ -1,6 +1,6 @@
 // client/src/components/catalogue/IllustrationImage.tsx
 import { useEffect, useState } from 'react';
-import { ILLUSTRATIONS, illustrationUrl } from '../../lib/illustrations';
+import { catalogueArtUrl } from '../../lib/illustrations';
 
 interface Props {
   illustrationKey: string | null;
@@ -48,13 +48,9 @@ export default function IllustrationImage({ illustrationKey, size = 80, classNam
     setFailed(false);
   }, [illustrationKey]);
 
-  // A known art key shows its stage-1 file; a path or https URL is used as
-  // before; anything else gets the fallback.
-  const src = illustrationKey && Object.prototype.hasOwnProperty.call(ILLUSTRATIONS, illustrationKey)
-    ? illustrationUrl(illustrationKey, 1)
-    : illustrationKey && (illustrationKey.startsWith('/') || illustrationKey.startsWith('https://'))
-      ? illustrationKey
-      : null;
+  // A known art key shows its stage 5 (Harvest-Ready) file; a path or https
+  // URL is used as before; anything else gets the fallback.
+  const src = catalogueArtUrl(illustrationKey);
 
   if (!src || failed) {
     return (

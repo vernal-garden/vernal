@@ -184,3 +184,11 @@ export function illustrationUrl(key: string | null, stage: Stage): string | null
   const entry = entryFor(key);
   return entry ? `/illustrations/${entry[stage]}` : null;
 }
+
+// Catalogue cards and the seed detail view show the stage 5 (Harvest-Ready)
+// drawing. A path or https URL is used as is; anything else gets null.
+export function catalogueArtUrl(key: string | null): string | null {
+  if (entryFor(key)) return illustrationUrl(key, 5);
+  if (key !== null && (key.startsWith('/') || key.startsWith('https://'))) return key;
+  return null;
+}
