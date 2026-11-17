@@ -399,6 +399,20 @@ describe('Test 14: PATCH dismissIndicator idempotent', () => {
     expect(second.status).toBe(200);
     expect(second.body.growth.indicatorDismissedAt).toBe(firstTs);
   });
+
+  it('dismissing leaves the growth stage alone (no re-derive)', async () => {
+    await pool.query(
+      `UPDATE plantings SET growth_stage = 5, growth_stage_pct = 100, harvest_ready = true
+       WHERE id = $1`,
+      [gridPlantingId],
+    );
+    const res = await agent
+      .patch(`/api/plantings/${gridPlantingId}`)
+      .send({ dismissIndicator: true });
+    expect(res.status).toBe(200);
+    expect(res.body.growth.stage).toBe(5);
+    expect(res.body.growth.stagePct).toBe(100);
+  });
 });
 
 // ── Test 15: PATCH/DELETE against another user's planting → 404 ──────────────

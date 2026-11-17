@@ -798,11 +798,12 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
     updates.push(`updated_at = NOW()`);
     values.push(plantingId);
 
-    // Only the date moves the sowing event. Growth also follows the start
-    // method, and harvest readiness the dismissed indicator.
+    // Only the date moves the sowing event; growth also follows the start
+    // method. A dismissed indicator needs no derive: the badge count and the
+    // client already skip dismissed plantings, and the nightly run clears
+    // harvest_ready.
     const redated = body.plantingDate !== undefined;
-    const growthChanged =
-      redated || body.startMethod !== undefined || body.dismissIndicator !== undefined;
+    const growthChanged = redated || body.startMethod !== undefined;
 
     try {
       await inTransaction(async (client) => {
