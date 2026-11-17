@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import type { GuideGarden, GuideOverrides, GuideRow, GuideWindow, OverrideField } from '../../types/plantingGuide';
-import { formatRange } from '../../lib/guideDates';
-import { isDone, rowName, seedParam, sourceLabel } from '../../lib/guideModel';
+import { formatRange, todayPacific } from '../../lib/guideDates';
+import { canLogHarvest, isDone, rowName, seedParam, sourceLabel } from '../../lib/guideModel';
 import BottomSheet from '../shell/BottomSheet';
 import { CloseIcon } from '../shell/icons';
 import { SowTags } from './RowLabel';
@@ -19,7 +19,6 @@ interface Props {
   onPrev: (() => void) | null;
   onNext: (() => void) | null;
   setOverrides: (row: GuideRow, partial: Partial<GuideOverrides>) => Promise<void>;
-  setDone: (row: GuideRow, done: boolean) => Promise<void>;
   onFrostSaved: () => void;
 }
 
@@ -122,21 +121,11 @@ function DesktopModal(props: Props) {
 }
 
 function ScheduleBody({
-  row, garden, readOnly, isAccount, setOverrides, setDone, onFrostSaved, showTitle,
+  row, garden, readOnly, isAccount, setOverrides, onFrostSaved, showTitle,
 }: Props & { showTitle?: boolean }) {
-  const [doneError, setDoneError] = useState<string | null>(null);
   const transplants = row.weeksToTransplant != null;
   const { indoorStart, transplant, directSow, harvest } = row.windows;
   const noSowingWindows = !indoorStart && !transplant && !directSow;
-
-  async function toggleDone(done: boolean) {
-    setDoneError(null);
-    try {
-      await setDone(row, done);
-    } catch {
-      setDoneError("Couldn't save. Try again.");
-    }
-  }
 
   const fieldProps = { row, readOnly, isAccount, setOverrides };
 
@@ -154,6 +143,7 @@ function ScheduleBody({
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
           <SowTags row={row} />
+          {isDone(row) && <span style={{ ...tagStyle, color: 'var(--c-text-3)' }}>Planted</span>}
           <Link to={`/catalogue?open=${seedParam(row)}`} style={linkStyle}>
             View in seed catalogue
           </Link>
@@ -161,21 +151,6 @@ function ScheduleBody({
       </div>
 
       {garden && <ZoneStrip garden={garden} isAccount={isAccount} onFrostSaved={onFrostSaved} />}
-
-      {!readOnly && (
-        <div>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--sp-2)', minHeight: 44, cursor: 'pointer', fontSize: 14, color: 'var(--c-text)' }}>
-            <input
-              type="checkbox"
-              checked={isDone(row)}
-              onChange={(e) => void toggleDone(e.target.checked)}
-              style={{ width: 20, height: 20, accentColor: 'var(--c-primary)' }}
-            />
-            Done for this season
-          </label>
-          {doneError && <p role="alert" style={{ margin: 0, fontSize: 13, color: 'var(--c-danger)' }}>{doneError}</p>}
-        </div>
-      )}
 
       {noSowingWindows && row.missingReason && (
         <p style={{ margin: 0, fontSize: 14, color: 'var(--c-text-2)', background: 'var(--c-surface-raised)', padding: 'var(--sp-3)', borderRadius: 'var(--r-md)' }}>
@@ -211,6 +186,11 @@ function ScheduleBody({
         <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: 'var(--c-text)' }}>
           {harvest ? formatRange(harvest.start, harvest.end) : 'No dates yet'}
         </p>
+        {canLogHarvest(row, todayPacific(), readOnly) && (
+          <Link to={`/harvest?log=new&gardenId=${row.gardenId}&seed=${seedParam(row)}`} style={linkStyle}>
+            Log harvest
+          </Link>
+        )}
         {row.maturityDaysMin != null && row.maturityDaysMax != null && (
           <p style={{ margin: 0, fontSize: 14, color: 'var(--c-text-2)' }}>
             Ready in approximately{' '}

@@ -144,8 +144,9 @@ async function plant(
   harvestReady = false,
 ): Promise<number> {
   const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO plantings (bed_id, garden_id, season, seed_id, cambium_seed_id, harvest_ready)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    `INSERT INTO plantings
+       (bed_id, garden_id, season, seed_id, cambium_seed_id, harvest_ready, planting_date)
+     VALUES ($1, $2, $3, $4, $5, $6, make_date($3, 4, 1)) RETURNING id`,
     [bedId, gardenId, SEASON, seed.seedId ?? null, seed.cambiumSeedId ?? null, harvestReady],
   );
   return rows[0].id;

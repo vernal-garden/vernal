@@ -6,8 +6,12 @@ import { LIMITS, withinCap } from '../lib/limits';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId } from '../lib/validation';
-import { currentSeason } from '../lib/season';
+import { currentSeason, todayPacific } from '../lib/season';
 import { UI_MAX_QUANTITY } from '../lib/plantingQuantity';
+import { lockSowingKey, syncSowingEvent, type SeedKey } from '../lib/sowingSync';
+import { deriveGrowth } from '../jobs/nightly';
+import { recomputeHarvestableCount } from '../lib/gardenBadges';
+import { invalidateMetrics } from '../lib/metricsCache';
 import type { SessionData } from '../types';
 
 // ── Three routers, all with mergeParams ──────────────────────────────────────
@@ -22,7 +26,7 @@ plantingsFlatRouter.use(requireSession);
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type Queryable = Pick<PoolClient, 'query'>;
+type StartMethod = 'sown' | 'transplanted';
 
 interface PlantingRow {
   id: string;
@@ -32,7 +36,8 @@ interface PlantingRow {
   seed_id: string | null;
   cambium_seed_id: string | null;
   quantity: number;
-  planting_date: string | null;
+  planting_date: string;
+  start_method: StartMethod;
   cell_x: number | null;
   cell_y: number | null;
   point_x: string | null;
@@ -59,17 +64,31 @@ interface BedInfo {
   grid_rows: number | null;
 }
 
+// What a POST's transaction did: placed (inserted or merged), refused with a
+// response body, or found its merge target deleted underneath it.
+type PlaceOutcome =
+  | { kind: 'placed'; id: string; merged: boolean }
+  | { kind: 'refused'; status: number; body: Record<string, unknown> }
+  | { kind: 'vanished'; plantingId: string };
+
 interface PatchPlantingRow extends PlantingRow {
   bed_type: 'grid' | 'freeform';
   grid_cols: number | null;
   grid_rows: number | null;
 }
 
+// planting_date is still nullable (a later release adds NOT NULL), and older
+// code may write NULL; such a planting reads as dated the Pacific day it was
+// created, as deriveGrowth and syncSowingEvent treat it.
+const PLANTING_DATE_SQL =
+  `COALESCE(p.planting_date, (p.created_at AT TIME ZONE 'America/Los_Angeles')::date)::text AS planting_date`;
+
 // Extended SELECT for GET handlers — includes companion resolution via JOINs.
 const PLANTING_GET_QUERY = `
   SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
     p.seed_id::text, p.cambium_seed_id::text,
-    p.quantity, p.planting_date::text, p.cell_x, p.cell_y, p.point_x, p.point_y,
+    p.quantity, ${PLANTING_DATE_SQL}, p.start_method,
+    p.cell_x, p.cell_y, p.point_x, p.point_y,
     p.growth_stage_pct, p.growth_stage, p.displayed_growth_stage,
     p.harvest_ready, p.harvest_window_end,
     p.indicator_dismissed_at, p.created_at, p.updated_at,
@@ -105,6 +124,7 @@ function formatPlanting(row: PlantingRow) {
     cambiumSeedId: row.cambium_seed_id,
     quantity: row.quantity,
     plantingDate: row.planting_date,
+    startMethod: row.start_method,
     cell: row.cell_x !== null ? { x: row.cell_x, y: row.cell_y } : null,
     point: row.point_x !== null ? { x: Number(row.point_x), y: Number(row.point_y) } : null,
     growth: {
@@ -215,8 +235,70 @@ function validateSeason(v: unknown): number | string {
   return n as number;
 }
 
-function isValidDate(v: unknown): boolean {
-  return v === null || (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v));
+// plantingDate on POST / PATCH: a planting always has a date, so null is
+// refused. Returns an error message, or null when the value is a date string.
+function plantingDateError(v: unknown): string | null {
+  if (v === null) return 'plantingDate is required';
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    return 'plantingDate must be a date string (YYYY-MM-DD)';
+  }
+  return null;
+}
+
+function isStartMethod(v: unknown): v is StartMethod {
+  return v === 'sown' || v === 'transplanted';
+}
+
+const START_METHOD_ERROR = "startMethod must be 'sown' or 'transplanted'";
+
+// The sowing-event key for a planting: its personal seed when it has one,
+// otherwise its Cambium seed.
+function plantingSeedKey(row: { seed_id: string | null; cambium_seed_id: string | null }): SeedKey {
+  return row.seed_id !== null
+    ? { kind: 'seed', id: Number(row.seed_id) }
+    : { kind: 'cambium', id: Number(row.cambium_seed_id) };
+}
+
+// Runs fn in a transaction on its own client: COMMIT when it resolves,
+// ROLLBACK when it throws.
+async function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Best-effort follow-ups once a planting write has committed. Derives the
+// planting's growth (when plantingId is given) so the response carries its new
+// stage, then refreshes the garden's harvest badge and drops cached metrics. A
+// failure is logged and never fails the request: the write stands and the
+// nightly job catches up.
+async function afterPlantingWrite(
+  gardenId: string,
+  accountId: number | null,
+  plantingId: string | null,
+): Promise<void> {
+  if (plantingId !== null) {
+    try {
+      await deriveGrowth({ plantingIds: [Number(plantingId)], db });
+    } catch (err) {
+      logger.error('Deriving growth after a planting write failed', err, { plantingId });
+    }
+  }
+  try {
+    await recomputeHarvestableCount(db, Number(gardenId));
+  } catch (err) {
+    logger.error('Recomputing harvestable count after a planting write failed', err, { gardenId });
+  }
+  if (accountId !== null) invalidateMetrics(accountId);
 }
 
 // ── gardenPlantingsRouter: GET /api/gardens/:gardenId/plantings ───────────────
@@ -412,11 +494,22 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       quantity = body.quantity as number;
     }
 
-    // plantingDate (optional)
-    if (body.plantingDate !== undefined && !isValidDate(body.plantingDate)) {
-      return res.status(400).json({ error: 'plantingDate must be a date string (YYYY-MM-DD) or null' });
+    // plantingDate (optional): placing a plant sows it, today unless told otherwise.
+    let plantingDate = todayPacific();
+    if (body.plantingDate !== undefined) {
+      const dateErr = plantingDateError(body.plantingDate);
+      if (dateErr) return res.status(400).json({ error: dateErr });
+      plantingDate = body.plantingDate as string;
     }
-    const plantingDate = (body.plantingDate as string | null | undefined) ?? null;
+
+    // startMethod (optional, default 'sown')
+    let startMethod: StartMethod = 'sown';
+    if (body.startMethod !== undefined) {
+      if (!isStartMethod(body.startMethod)) {
+        return res.status(400).json({ error: START_METHOD_ERROR });
+      }
+      startMethod = body.startMethod;
+    }
 
     // Position based on bed type
     let cellX: number | null = null;
@@ -450,40 +543,37 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       pointY = p.y;
     }
 
-    const selectFormatted = async (id: string) => {
-      const { rows } = await db.query<PlantingRow>(
-        `${PLANTING_GET_QUERY} WHERE p.id = $1`,
-        [id],
-      );
-      return formatPlanting(rows[0]);
-    };
+    const requestKey: SeedKey =
+      seedId !== null ? { kind: 'seed', id: seedId } : { kind: 'cambium', id: cambiumSeedId! };
 
-    const insertPlanting = async (q: Queryable = db): Promise<string> => {
-      const { rows: insertRows } = await q.query<{ id: string }>(
+    // Each write below shares a transaction with its sowing-event sync. Nothing
+    // else rebuilds the event, so a failed sync undoes the placement.
+    const insertPlanting = async (client: PoolClient): Promise<string> => {
+      const { rows: insertRows } = await client.query<{ id: string }>(
         `INSERT INTO plantings
            (bed_id, garden_id, season, seed_id, cambium_seed_id, quantity, planting_date,
-            cell_x, cell_y, point_x, point_y)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            start_method, cell_x, cell_y, point_x, point_y)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING id::text`,
         [bedId, gardenId, bed.season, seedId, cambiumSeedId, quantity, plantingDate,
-         cellX, cellY, pointX, pointY],
+         startMethod, cellX, cellY, pointX, pointY],
       );
+      await syncSowingEvent(client, Number(gardenId), requestKey, bed.season);
       return insertRows[0].id;
     };
+
+    let outcome: PlaceOutcome;
 
     if (bed.type !== 'grid') {
       // Freeform beds have no cell limit, so cap the plantings per bed. Lock the
       // bed row so parallel creates count and insert one at a time. Take the
       // garden's KEY SHARE (which the insert's FK check needs anyway) before the
-      // bed lock, so locks are always taken garden → bed.
-      const client = await db.connect();
-      let id: string;
-      try {
-        await client.query('BEGIN');
+      // bed lock, so locks are always taken garden → bed; the sowing-event
+      // advisory lock comes last, inside the sync.
+      outcome = await inTransaction(async (client): Promise<PlaceOutcome> => {
         const gardenLock = await client.query('SELECT 1 FROM gardens WHERE id = $1 FOR KEY SHARE', [gardenId]);
         if (gardenLock.rowCount === 0) {
-          await client.query('ROLLBACK');
-          return res.status(404).json({ error: 'Garden not found' });
+          return { kind: 'refused', status: 404, body: { error: 'Garden not found' } };
         }
         const cap = await withinCap(client, {
           lockSql: 'SELECT 1 FROM beds WHERE id = $1 FOR NO KEY UPDATE',
@@ -492,85 +582,93 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
           max: LIMITS.plantingsPerFreeformBed,
         });
         if (cap === 'missing') {
-          await client.query('ROLLBACK');
-          return res.status(404).json({ error: 'Bed not found' });
+          return { kind: 'refused', status: 404, body: { error: 'Bed not found' } };
         }
         if (cap === 'full') {
-          await client.query('ROLLBACK');
-          return res.status(409).json({
-            error: `A bed can have up to ${LIMITS.plantingsPerFreeformBed} plantings.`,
-          });
+          return {
+            kind: 'refused',
+            status: 409,
+            body: { error: `A bed can have up to ${LIMITS.plantingsPerFreeformBed} plantings.` },
+          };
         }
-        id = await insertPlanting(client);
-        await client.query('COMMIT');
-      } catch (txErr) {
-        await client.query('ROLLBACK').catch(() => {});
-        throw txErr;
-      } finally {
-        client.release();
-      }
-      return res.status(201).json({ ...(await selectFormatted(id)), merged: false });
-    }
+        return { kind: 'placed', id: await insertPlanting(client), merged: false };
+      });
+    } else {
+      // Grid bed: one planting per cell. Same plant merges; a different plant is refused.
+      const requestIdentity =
+        cambiumSeedId !== null ? String(cambiumSeedId) : requestSeedSourceId;
 
-    // Grid bed: one planting per cell. Same plant merges; a different plant is refused.
-    const requestIdentity =
-      cambiumSeedId !== null ? String(cambiumSeedId) : requestSeedSourceId;
-
-    const resolveOccupied = async (occ: OccupantRow) => {
-      const sameSeedRecord =
-        (seedId !== null && occ.seed_id === String(seedId)) ||
-        (cambiumSeedId !== null && occ.cambium_seed_id === String(cambiumSeedId));
-      const sameIdentity =
-        occ.cambium_identity !== null && occ.cambium_identity === requestIdentity;
-      if (sameSeedRecord || sameIdentity) {
+      // A merge only adds to the quantity: the planting keeps its own date and
+      // start method, and its event is synced on its own seed key.
+      const resolveOccupied = async (client: PoolClient, occ: OccupantRow): Promise<PlaceOutcome> => {
+        const sameSeedRecord =
+          (seedId !== null && occ.seed_id === String(seedId)) ||
+          (cambiumSeedId !== null && occ.cambium_seed_id === String(cambiumSeedId));
+        const sameIdentity =
+          occ.cambium_identity !== null && occ.cambium_identity === requestIdentity;
+        if (!sameSeedRecord && !sameIdentity) {
+          return { kind: 'refused', status: 409, body: cellOccupiedBody(occ) };
+        }
         // SQL mirrors mergedQuantity() in lib/plantingQuantity.ts; computed in SQL
         // so concurrent merges don't lose an update.
-        const { rows: merged } = await db.query<{ id: string }>(
+        const { rows: merged } = await client.query<{ id: string }>(
           `UPDATE plantings
            SET quantity = LEAST(quantity + $1, GREATEST(quantity, $2)), updated_at = NOW()
            WHERE id = $3 RETURNING id::text`,
           [quantity, UI_MAX_QUANTITY, occ.id],
         );
-        if (merged.length === 0) {
-          logger.error('POST /gardens/:gardenId/beds/:bedId/plantings merge target vanished before the merge UPDATE', undefined, {
-            plantingId: occ.id,
-          });
-          return res.status(500).json({ error: 'Internal server error' });
-        }
-        return res.status(200).json({ ...(await selectFormatted(occ.id)), merged: true });
+        if (merged.length === 0) return { kind: 'vanished', plantingId: occ.id };
+        await syncSowingEvent(client, Number(gardenId), plantingSeedKey(occ), bed.season);
+        return { kind: 'placed', id: occ.id, merged: true };
+      };
+
+      const findOccupant = async (client: PoolClient): Promise<OccupantRow | null> => {
+        const { rows } = await client.query<OccupantRow>(
+          `SELECT p.id::text, p.seed_id::text, p.cambium_seed_id::text,
+                  p.quantity,
+                  COALESCE(p.cambium_seed_id, s.cambium_source_id)::text
+                    AS cambium_identity,
+                  COALESCE(cs.common_name, s.common_name) AS common_name
+           FROM plantings p
+           LEFT JOIN seeds s          ON s.id  = p.seed_id
+           LEFT JOIN cambium.seeds cs ON cs.id = COALESCE(p.cambium_seed_id, s.cambium_source_id)
+           WHERE p.bed_id = $1 AND p.cell_x = $2 AND p.cell_y = $3`,
+          [bedId, cellX, cellY],
+        );
+        return rows[0] ?? null;
+      };
+
+      try {
+        outcome = await inTransaction(async (client): Promise<PlaceOutcome> => {
+          const occupant = await findOccupant(client);
+          if (occupant) return resolveOccupied(client, occupant);
+          return { kind: 'placed', id: await insertPlanting(client), merged: false };
+        });
+      } catch (err) {
+        if (!isCellIndexViolation(err)) throw err;
+        // Lost a race: someone filled the cell between lookup and insert. The
+        // failed insert aborted that transaction, so look again in a fresh one.
+        outcome = await inTransaction(async (client) => {
+          const raced = await findOccupant(client);
+          if (!raced) throw err;
+          return resolveOccupied(client, raced);
+        });
       }
-      return res.status(409).json(cellOccupiedBody(occ));
-    };
-
-    const findOccupant = async (): Promise<OccupantRow | null> => {
-      const { rows } = await db.query<OccupantRow>(
-        `SELECT p.id::text, p.seed_id::text, p.cambium_seed_id::text,
-                p.quantity,
-                COALESCE(p.cambium_seed_id, s.cambium_source_id)::text
-                  AS cambium_identity,
-                COALESCE(cs.common_name, s.common_name) AS common_name
-         FROM plantings p
-         LEFT JOIN seeds s          ON s.id  = p.seed_id
-         LEFT JOIN cambium.seeds cs ON cs.id = COALESCE(p.cambium_seed_id, s.cambium_source_id)
-         WHERE p.bed_id = $1 AND p.cell_x = $2 AND p.cell_y = $3`,
-        [bedId, cellX, cellY],
-      );
-      return rows[0] ?? null;
-    };
-
-    const occupant = await findOccupant();
-    if (occupant) return await resolveOccupied(occupant);
-
-    try {
-      const id = await insertPlanting();
-      return res.status(201).json({ ...(await selectFormatted(id)), merged: false });
-    } catch (err) {
-      if (!isCellIndexViolation(err)) throw err;
-      // Lost a race: someone filled the cell between lookup and insert. Look once more.
-      const raced = await findOccupant();
-      if (!raced) throw err;
-      return await resolveOccupied(raced);
     }
+
+    if (outcome.kind === 'refused') return res.status(outcome.status).json(outcome.body);
+    if (outcome.kind === 'vanished') {
+      logger.error('POST /gardens/:gardenId/beds/:bedId/plantings merge target vanished before the merge UPDATE', undefined, {
+        plantingId: outcome.plantingId,
+      });
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+
+    await afterPlantingWrite(gardenId, accountId, outcome.id);
+    const { rows } = await db.query<PlantingRow>(`${PLANTING_GET_QUERY} WHERE p.id = $1`, [outcome.id]);
+    return res
+      .status(outcome.merged ? 200 : 201)
+      .json({ ...formatPlanting(rows[0]), merged: outcome.merged });
   } catch (err) {
     logger.error('POST /gardens/:gardenId/beds/:bedId/plantings failed', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -590,7 +688,8 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
     const { rows: existing } = await db.query<PatchPlantingRow>(
       `SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
               p.seed_id::text, p.cambium_seed_id::text,
-              p.quantity, p.planting_date::text, p.cell_x, p.cell_y, p.point_x, p.point_y,
+              p.quantity, ${PLANTING_DATE_SQL}, p.start_method,
+              p.cell_x, p.cell_y, p.point_x, p.point_y,
               p.growth_stage_pct, p.growth_stage, p.displayed_growth_stage,
               p.harvest_ready, p.harvest_window_end,
               p.indicator_dismissed_at, p.created_at, p.updated_at,
@@ -628,12 +727,19 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
       values.push(body.quantity);
     }
 
-    if ('plantingDate' in body) {
-      if (!isValidDate(body.plantingDate)) {
-        return res.status(400).json({ error: 'plantingDate must be a date string (YYYY-MM-DD) or null' });
-      }
+    if (body.plantingDate !== undefined) {
+      const dateErr = plantingDateError(body.plantingDate);
+      if (dateErr) return res.status(400).json({ error: dateErr });
       updates.push(`planting_date = $${idx++}`);
-      values.push(body.plantingDate ?? null);
+      values.push(body.plantingDate);
+    }
+
+    if (body.startMethod !== undefined) {
+      if (!isStartMethod(body.startMethod)) {
+        return res.status(400).json({ error: START_METHOD_ERROR });
+      }
+      updates.push(`start_method = $${idx++}`);
+      values.push(body.startMethod);
     }
 
     if (body.cell !== undefined) {
@@ -692,11 +798,24 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
     updates.push(`updated_at = NOW()`);
     values.push(plantingId);
 
+    // Only the date moves the sowing event. Growth also follows the start
+    // method, and harvest readiness the dismissed indicator.
+    const redated = body.plantingDate !== undefined;
+    const growthChanged =
+      redated || body.startMethod !== undefined || body.dismissIndicator !== undefined;
+
     try {
-      await db.query(
-        `UPDATE plantings SET ${updates.join(', ')} WHERE id = $${idx}`,
-        values,
-      );
+      await inTransaction(async (client) => {
+        await client.query(
+          `UPDATE plantings SET ${updates.join(', ')} WHERE id = $${idx}`,
+          values,
+        );
+        if (redated) {
+          await syncSowingEvent(
+            client, Number(planting.garden_id), plantingSeedKey(planting), planting.season,
+          );
+        }
+      });
     } catch (err) {
       if (!isCellIndexViolation(err) || body.cell === undefined) throw err;
       // Lost a race for the target cell; report whoever holds it now.
@@ -709,6 +828,7 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
       if (occ.length === 0) throw err;
       return res.status(409).json(cellOccupiedBody(occ[0]));
     }
+    await afterPlantingWrite(planting.garden_id, accountId, growthChanged ? plantingId : null);
     const { rows } = await db.query<PlantingRow>(
       `${PLANTING_GET_QUERY} WHERE p.id = $1`,
       [plantingId],
@@ -730,14 +850,36 @@ plantingsFlatRouter.delete('/:id', writeLimiter, async (req, res) => {
   if (!isNumericId(plantingId)) return res.status(400).json({ error: 'Invalid id' });
 
   try {
-    const { rows } = await db.query(
-      `DELETE FROM plantings p
-       USING gardens g
-       WHERE p.id = $1 AND g.id = p.garden_id AND (g.owner_id = $2 OR g.guest_session_id = $3)
-       RETURNING p.id`,
-      [plantingId, accountId, sessionId],
-    );
-    if (rows.length === 0) return res.status(404).json({ error: 'Planting not found' });
+    // The event sync shares the delete's transaction: with the last planting
+    // gone the event is un-done, otherwise it follows the earliest date left.
+    // The sow lock comes before the DELETE, whose FK SET NULL row-locks the
+    // event: taking them the other way round could deadlock with a POST or
+    // PATCH that holds the sow lock and then updates the event.
+    const deleted = await inTransaction(async (client) => {
+      const { rows } = await client.query<{
+        garden_id: string;
+        seed_id: string | null;
+        cambium_seed_id: string | null;
+        season: number;
+      }>(
+        `SELECT p.garden_id::text, p.seed_id::text, p.cambium_seed_id::text, p.season
+         FROM plantings p
+         JOIN gardens g ON g.id = p.garden_id
+         WHERE p.id = $1 AND (g.owner_id = $2 OR g.guest_session_id = $3)`,
+        [plantingId, accountId, sessionId],
+      );
+      const row = rows[0];
+      if (!row) return null;
+      const gardenNum = Number(row.garden_id);
+      const seedKey = plantingSeedKey(row);
+      await lockSowingKey(client, gardenNum, seedKey, row.season);
+      const { rowCount } = await client.query('DELETE FROM plantings WHERE id = $1', [plantingId]);
+      if (!rowCount) return null;
+      await syncSowingEvent(client, gardenNum, seedKey, row.season);
+      return row;
+    });
+    if (!deleted) return res.status(404).json({ error: 'Planting not found' });
+    await afterPlantingWrite(deleted.garden_id, accountId, null);
     res.status(204).send();
   } catch (err) {
     logger.error('DELETE /plantings/:id failed', err);

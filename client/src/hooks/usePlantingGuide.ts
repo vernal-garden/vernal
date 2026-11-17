@@ -7,10 +7,6 @@ function seedKeyBody(row: GuideRow) {
   return row.seedId !== null ? { seedId: Number(row.seedId) } : { cambiumSeedId: Number(row.cambiumSeedId) };
 }
 
-function sameRow(a: GuideRow, b: GuideRow): boolean {
-  return a.gardenId === b.gardenId && a.seedId === b.seedId && a.cambiumSeedId === b.cambiumSeedId;
-}
-
 // Loads the planting guide for a season. `season` null asks the server for
 // its current season (the response's `season` says which one that is).
 export function usePlantingGuide(season: number | null) {
@@ -53,34 +49,5 @@ export function usePlantingGuide(season: number | null) {
     [reload],
   );
 
-  const patchRow = useCallback((row: GuideRow, done: GuideRow['done']) => {
-    setData((prev) =>
-      prev ? { ...prev, rows: prev.rows.map((r) => (sameRow(r, row) ? { ...r, done } : r)) } : prev,
-    );
-  }, []);
-
-  const setDone = useCallback(
-    async (row: GuideRow, done: boolean) => {
-      if (!data) return;
-      const previous = row.done;
-      patchRow(row, {
-        sowingEventId: previous?.sowingEventId ?? null,
-        markedDoneAt: done ? new Date().toISOString() : null,
-      });
-      try {
-        const res = await put<{ sowingEventId: string | null; markedDoneAt: string | null }>(
-          '/api/planting-guide/done',
-          { gardenId: Number(row.gardenId), ...seedKeyBody(row), season: data.season, done },
-        );
-        if (res) patchRow(row, res);
-        if (done) track('planting_guide_entry_saved');
-      } catch (err) {
-        patchRow(row, previous);
-        throw err;
-      }
-    },
-    [data, patchRow],
-  );
-
-  return { data, loading, error, reload, setOverrides, setDone };
+  return { data, loading, error, reload, setOverrides };
 }

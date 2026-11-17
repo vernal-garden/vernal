@@ -30,8 +30,8 @@ function notAfterToday(date: string): string {
 }
 
 // An account with a garden holding one 4x8 grid bed, a timed personal seed
-// planted in it this season (with a planting date), the guide marked done,
-// and three harvests: 340 g and 160 g this season (linked to the sowing event
+// planted in it this season (with a planting date, which marks its sowing
+// event done), and three harvests: 340 g and 160 g this season (linked to the sowing event
 // and the bed) and 400 g last season.
 export async function createMetricsFixture(
   email: string, password: string, plant: string,
@@ -69,11 +69,13 @@ export async function createMetricsFixture(
     });
     expect(plantingResp.status()).toBe(201);
 
-    const doneResp = await api.put('/api/planting-guide/done', {
-      data: { gardenId: Number(gardenId), seedId, season: thisYear, done: true },
-    });
-    expect(doneResp.ok()).toBe(true);
-    const sowingEventId = Number((await doneResp.json()).sowingEventId);
+    // Placing the plant created its done sowing event; the guide row carries its id.
+    const guideResp = await api.get(`/api/planting-guide?gardenId=${gardenId}&season=${thisYear}`);
+    expect(guideResp.ok()).toBe(true);
+    const guide = (await guideResp.json()) as {
+      rows: Array<{ seedId: string | null; done: { sowingEventId: string } | null }>;
+    };
+    const sowingEventId = Number(guide.rows.find((r) => r.seedId === String(seedId))?.done?.sowingEventId);
     expect(sowingEventId).toBeGreaterThan(0);
 
     const harvests = [

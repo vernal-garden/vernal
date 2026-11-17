@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { jobDb as db, db as webDb } from '../lib/db'; // long-running work: job pool, 5-min statement cap
 import { COMPANION_CONFIDENCE_THRESHOLD, deleteAccountRatings } from '../services/cambium';
 import { gardenThumbnailFolder, seedPhotoFolder, exportFolder } from '../lib/storage/keys';
@@ -11,50 +12,54 @@ import { STAGE_BOUNDS } from '../lib/growthStages';
 import { currentSeason } from '../lib/season';
 
 // The only writer of plantings.growth_stage_pct, growth_stage, harvest_ready,
-// and harvest_window_end — routes must never write these fields directly.
+// and harvest_window_end — routes must never write these fields directly; they
+// call deriveGrowth({ plantingIds, db }) after their write commits.
 // displayed_growth_stage is not written here: the client acknowledges the
 // stage it has shown through PATCH /api/gardens/:gardenId/plantings/displayed-stage.
 //
-// A planting is anchored once a sowing event for the same garden, seed, and
-// season is marked done. It grows from its planting_date, or failing that from
-// the Pacific date of the earliest done event. Unanchored plantings, and those
-// whose seed has no maturity days, get null growth and are never harvest-ready.
-// Stage bounds come from STAGE_BOUNDS so SQL and stageFor() can't drift; pct is
-// rounded to the column's two decimals before the stage is chosen.
-export async function deriveGrowth(): Promise<{ affected: number }> {
-  const result = await db.query(
+// A planting grows from its planting_date, or failing that from the Pacific
+// date it was created. Sowing events play no part. A sown planting's maturity
+// (and harvest window) includes its seed's weeks_to_transplant, since it
+// starts as a seed rather than a transplant. A seed with no maturity days gives
+// stage 1 with null pct and is never harvest-ready. A transplanted planting is
+// never below stage 2. Stage bounds come from STAGE_BOUNDS so SQL and
+// stageFor() can't drift; pct is rounded to the column's two decimals before
+// the stage is chosen. With plantingIds, only those plantings are derived.
+type Queryable = Pick<PoolClient, 'query'>;
+
+export async function deriveGrowth(
+  opts: { plantingIds?: number[]; db?: Queryable } = {},
+): Promise<{ affected: number }> {
+  const q = opts.db ?? db;
+  const result = await q.query(
     `
     WITH anchor AS (
-      -- maturity stays NULL for unanchored plantings, which nulls everything below.
       SELECT p.id AS planting_id,
         p.indicator_dismissed_at,
         p.season,
+        p.start_method,
         COALESCE(p.planting_date,
-          (ds.first_done_at AT TIME ZONE 'America/Los_Angeles')::date) AS sow_date,
-        CASE WHEN ds.first_done_at IS NOT NULL THEN
-          NULLIF(COALESCE(ps.maturity_days_min, ps.maturity_days_max,
-            cs.maturity_days_min, cs.maturity_days_max), 0)
-        END AS maturity,
+          (p.created_at AT TIME ZONE 'America/Los_Angeles')::date) AS sow_date,
+        -- NULL + n stays NULL, so a seed without maturity days stays NULL.
+        NULLIF(COALESCE(ps.maturity_days_min, ps.maturity_days_max,
+          cs.maturity_days_min, cs.maturity_days_max), 0) + i.indoor_days AS maturity,
         COALESCE(ps.maturity_days_max, ps.maturity_days_min,
-          cs.maturity_days_max, cs.maturity_days_min) AS window_days
+          cs.maturity_days_max, cs.maturity_days_min) + i.indoor_days AS window_days
       FROM plantings p
-      -- Seed key as in routes/harvests.ts seedKeyWhere: seed_id when the
-      -- planting has one, else a Cambium-only event.
-      LEFT JOIN LATERAL (
-        SELECT MIN(se.marked_done_at) AS first_done_at
-        FROM sowing_events se
-        WHERE se.garden_id = p.garden_id
-          AND se.season = p.season
-          AND se.marked_done_at IS NOT NULL
-          AND CASE WHEN p.seed_id IS NOT NULL THEN se.seed_id = p.seed_id
-                   ELSE se.seed_id IS NULL AND se.cambium_seed_id = p.cambium_seed_id END
-      ) ds ON true
       LEFT JOIN seeds ps ON ps.id = p.seed_id
       LEFT JOIN cambium.seeds cs ON cs.id = p.cambium_seed_id
+      -- Weeks spent indoors before transplant count toward a sown planting's
+      -- maturity; a transplanted one starts after them.
+      CROSS JOIN LATERAL (
+        SELECT CASE WHEN p.start_method = 'sown'
+          THEN COALESCE(ps.weeks_to_transplant, cs.weeks_to_transplant, 0) * 7
+          ELSE 0 END AS indoor_days
+      ) i
+      WHERE ($5::bigint[] IS NULL OR p.id = ANY($5::bigint[]))
     ),
     calc AS (
       SELECT a.*,
-        -- GREATEST/LEAST skip NULLs, so guard unanchored / no-maturity rows.
+        -- GREATEST/LEAST skip NULLs, so guard no-maturity rows.
         CASE WHEN a.maturity IS NOT NULL THEN
           ROUND(LEAST(100.0, GREATEST(0.0,
             ((NOW() AT TIME ZONE 'America/Los_Angeles')::date - a.sow_date)::NUMERIC
@@ -66,14 +71,17 @@ export async function deriveGrowth(): Promise<{ affected: number }> {
     derived AS (
       SELECT c.planting_id,
         c.pct,
-        CASE
-          WHEN c.pct IS NULL THEN NULL
-          WHEN c.pct >= $3::numeric THEN 5
-          WHEN c.pct >  $2::numeric THEN 4
-          WHEN c.pct >  $1::numeric THEN 3
-          WHEN c.pct >  0 THEN 2
-          ELSE 1
-        END::smallint AS stage,
+        GREATEST(
+          CASE
+            WHEN c.pct IS NULL THEN 1
+            WHEN c.pct >= $3::numeric THEN 5
+            WHEN c.pct >  $2::numeric THEN 4
+            WHEN c.pct >  $1::numeric THEN 3
+            WHEN c.pct >  0 THEN 2
+            ELSE 1
+          END,
+          CASE WHEN c.start_method = 'transplanted' THEN 2 ELSE 1 END
+        )::smallint AS stage,
         COALESCE(c.pct >= $3::numeric, false)
           AND c.indicator_dismissed_at IS NULL
           AND c.season = $4::int AS ready,
@@ -93,7 +101,13 @@ export async function deriveGrowth(): Promise<{ affected: number }> {
       AND (p.growth_stage_pct, p.growth_stage, p.harvest_ready, p.harvest_window_end)
         IS DISTINCT FROM (d.pct, d.stage, d.ready, d.window_end)
   `,
-    [STAGE_BOUNDS.seedling, STAGE_BOUNDS.vegetative, STAGE_BOUNDS.ready, currentSeason()],
+    [
+      STAGE_BOUNDS.seedling,
+      STAGE_BOUNDS.vegetative,
+      STAGE_BOUNDS.ready,
+      currentSeason(),
+      opts.plantingIds ?? null,
+    ],
   );
   return { affected: result.rowCount ?? 0 };
 }
@@ -565,7 +579,7 @@ async function runNightlyTasks(): Promise<void> {
   const errors: string[] = [];
 
   const tasks: Array<[string, () => Promise<{ affected: number; failed?: number }>]> = [
-    ['deriveGrowth', deriveGrowth],
+    ['deriveGrowth', () => deriveGrowth()],
     ['refreshGardenBadges', refreshGardenBadges],
     ['purgeExpiredGuests', purgeExpiredGuests],
     ['purgeReadNotifications', purgeReadNotifications],

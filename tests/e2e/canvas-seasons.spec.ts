@@ -99,7 +99,7 @@ test('a harvest-ready marker offers Log harvest and Mark as harvested', async ({
   await openMarkerPopover(page, PLANT);
   const popover = inspectPopover(page, PLANT);
   await expect(popover).toContainText('Ready to harvest');
-  await expect(popover).toContainText('Planted Jan 2');
+  await expect(popover).toContainText('Sown Jan 2');
   await expect(popover.getByRole('button', { name: 'Mark as harvested' })).toBeVisible();
   await expect(popover.getByRole('button', { name: 'Remove plant' })).toBeVisible();
 

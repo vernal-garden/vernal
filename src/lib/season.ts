@@ -6,6 +6,14 @@ const SEASON_FORMAT = new Intl.DateTimeFormat('en-US', {
   year: 'numeric',
 });
 
+// en-CA formats as YYYY-MM-DD.
+const DATE_FORMAT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 // The season a YYYY-MM-DD calendar date belongs to.
 export function seasonOf(dateKey: string): number {
   return Number(dateKey.slice(0, 4));
@@ -14,4 +22,9 @@ export function seasonOf(dateKey: string): number {
 // The current season is the calendar year in America/Los_Angeles.
 export function currentSeason(now: Date = new Date()): number {
   return Number(SEASON_FORMAT.format(now));
+}
+
+// Today's calendar date (YYYY-MM-DD) in America/Los_Angeles.
+export function todayPacific(now: Date = new Date()): string {
+  return DATE_FORMAT.format(now);
 }

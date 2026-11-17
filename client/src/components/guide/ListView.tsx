@@ -1,9 +1,10 @@
 import { useState, type CSSProperties } from 'react';
+import { Link } from 'react-router-dom';
 import type { GuideRow, GuideWindow, WindowKind } from '../../types/plantingGuide';
 import { formatRange, MONTH_LONG, monthStart, parseDay } from '../../lib/guideDates';
-import { hasWindows, isDone, rowKey, rowName, rowWindows, sowingKind, WINDOW_KINDS } from '../../lib/guideModel';
+import { canLogHarvest, hasWindows, isDone, rowKey, rowName, rowWindows, seedParam, sowingKind, WINDOW_KINDS } from '../../lib/guideModel';
 import RowLabel from './RowLabel';
-import { segmentGroupStyle, segmentStyle, tagStyle, textButtonStyle } from './styles';
+import { linkStyle, segmentGroupStyle, segmentStyle, tagStyle, textButtonStyle } from './styles';
 import { gardenOf, type GuideViewProps } from './viewTypes';
 
 const ITEM_NAMES: Record<WindowKind, string> = {
@@ -29,7 +30,6 @@ interface Group {
 
 interface Props extends GuideViewProps {
   readOnly: boolean;
-  onToggleDone: (row: GuideRow, done: boolean) => void;
 }
 
 const byKindThenName = (a: Item, b: Item) =>
@@ -80,7 +80,7 @@ function groupBy(items: Item[], keyOf: (item: Item) => { key: string; title: str
 }
 
 export default function ListView(props: Props) {
-  const { rows, gardens, season, today, showGardenName, readOnly, onOpen, onToggleDone } = props;
+  const { rows, gardens, season, today, showGardenName, readOnly, onOpen } = props;
   const [grouping, setGrouping] = useState<Grouping>('time');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -181,9 +181,9 @@ export default function ListView(props: Props) {
                     key={`${rowKey(item.row)}-${item.kind}`}
                     item={item}
                     gardenName={showGardenName ? gardenName(item.row) : null}
+                    today={today}
                     readOnly={readOnly}
                     onOpen={onOpen}
-                    onToggleDone={onToggleDone}
                   />
                 ))}
               </ul>
@@ -233,37 +233,21 @@ const rowButtonStyle: CSSProperties = {
 interface ItemProps {
   item: Item;
   gardenName: string | null;
+  today: string;
   readOnly: boolean;
   onOpen: (row: GuideRow) => void;
-  onToggleDone: (row: GuideRow, done: boolean) => void;
 }
 
-function ListItem({ item, gardenName, readOnly, onOpen, onToggleDone }: ItemProps) {
+function ListItem({ item, gardenName, today, readOnly, onOpen }: ItemProps) {
   const { row, kind, window } = item;
-  const done = isDone(row);
-  const isSowing = sowingKind(row) === kind;
-  const name = rowName(row);
+  const planted = sowingKind(row) === kind && isDone(row);
+  const logHarvest = kind === 'harvest' && canLogHarvest(row, today, readOnly);
   return (
     <li
       data-testid="guide-list-item"
       style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', padding: 'var(--sp-2) 0', borderBottom: '1px solid var(--c-border-subtle)' }}
     >
-      {isSowing ? (
-        <label
-          style={{ width: 44, height: 44, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: readOnly ? 'default' : 'pointer' }}
-        >
-          <input
-            type="checkbox"
-            aria-label={`${name}: ${ITEM_NAMES[kind]} done`}
-            checked={done}
-            disabled={readOnly}
-            onChange={(e) => onToggleDone(row, e.target.checked)}
-            style={{ width: 20, height: 20, accentColor: 'var(--c-primary)' }}
-          />
-        </label>
-      ) : (
-        <span style={{ width: 44, flexShrink: 0 }} />
-      )}
+      <span style={{ width: 44, flexShrink: 0 }} />
       <button type="button" onClick={() => onOpen(row)} style={rowButtonStyle}>
         <span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}>
           <span style={{ fontFamily: 'var(--font-ui)', fontSize: 13, fontWeight: 600, color: 'var(--c-text-2)', textAlign: 'left' }}>
@@ -272,7 +256,12 @@ function ListItem({ item, gardenName, readOnly, onOpen, onToggleDone }: ItemProp
           <RowLabel row={row} gardenName={gardenName} compact />
         </span>
       </button>
-      {done && !isSowing && <span style={{ ...tagStyle, color: 'var(--c-text-3)' }}>Done</span>}
+      {planted && <span style={{ ...tagStyle, color: 'var(--c-text-3)' }}>Planted</span>}
+      {logHarvest && (
+        <Link to={`/harvest?log=new&gardenId=${row.gardenId}&seed=${seedParam(row)}`} style={{ ...linkStyle, flexShrink: 0 }}>
+          Log harvest
+        </Link>
+      )}
     </li>
   );
 }

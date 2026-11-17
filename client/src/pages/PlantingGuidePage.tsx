@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { usePlantingGuide } from '../hooks/usePlantingGuide';
 import { parseDay, todayPacific } from '../lib/guideDates';
-import { filterRows, hasWindows, rowKey, seedParam, type GuideFilterState, type GuideView } from '../lib/guideModel';
+import { filterRows, hasWindows, rowKey, type GuideFilterState, type GuideView } from '../lib/guideModel';
 import { useMicroFeedback } from '../lib/microFeedback';
 import { FROST_COPY } from '../lib/frostLabels';
 import type { GuideOverrides, GuideRow } from '../types/plantingGuide';
-import { CloseIcon } from '../components/shell/icons';
 import ZoneStrip from '../components/guide/ZoneStrip';
 import SeasonSelector from '../components/guide/SeasonSelector';
 import ViewToggle from '../components/guide/ViewToggle';
@@ -19,7 +18,7 @@ import CalendarView from '../components/guide/CalendarView';
 import TimelineView from '../components/guide/TimelineView';
 import ListView from '../components/guide/ListView';
 import PlantSchedule from '../components/guide/PlantSchedule';
-import { iconButtonStyle, primaryButtonStyle, textButtonStyle } from '../components/guide/styles';
+import { primaryButtonStyle, textButtonStyle } from '../components/guide/styles';
 
 const VIEW_KEY = 'vernal.guide.view';
 const VIEWS: GuideView[] = ['calendar', 'timeline', 'list'];
@@ -42,7 +41,6 @@ function storeView(view: GuideView): void {
 }
 
 const OPEN_PARAM_RE = /^(seed|cambium):(\d+)$/;
-const LOG_PROMPT_MS = 10_000;
 const FROST_SAVED_MS = 3_000;
 
 function findDeepLinkRow(rows: GuideRow[], param: string): GuideRow | undefined {
@@ -97,16 +95,8 @@ export default function PlantingGuidePage() {
     const s = searchParams.get('season');
     return searchParams.get('open') !== null && s !== null && /^\d{4}$/.test(s) ? Number(s) : null;
   });
-  const { data, loading, error, reload, setOverrides, setDone } = usePlantingGuide(season);
+  const { data, loading, error, reload, setOverrides } = usePlantingGuide(season);
   const requestFeedback = useMicroFeedback();
-
-  // "Marked done. Log your harvest?" after a plant is marked done.
-  const [logPromptRow, setLogPromptRow] = useState<GuideRow | null>(null);
-  useEffect(() => {
-    if (!logPromptRow) return;
-    const timer = window.setTimeout(() => setLogPromptRow(null), LOG_PROMPT_MS);
-    return () => window.clearTimeout(timer);
-  }, [logPromptRow]);
 
   // The page strip's frost-date editor, also opened from the frost banner.
   const [frostEditorOpen, setFrostEditorOpen] = useState(false);
@@ -123,16 +113,6 @@ export default function PlantingGuidePage() {
     setFrostSavedToast((n) => n + 1);
   }, [reload]);
 
-  const readOnly = data?.readOnly ?? true;
-  const setDoneAndPrompt = useCallback(
-    async (row: GuideRow, done: boolean) => {
-      await setDone(row, done);
-      if (!done) return;
-      requestFeedback('first_sowing');
-      if (!readOnly) setLogPromptRow(row);
-    },
-    [setDone, requestFeedback, readOnly],
-  );
   const setOverridesAndPrompt = useCallback(
     async (row: GuideRow, partial: Partial<GuideOverrides>) => {
       await setOverrides(row, partial);
@@ -145,7 +125,6 @@ export default function PlantingGuidePage() {
   const [filters, setFilters] = useState<GuideFilterState>({ gardenId: 'all', sowType: 'all', dueThisMonth: false });
   const [openRowKey, setOpenRowKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [doneError, setDoneError] = useState<string | null>(null);
 
   const today = todayPacific();
   const currentMonth = parseDay(today).m;
@@ -174,15 +153,6 @@ export default function PlantingGuidePage() {
   function changeSeason(next: number) {
     setSeason(next);
     setNotice(null);
-  }
-
-  async function toggleDone(row: GuideRow, done: boolean) {
-    setDoneError(null);
-    try {
-      await setDoneAndPrompt(row, done);
-    } catch {
-      setDoneError(`Couldn't save ${row.commonName ?? 'that plant'}. Try again.`);
-    }
   }
 
   const pagePadding = isMobile ? 'var(--sp-4)' : 'var(--sp-6) var(--sp-5)';
@@ -261,7 +231,6 @@ export default function PlantingGuidePage() {
 
         {data.readOnly && <p role="status" style={noticeStyle}>Past seasons are read-only.</p>}
         {notice && <p role="status" style={noticeStyle}>{notice}</p>}
-        {doneError && <p role="alert" style={{ ...noticeStyle, background: 'var(--c-danger-bg)' }}>{doneError}</p>}
       </div>
 
       {data.rows.length === 0 ? (
@@ -282,7 +251,7 @@ export default function PlantingGuidePage() {
           )}
           {view === 'calendar' && <CalendarView {...viewProps} />}
           {view === 'timeline' && <TimelineView {...viewProps} />}
-          {view === 'list' && <ListView {...viewProps} readOnly={data.readOnly} onToggleDone={(row, done) => void toggleDone(row, done)} />}
+          {view === 'list' && <ListView {...viewProps} readOnly={data.readOnly} />}
           {view !== 'list' && filteredRows.length === 0 && (
             <p style={{ fontSize: 14, color: 'var(--c-text-3)' }}>No plants to show for the current filters.</p>
           )}
@@ -301,24 +270,8 @@ export default function PlantingGuidePage() {
           onPrev={openIndex > 0 ? () => setOpenRowKey(rowKey(filteredRows[openIndex - 1])) : null}
           onNext={openIndex >= 0 && openIndex < filteredRows.length - 1 ? () => setOpenRowKey(rowKey(filteredRows[openIndex + 1])) : null}
           setOverrides={setOverridesAndPrompt}
-          setDone={setDoneAndPrompt}
           onFrostSaved={onFrostSaved}
         />
-      )}
-
-      {logPromptRow && (
-        <div role="status" style={toastStyle}>
-          <span>Marked done. Log your harvest?</span>
-          <Link
-            to={`/harvest?log=new&gardenId=${logPromptRow.gardenId}&seed=${seedParam(logPromptRow)}`}
-            style={{ ...primaryButtonStyle, padding: '0 var(--sp-3)' }}
-          >
-            Log harvest
-          </Link>
-          <button type="button" aria-label="Dismiss" onClick={() => setLogPromptRow(null)} style={iconButtonStyle}>
-            <CloseIcon width={18} height={18} />
-          </button>
-        </div>
       )}
 
       {frostSavedToast > 0 && (

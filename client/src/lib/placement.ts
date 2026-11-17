@@ -1,6 +1,6 @@
 // Pure placement helpers for the canvas: quantity pre-fill, "same plant"
 // matching for occupied grid cells, and plant-count copy.
-import type { ArmedSeed, Planting } from '../hooks/usePlantings';
+import type { ArmedSeed, Planting, PlantingsByBedId, StartMethod } from '../hooks/usePlantings';
 
 export const PLANTS_HERE_MAX = 99;
 
@@ -21,6 +21,35 @@ export function isSamePlant(p: Planting, seed: ArmedSeed): boolean {
   return p.companionSeedId != null
     && seed.cambiumIdentity != null
     && String(p.companionSeedId) === String(seed.cambiumIdentity);
+}
+
+// The placement popover's "How it goes in" pre-selection: how the most recent
+// planting of the same plant (highest numeric id; temp rows are skipped) went
+// in, else sowing.
+export function lastStartMethod(plantingsByBedId: PlantingsByBedId, seed: ArmedSeed): StartMethod {
+  let best: { id: number; method: StartMethod } | null = null;
+  for (const list of Object.values(plantingsByBedId)) {
+    for (const p of list) {
+      const id = Number(p.id);
+      if (!Number.isFinite(id) || !isSamePlant(p, seed)) continue;
+      if (!best || id > best.id) best = { id, method: p.startMethod };
+    }
+  }
+  return best?.method ?? 'sown';
+}
+
+// What follows a placement: the one-time Supporter prompt for a free account
+// that set its own planting date (not left on today), else the 'planted'
+// feedback ask; nothing when the placement failed.
+export function placementFollowUp(opts: {
+  placed: boolean;
+  dateEdited: boolean;
+  tier: 'free' | 'supporter' | null | undefined;
+  supporterPromptShown: boolean | null | undefined;
+}): 'supporter' | 'feedback' | null {
+  if (!opts.placed) return null;
+  if (opts.dateEdited && opts.tier === 'free' && !opts.supporterPromptShown) return 'supporter';
+  return 'feedback';
 }
 
 export function plantCount(plantings: Planting[]): number {
