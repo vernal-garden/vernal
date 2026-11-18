@@ -4,6 +4,7 @@ import { logger } from '../lib/logger';
 import { requireAuth } from '../middleware/auth';
 import { isNumericId } from '../lib/validation';
 import { LIMITS } from '../lib/limits';
+import { CAMBIUM_CONSENT_VERSION } from '../lib/legal';
 import { writeLimiter } from '../middleware/rateLimiters';
 
 const router = Router();
@@ -37,6 +38,12 @@ router.post('/', writeLimiter, async (req, res) => {
     return res.status(400).json({ error: 'correctionText must be 2000 characters or fewer' });
   }
   const correctionText = rawText.trim();
+
+  if (body.consentVersion !== CAMBIUM_CONSENT_VERSION) {
+    return res
+      .status(409)
+      .json({ error: "Cambium's sharing terms have changed. Reload the page to see them." });
+  }
 
   try {
     const seedResult = await db.query<{ id: number; common_name: string }>(
@@ -72,9 +79,9 @@ router.post('/', writeLimiter, async (req, res) => {
       }
 
       await client.query(
-        `INSERT INTO moderation_items (type, cambium_seed_id, submitted_by, content)
-         VALUES ('correction', $1, $2, $3)`,
-        [cambiumSeedIdStr, accountId, JSON.stringify({ correctionText, seedName: common_name })],
+        `INSERT INTO moderation_items (type, cambium_seed_id, submitted_by, content, consent_version, consent_at)
+         VALUES ('correction', $1, $2, $3, $4, NOW())`,
+        [cambiumSeedIdStr, accountId, JSON.stringify({ correctionText, seedName: common_name }), CAMBIUM_CONSENT_VERSION],
       );
       await client.query('COMMIT');
     } catch (txErr) {

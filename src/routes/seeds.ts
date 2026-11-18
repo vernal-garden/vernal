@@ -9,6 +9,7 @@ import { writeLimiter } from '../middleware/rateLimiters';
 import seedPhotosRouter from './seedPhotos';
 import { queueR2Deletions, drainSoon } from '../lib/r2Cleanup';
 import { seedPhotoFolder } from '../lib/storage/keys';
+import { CAMBIUM_CONSENT_VERSION } from '../lib/legal';
 
 const router = Router();
 router.use(requireAuth);
@@ -973,6 +974,12 @@ router.post('/:id/contribute', writeLimiter, async (req, res) => {
 
   if (!isNumericId(seedId)) return res.status(400).json({ error: 'Invalid id' });
 
+  if ((req.body as Record<string, unknown> | undefined)?.consentVersion !== CAMBIUM_CONSENT_VERSION) {
+    return res
+      .status(409)
+      .json({ error: "Cambium's sharing terms have changed. Reload the page to see them." });
+  }
+
   try {
     const client = await db.connect();
     try {
@@ -1012,9 +1019,9 @@ router.post('/:id/contribute', writeLimiter, async (req, res) => {
         : { ...formatSeed(seed), includePhotos: false };
 
       await client.query(
-        `INSERT INTO moderation_items (type, seed_id, submitted_by, content)
-         VALUES ('new_seed', $1, $2, $3)`,
-        [seedId, accountId, JSON.stringify(snapshot)],
+        `INSERT INTO moderation_items (type, seed_id, submitted_by, content, consent_version, consent_at)
+         VALUES ('new_seed', $1, $2, $3, $4, NOW())`,
+        [seedId, accountId, JSON.stringify(snapshot), CAMBIUM_CONSENT_VERSION],
       );
       await client.query(
         `UPDATE seeds SET contribution_status = 'pending', updated_at = NOW() WHERE id = $1`,

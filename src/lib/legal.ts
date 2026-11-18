@@ -7,3 +7,7 @@ export const TERMS_VERSION = '2026-10-26';
 // version; every participant then accepts again.
 export const BETA_TERMS_VERSION = '2026-11-16';
 export const BETA_TERMS_URL = 'https://vernal.garden/beta/terms';
+
+// General Counsel's Cambium consent lines. Bump both together (this and
+// client/src/lib/legal.ts) when a line changes.
+export const CAMBIUM_CONSENT_VERSION = '2026-11-13';

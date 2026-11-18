@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { post } from '../../lib/api';
 import { track } from '../../lib/track';
+import { CAMBIUM_CONSENT_VERSION, CAMBIUM_LICENSES_URL } from '../../lib/legal';
 import Switch from '../Switch';
 import type { PersonalSeedDetail } from '../../types/catalogue';
 
@@ -43,7 +44,10 @@ export default function ContributeModal({ seed, photoCount, onClose, onContribut
     setStatus('saving');
     setErrorMsg('');
     try {
-      await post(`/api/seeds/${seed.id}/contribute`, { includePhotos: photoCount > 0 && includePhotos });
+      await post(`/api/seeds/${seed.id}/contribute`, {
+        includePhotos: photoCount > 0 && includePhotos,
+        consentVersion: CAMBIUM_CONSENT_VERSION,
+      });
       track('community_seed_submitted');
       onContributed();
       onClose();
@@ -115,9 +119,14 @@ export default function ContributeModal({ seed, photoCount, onClose, onContribut
               />
             </div>
             {includePhotos && (
-              <p style={{ margin: 'var(--sp-1) 0 0', fontSize: 13, color: 'var(--c-text-2)' }}>
-                {photoCount === 1 ? '1 photo will be included.' : `${photoCount} photos will be included.`}
-              </p>
+              <>
+                <p style={{ margin: 'var(--sp-1) 0 0', fontSize: 13, color: 'var(--c-text-2)' }}>
+                  {photoCount === 1 ? '1 photo will be included.' : `${photoCount} photos will be included.`}
+                </p>
+                <p style={{ margin: 'var(--sp-1) 0 0', fontSize: 13, color: 'var(--c-text-2)' }}>
+                  Include only photos you took. They're shared under the same licenses.
+                </p>
+              </>
             )}
           </div>
         )}
@@ -133,6 +142,15 @@ export default function ContributeModal({ seed, photoCount, onClose, onContribut
         {status === 'error' && (
           <div style={{ fontSize: 13, color: 'var(--c-danger)', marginBottom: 'var(--sp-3)' }}>{errorMsg}</div>
         )}
+
+        <p style={{ margin: '0 0 var(--sp-3)', fontSize: 13, color: 'var(--c-text-2)' }}>
+          By submitting, you agree to share this seed under <a
+            href={CAMBIUM_LICENSES_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: 'var(--c-primary-dark)', textDecoration: 'underline' }}
+          >Cambium's open data licenses</a>, so anyone can use it. You confirm you wrote it yourself or have the right to share it.
+        </p>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--sp-2)' }}>
           <button

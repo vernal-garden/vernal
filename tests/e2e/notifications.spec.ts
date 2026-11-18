@@ -3,6 +3,7 @@ import {
   resetTestDb, createTestUser, createTestGarden, createTestSeed, setAccountRole,
   getModerationItemId, closePool,
 } from './helpers/db';
+import { CAMBIUM_CONSENT_VERSION } from '../../src/lib/legal';
 
 test.beforeAll(resetTestDb);
 test.afterAll(closePool);
@@ -23,7 +24,9 @@ test('rejected contribution notifies the contributor, without the admin note', a
   try {
     expect((await userApi.post('/api/auth/login',
       { data: { email: user.email, password: user.password } })).ok()).toBe(true);
-    const contribute = await userApi.post(`/api/seeds/${seedId}/contribute`, { data: {} });
+    const contribute = await userApi.post(`/api/seeds/${seedId}/contribute`, {
+      data: { consentVersion: CAMBIUM_CONSENT_VERSION },
+    });
     expect(contribute.status(), await contribute.text()).toBe(200);
 
     expect((await adminApi.post('/api/auth/login',

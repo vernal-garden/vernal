@@ -15,6 +15,7 @@ vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
 
 import { drainSoon } from '../lib/r2Cleanup';
 import app from '../index';
+import { CAMBIUM_CONSENT_VERSION } from '../lib/legal';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -546,7 +547,7 @@ describe('POST /api/seeds/:id/contribute', () => {
   });
 
   it('user_created private seed → 200 pending', async () => {
-    const res = await agent1.post(`/api/seeds/${userSeedId}/contribute`).send({});
+    const res = await agent1.post(`/api/seeds/${userSeedId}/contribute`).send({ consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(res.status).toBe(200);
     expect(res.body.contributionStatus).toBe('pending');
   });
@@ -561,8 +562,35 @@ describe('POST /api/seeds/:id/contribute', () => {
     expect(rows[0].content.commonName).toBe('Contribute Me');
   });
 
+  it('missing consentVersion → 409, no row written', async () => {
+    const r = await agent1.post('/api/seeds').send({ commonName: 'No Consent Seed', plantFamily: 'Fam' });
+    const res = await agent1.post(`/api/seeds/${r.body.id}/contribute`).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cambium's sharing terms have changed. Reload the page to see them.");
+    const { rows } = await pool.query('SELECT 1 FROM moderation_items WHERE seed_id = $1', [r.body.id]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('old consentVersion → 409, no row written', async () => {
+    const r = await agent1.post('/api/seeds').send({ commonName: 'Old Consent Seed', plantFamily: 'Fam' });
+    const res = await agent1.post(`/api/seeds/${r.body.id}/contribute`).send({ consentVersion: '2026-01-01' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Cambium's sharing terms have changed. Reload the page to see them.");
+    const { rows } = await pool.query('SELECT 1 FROM moderation_items WHERE seed_id = $1', [r.body.id]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('current consentVersion records version and time', async () => {
+    const { rows } = await pool.query<{ consent_version: string | null; consent_at: Date | null }>(
+      'SELECT consent_version, consent_at FROM moderation_items WHERE seed_id = $1',
+      [userSeedId],
+    );
+    expect(rows[0].consent_version).toBe(CAMBIUM_CONSENT_VERSION);
+    expect(rows[0].consent_at).not.toBeNull();
+  });
+
   it('contribute again → 400 (already pending)', async () => {
-    const res = await agent1.post(`/api/seeds/${userSeedId}/contribute`).send({});
+    const res = await agent1.post(`/api/seeds/${userSeedId}/contribute`).send({ consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(res.status).toBe(400);
   });
 
@@ -570,8 +598,8 @@ describe('POST /api/seeds/:id/contribute', () => {
     const r = await agent1.post('/api/seeds').send({ commonName: 'Race Contribute', plantFamily: 'Fam' });
     const sid = r.body.id as string;
     const results = await Promise.all([
-      agent1.post(`/api/seeds/${sid}/contribute`).send({}),
-      agent1.post(`/api/seeds/${sid}/contribute`).send({}),
+      agent1.post(`/api/seeds/${sid}/contribute`).send({ consentVersion: CAMBIUM_CONSENT_VERSION }),
+      agent1.post(`/api/seeds/${sid}/contribute`).send({ consentVersion: CAMBIUM_CONSENT_VERSION }),
     ]);
     const statuses = results.map((x) => x.status).sort();
     expect(statuses[0]).toBe(200);
@@ -581,7 +609,7 @@ describe('POST /api/seeds/:id/contribute', () => {
   });
 
   it('contribute an imported seed → 400', async () => {
-    const res = await agent2.post(`/api/seeds/${importedSeedId}/contribute`).send({});
+    const res = await agent2.post(`/api/seeds/${importedSeedId}/contribute`).send({ consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/[Ii]mported/);
   });
@@ -594,7 +622,7 @@ describe('POST /api/seeds/:id/contribute', () => {
     const photos = [];
     for (let n = 1; n <= photoCount; n++) photos.push(await insertPhoto(sid, n));
 
-    const res = await agent1.post(`/api/seeds/${sid}/contribute`).send({ includePhotos });
+    const res = await agent1.post(`/api/seeds/${sid}/contribute`).send({ includePhotos, consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(res.status).toBe(200);
     const { rows } = await pool.query<{ content: Record<string, unknown> }>(
       'SELECT content FROM moderation_items WHERE seed_id = $1',
@@ -628,7 +656,7 @@ describe('POST /api/seeds/:id/contribute', () => {
       .send({ commonName: 'Resubmit Seed', plantFamily: 'Fam' });
     const sid = r.body.id;
     await pool.query(`UPDATE seeds SET contribution_status = 'rejected' WHERE id = $1`, [sid]);
-    const res = await agent1.post(`/api/seeds/${sid}/contribute`).send({});
+    const res = await agent1.post(`/api/seeds/${sid}/contribute`).send({ consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(res.status).toBe(200);
     expect(res.body.contributionStatus).toBe('pending');
   });
@@ -641,6 +669,7 @@ describe('POST /api/corrections', () => {
     const res = await agent1.post('/api/corrections').send({
       cambiumSeedId,
       correctionText: 'Spacing should be 24 inches not 18',
+      consentVersion: CAMBIUM_CONSENT_VERSION,
     });
     expect(res.status).toBe(201);
     expect(res.body.received).toBe(true);
@@ -672,7 +701,7 @@ describe('POST /api/corrections', () => {
   it('empty correctionText → 400', async () => {
     const res = await agent1
       .post('/api/corrections')
-      .send({ cambiumSeedId, correctionText: '   ' });
+      .send({ cambiumSeedId, correctionText: '   ', consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(res.status).toBe(400);
   });
 });
@@ -688,8 +717,8 @@ describe('Auth guards', () => {
       request(app).patch('/api/seeds/1').send({ commonName: 'X' }),
       request(app).delete('/api/seeds/1'),
       request(app).post('/api/seeds/add-from-cambium').send({ cambiumSeedId: 1 }),
-      request(app).post('/api/seeds/1/contribute').send({}),
-      request(app).post('/api/corrections').send({ cambiumSeedId: 1, correctionText: 'X' }),
+      request(app).post('/api/seeds/1/contribute').send({ consentVersion: CAMBIUM_CONSENT_VERSION }),
+      request(app).post('/api/corrections').send({ cambiumSeedId: 1, correctionText: 'X', consentVersion: CAMBIUM_CONSENT_VERSION }),
     ]);
     for (const r of results) {
       expect(r.status).toBe(401);
@@ -702,7 +731,7 @@ describe('Auth guards', () => {
     const results = await Promise.all([
       guestAgent.get('/api/seeds'),
       guestAgent.post('/api/seeds').send({ commonName: 'X', plantFamily: 'Y' }),
-      guestAgent.post('/api/corrections').send({ cambiumSeedId: 1, correctionText: 'X' }),
+      guestAgent.post('/api/corrections').send({ cambiumSeedId: 1, correctionText: 'X', consentVersion: CAMBIUM_CONSENT_VERSION }),
     ]);
     for (const r of results) {
       expect(r.status).toBe(401);
