@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import * as api from '../lib/api';
+import { fetchAllPages } from '../lib/fetchAllPages';
 import type { PlantingsByBedId } from './usePlantings';
 
 export interface PickerSeedEntry {
@@ -16,11 +17,26 @@ interface ApiSeed {
   commonName: string;
   spacingInches?: number | null;
   cambiumSourceId?: string | null;
+  ratingCount?: number;
+}
+
+// api.get resolves undefined on an empty body; treat that as an empty page.
+const EMPTY_PAGE = { data: [] as ApiSeed[], total: 0 };
+
+function toCatalogueEntry(s: ApiSeed): PickerSeedEntry {
+  return {
+    source: 'catalogue',
+    id: String(s.id),
+    commonName: s.commonName,
+    spacingInches: s.spacingInches ?? null,
+    companionSeedId: String(s.id),
+  };
 }
 
 export interface PickerDefaults {
   mySeeds: PickerSeedEntry[];
   popular: PickerSeedEntry[];
+  allPlants: PickerSeedEntry[];
   recentlyUsed: PickerSeedEntry[];
   loading: boolean;
 }
@@ -29,6 +45,7 @@ export function usePickerDefaults(_gardenId: string | null, plantingsByBedId: Pl
   const { isAccount } = useAuth();
   const [mySeeds, setMySeeds] = useState<PickerSeedEntry[]>([]);
   const [popular, setPopular] = useState<PickerSeedEntry[]>([]);
+  const [allPlants, setAllPlants] = useState<PickerSeedEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -36,27 +53,30 @@ export function usePickerDefaults(_gardenId: string | null, plantingsByBedId: Pl
     setLoading(true);
 
     const fetches: Promise<void>[] = [
-      api.get<{ data: ApiSeed[] }>('/api/catalogue/seeds?sort=popular&limit=20')
+      api.get<{ data: ApiSeed[]; total: number | string }>('/api/catalogue/seeds?sort=popular&limit=10')
         .then(res => {
           if (!cancelled) {
-            setPopular((res?.data ?? []).map(s => ({
-              source: 'catalogue' as const,
-              id: String(s.id),
-              commonName: s.commonName,
-              spacingInches: s.spacingInches ?? null,
-              companionSeedId: String(s.id),
-            })));
+            setPopular((res?.data ?? []).filter(s => (s.ratingCount ?? 0) > 0).map(toCatalogueEntry));
           }
         })
         .catch(() => { if (!cancelled) setPopular([]); }),
+      fetchAllPages<ApiSeed>(
+        (offset, limit) => api.get<{ data: ApiSeed[]; total: number | string }>(`/api/catalogue/seeds?limit=${limit}&offset=${offset}`).then(res => res ?? EMPTY_PAGE),
+        50,
+      )
+        .then(rows => { if (!cancelled) setAllPlants(rows.map(toCatalogueEntry)); })
+        .catch(() => { if (!cancelled) setAllPlants([]); }),
     ];
 
     if (isAccount) {
       fetches.push(
-        api.get<{ data: ApiSeed[] }>('/api/seeds?limit=20')
-          .then(res => {
+        fetchAllPages<ApiSeed>(
+          (offset, limit) => api.get<{ data: ApiSeed[]; total: number | string }>(`/api/seeds?limit=${limit}&offset=${offset}`).then(res => res ?? EMPTY_PAGE),
+          100,
+        )
+          .then(rows => {
             if (!cancelled) {
-              setMySeeds((res?.data ?? []).map(s => ({
+              setMySeeds(rows.map(s => ({
                 source: 'personal' as const,
                 id: String(s.id),
                 commonName: s.commonName,
@@ -105,5 +125,5 @@ export function usePickerDefaults(_gardenId: string | null, plantingsByBedId: Pl
     return result;
   }, [plantingsByBedId]);
 
-  return { mySeeds, popular, recentlyUsed, loading };
+  return { mySeeds, popular, allPlants, recentlyUsed, loading };
 }

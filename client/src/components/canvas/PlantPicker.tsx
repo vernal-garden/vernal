@@ -50,7 +50,7 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
   const [detailLoading, setDetailLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const { catalogue, personal, loading } = usePlantSearch(query);
-  const { mySeeds, popular, recentlyUsed, loading: defaultsLoading } = usePickerDefaults(garden.id, plantingsByBedId);
+  const { mySeeds, popular, allPlants, recentlyUsed, loading: defaultsLoading } = usePickerDefaults(garden.id, plantingsByBedId);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -187,7 +187,7 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
           const recentFiltered = recentlyUsed.filter(s => !mySeedKeys.has(`${s.source}:${s.id}`));
           const recentKeys = new Set(recentlyUsed.map(s => `${s.source}:${s.id}`));
           const popularFiltered = popular.filter(s => !recentKeys.has(`${s.source}:${s.id}`));
-          const hasAny = mySeeds.length > 0 || recentFiltered.length > 0 || popularFiltered.length > 0;
+          const hasAny = mySeeds.length > 0 || recentFiltered.length > 0 || popularFiltered.length > 0 || allPlants.length > 0;
           if (!hasAny) {
             return (
               <div style={{ padding: 16, textAlign: 'center' }}>
@@ -261,6 +261,27 @@ export default function PlantPicker({ garden, bed, onArm, onDisarm, onClose, arm
                     return (
                       <ResultRow
                         key={`popular-${s.id}`}
+                        name={s.commonName}
+                        spacing={s.spacingInches}
+                        selected={selectedId === s.id && selectedSource === 'catalogue'}
+                        onSelect={() => handleSelect(s.id, 'catalogue', s.commonName)}
+                        pipGreen={pip.green}
+                        pipAmber={pip.amber}
+                      />
+                    );
+                  })}
+                </>
+              )}
+              {allPlants.length > 0 && (
+                <>
+                  <GroupLabel>All plants</GroupLabel>
+                  {allPlants.map(s => {
+                    const pip = (bedCompanionIds && relationshipBetween && s.companionSeedId != null)
+                      ? computePipStatus(s.companionSeedId, bedCompanionIds, relationshipBetween)
+                      : { green: false, amber: false };
+                    return (
+                      <ResultRow
+                        key={`all-${s.id}`}
                         name={s.commonName}
                         spacing={s.spacingInches}
                         selected={selectedId === s.id && selectedSource === 'catalogue'}
