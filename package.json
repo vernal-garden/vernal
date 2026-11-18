@@ -26,6 +26,7 @@
     "cleanup:r2-orphans": "tsx scripts/cleanup-r2-orphans.ts",
     "sweep:orphan-photos": "tsx scripts/sweep-orphan-photos.ts",
     "notices": "tsx scripts/generate-third-party-notices.ts",
+    "art:fit": "tsx scripts/build-illustration-fit.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

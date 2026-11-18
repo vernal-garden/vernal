@@ -271,9 +271,15 @@ export function cropClass(key: string | null): CropClass | null {
     : null;
 }
 
-export function illustrationUrl(key: string | null, stage: Stage): string | null {
+// The stage's file name without ".svg", which is also its key in the fit manifest.
+export function illustrationFile(key: string | null, stage: Stage): string | null {
   const entry = entryFor(key);
-  return entry ? `/illustrations/${entry[stage]}` : null;
+  return entry ? entry[stage].replace(/\.svg$/, '') : null;
+}
+
+export function illustrationUrl(key: string | null, stage: Stage): string | null {
+  const file = illustrationFile(key, stage);
+  return file ? `/illustrations/${file}.svg` : null;
 }
 
 // Catalogue cards and the seed detail view show the stage 5 (Harvest-Ready)
