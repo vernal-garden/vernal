@@ -1,0 +1,1022 @@
+{
+  "asparagus-1-seed": {
+    "cx": 0.502,
+    "cy": 0.673,
+    "r": 0.526,
+    "sha256": "52d5904190857046208ef104d7541455fc9395e5ad849f23a87389230ab9cd5f"
+  },
+  "asparagus-2-seedling": {
+    "cx": 0.502,
+    "cy": 0.698,
+    "r": 0.442,
+    "sha256": "1843ed4d86ad96168f99e16a442d2c7d00312fe65b1cac2bb8b45f063af21868"
+  },
+  "asparagus-3-vegetative": {
+    "cx": 0.49,
+    "cy": 0.521,
+    "r": 0.543,
+    "sha256": "6a2a47734591aea2e0185746743fb6210bb36591b40eabc07729e9b931f6c9be"
+  },
+  "asparagus-4-sizing": {
+    "cx": 0.504,
+    "cy": 0.733,
+    "r": 0.239,
+    "sha256": "60e0cbe1a4cd509e6c94b3ca5a9f5580360d89ed333fa25a474d79341483a4e3"
+  },
+  "asparagus-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.648,
+    "r": 0.43,
+    "sha256": "87508c25f7b16567bdda83aee545d44ae47b1650044bc5546f50ab5c6b785d1e"
+  },
+  "beet-1-seed": {
+    "cx": 0.485,
+    "cy": 0.698,
+    "r": 0.256,
+    "sha256": "3f67e8f61948422d93dfa9eaafd241f573165fe37a6bf30b2690621bfc82b9d8"
+  },
+  "beet-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.623,
+    "r": 0.304,
+    "sha256": "7e4f8749805949fcd81cb570671fb7faaaa563d6e924dc031a1e2e37f9f3cbf8"
+  },
+  "beet-3-vegetative": {
+    "cx": 0.508,
+    "cy": 0.56,
+    "r": 0.544,
+    "sha256": "7fac5e91ef5fe3dcc946b67c7ac3eb753ae9a8bf62727c1d76fe8b42f7839288"
+  },
+  "beet-4-sizing": {
+    "cx": 0.51,
+    "cy": 0.567,
+    "r": 0.712,
+    "sha256": "9b666bc8e39002d47917ce6b1efc961f8e0b304536f57bb81dff8a84c46c3366"
+  },
+  "beet-5-harvest": {
+    "cx": 0.51,
+    "cy": 0.525,
+    "r": 0.864,
+    "sha256": "c46a2114577233a9e0379cec86672f472f7f8dcf6fff615ab534358acb579393"
+  },
+  "broccoli-1-seed": {
+    "cx": 0.494,
+    "cy": 0.702,
+    "r": 0.272,
+    "sha256": "750ed8c11c8606c0e851c234fd6216f5f8055e70c76be4775757f5ed9273fec7"
+  },
+  "broccoli-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.594,
+    "r": 0.376,
+    "sha256": "dbdc4c59545f37e98534aadd2b9f9313d599d9cc71df60ef349fdda68aa76065"
+  },
+  "broccoli-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.61,
+    "r": 0.456,
+    "sha256": "bd1959d759fe8256ad0012132436b59122cc3e67db0fe073cd019f7f59c8f07b"
+  },
+  "broccoli-4-heading": {
+    "cx": 0.498,
+    "cy": 0.548,
+    "r": 0.559,
+    "sha256": "5be083fd27ce15e7c1c3cd5c75a651d116e04dfa24df8f5fce30e5b81c5f168e"
+  },
+  "broccoli-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.508,
+    "r": 0.643,
+    "sha256": "7e450317007b24ae86b39efbdc49d2bb4532513557a31c16caff266141e9a63a"
+  },
+  "bush-bean-1-seed": {
+    "cx": 0.498,
+    "cy": 0.642,
+    "r": 0.236,
+    "sha256": "faa33d461e9b8e988299708ba08c07b0eed57d51866355a3a6afad76809772a1"
+  },
+  "bush-bean-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.569,
+    "r": 0.446,
+    "sha256": "8a2f6d716791d30d869313f54a650182af4935018989ca78b219a88f23746f2d"
+  },
+  "bush-bean-3-vegetative": {
+    "cx": 0.479,
+    "cy": 0.567,
+    "r": 0.773,
+    "sha256": "842a15d8eb05e2b2ca017da5e13ca8d538a4e29a30468fc1d4cfad421d5e238e"
+  },
+  "bush-bean-4-flowering": {
+    "cx": 0.467,
+    "cy": 0.594,
+    "r": 0.734,
+    "sha256": "b4f3c78b54ac8a0cff1cffb1201a878b4098ead31493594fa2b20a44ed3883a7"
+  },
+  "bush-bean-5-harvest": {
+    "cx": 0.488,
+    "cy": 0.608,
+    "r": 0.709,
+    "sha256": "d56dfcd549bcab3b0f8677bcda64bf9288899569b4359b7c18ddd8ddcec35454"
+  },
+  "cabbage-1-seed": {
+    "cx": 0.494,
+    "cy": 0.702,
+    "r": 0.272,
+    "sha256": "750ed8c11c8606c0e851c234fd6216f5f8055e70c76be4775757f5ed9273fec7"
+  },
+  "cabbage-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.594,
+    "r": 0.376,
+    "sha256": "dbdc4c59545f37e98534aadd2b9f9313d599d9cc71df60ef349fdda68aa76065"
+  },
+  "cabbage-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.642,
+    "r": 0.418,
+    "sha256": "bc18bba073023152d4a19bf1822dce7d78f46124be61e907988858656b110b1c"
+  },
+  "cabbage-4-sizing": {
+    "cx": 0.498,
+    "cy": 0.648,
+    "r": 0.523,
+    "sha256": "1f620c8b13ca1e226ebe392f86048e2dac39605da58002c862e300eb256c419f"
+  },
+  "cabbage-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.654,
+    "r": 0.636,
+    "sha256": "2895d418840beda16aef2813dbee3f9bc3346278ea814a68a5b4459448ba5b9b"
+  },
+  "cantaloupe-1-seed": {
+    "cx": 0.496,
+    "cy": 0.698,
+    "r": 0.331,
+    "sha256": "adc349b631743b1ef29e04e5cf26d551df224f53bc96aadc3654fe6903c38737"
+  },
+  "cantaloupe-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.631,
+    "r": 0.315,
+    "sha256": "46ea650c248235284de588d8c6c3f8d596f2f3050ccd75a27693ebb66487f356"
+  },
+  "cantaloupe-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.571,
+    "r": 0.658,
+    "sha256": "a3b65e145374b1c2e588e9e5823f78f178bae7cae650eec1957818f97f6d96d3"
+  },
+  "cantaloupe-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.565,
+    "r": 0.859,
+    "sha256": "0d654f88e6ffa5dac30b0c9424843f48417d2fcace485f892ade3f490ef70a5b"
+  },
+  "cantaloupe-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.55,
+    "r": 0.93,
+    "sha256": "a1ed87a1a6d33319e36ec13cbefc7ccc784a61677aef4d31e1f0e4d4a22563c4"
+  },
+  "carrot-1-seed": {
+    "cx": 0.492,
+    "cy": 0.698,
+    "r": 0.267,
+    "sha256": "cdb380dc3650d3f0123a0e6f00a6f5ba7f68f63dc02e1aebec0f5a605ffb8171"
+  },
+  "carrot-2-seedling": {
+    "cx": 0.496,
+    "cy": 0.683,
+    "r": 0.242,
+    "sha256": "f11399d287a139f38a65d39230c8268f63bef572655c68ac6564a059863c1693"
+  },
+  "carrot-3-vegetative": {
+    "cx": 0.494,
+    "cy": 0.604,
+    "r": 0.421,
+    "sha256": "3eb063ca47d9340c30359aa8c0ecfffcb293c8e22f9d2837934fc623debd54c7"
+  },
+  "carrot-4-sizing": {
+    "cx": 0.498,
+    "cy": 0.554,
+    "r": 0.659,
+    "sha256": "18ef1065f05190843c69884f04f8f97dd616841c8bea5c6df2f8a27a6a4bfc93"
+  },
+  "carrot-5-harvest": {
+    "cx": 0.492,
+    "cy": 0.496,
+    "r": 0.836,
+    "sha256": "84e1e394ad6fd522548697c99374136570e9624f46298240f1ad431c0416cd51"
+  },
+  "cauliflower-1-seed": {
+    "cx": 0.494,
+    "cy": 0.702,
+    "r": 0.272,
+    "sha256": "750ed8c11c8606c0e851c234fd6216f5f8055e70c76be4775757f5ed9273fec7"
+  },
+  "cauliflower-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.594,
+    "r": 0.376,
+    "sha256": "dbdc4c59545f37e98534aadd2b9f9313d599d9cc71df60ef349fdda68aa76065"
+  },
+  "cauliflower-3-vegetative": {
+    "cx": 0.504,
+    "cy": 0.648,
+    "r": 0.456,
+    "sha256": "0cdcd08237254704ba7bddd4fab0508017d70de353f93f01db0a0ee751c2ab15"
+  },
+  "cauliflower-4-heading": {
+    "cx": 0.502,
+    "cy": 0.654,
+    "r": 0.558,
+    "sha256": "9e539e0f8b887e6d83f504a27a89a3305283e6900852bd9f0e533ecb0aa30462"
+  },
+  "cauliflower-5-harvest": {
+    "cx": 0.504,
+    "cy": 0.644,
+    "r": 0.634,
+    "sha256": "b5f57ef3f299d03bec46ceff6e7fec6985de0bfe27112628f93329688a4cd3a4"
+  },
+  "cilantro-1-seed": {
+    "cx": 0.496,
+    "cy": 0.696,
+    "r": 0.271,
+    "sha256": "bda9a96e718396410b1b72b9d8a07f7fe9d3d542bde6d446165f43e5dfabd06a"
+  },
+  "cilantro-2-seedling": {
+    "cx": 0.496,
+    "cy": 0.677,
+    "r": 0.308,
+    "sha256": "6fb7f8f1a27ebe16bd099ee287a64de0fa3293ca4a7e4da4ad3c7bc42a1c794d"
+  },
+  "cilantro-3-vegetative": {
+    "cx": 0.5,
+    "cy": 0.613,
+    "r": 0.441,
+    "sha256": "8881526680a61bb9bd90a96a92cef798258d3697d8b2c8218ff89ac31d6db47c"
+  },
+  "cilantro-4-sizing": {
+    "cx": 0.496,
+    "cy": 0.567,
+    "r": 0.629,
+    "sha256": "e75a5c661599821d9080fb45eca8c0598740d804ac64c51b0a11e7b8cafd7851"
+  },
+  "cilantro-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.525,
+    "r": 0.793,
+    "sha256": "2af533c7487cd544e874ca3fff5c5d5573942fd636be8d86b4fb12aa58810624"
+  },
+  "collards-1-seed": {
+    "cx": 0.494,
+    "cy": 0.702,
+    "r": 0.272,
+    "sha256": "750ed8c11c8606c0e851c234fd6216f5f8055e70c76be4775757f5ed9273fec7"
+  },
+  "collards-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.594,
+    "r": 0.376,
+    "sha256": "dbdc4c59545f37e98534aadd2b9f9313d599d9cc71df60ef349fdda68aa76065"
+  },
+  "collards-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.577,
+    "r": 0.496,
+    "sha256": "67b3c1fca922af87773d3250e2d9cc959b52951243f3d8f614d7c64af10c61c6"
+  },
+  "collards-4-sizing": {
+    "cx": 0.496,
+    "cy": 0.513,
+    "r": 0.62,
+    "sha256": "823a26b51eae6e718689450985f5596332f93a8b368ed288ae3b532524205a73"
+  },
+  "collards-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.46,
+    "r": 0.716,
+    "sha256": "8e31690d7d0b203c8d4ccc1f8bfc3734ce29128b3a3e92c03e0058ac789dcb4c"
+  },
+  "cucumber-1-seed": {
+    "cx": 0.475,
+    "cy": 0.667,
+    "r": 0.297,
+    "sha256": "3a1382065684b78f500010d22c0e80a5cbb564aada574a987d9010375d65fb17"
+  },
+  "cucumber-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.583,
+    "r": 0.384,
+    "sha256": "2fa16082441c9849d521890c25aa0c89d7dab848f0fa31fe667efd0a228d2c53"
+  },
+  "cucumber-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.494,
+    "r": 0.786,
+    "sha256": "8ae18d672861deeb9675d4d5b17f638c4bec0dc8c3a27809eb37c1f1c9edc487"
+  },
+  "cucumber-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.469,
+    "r": 0.826,
+    "sha256": "3bcb65a67d357f1b65c51713153d14597bb01bb4d1f2d9db16b28fc58cc83707"
+  },
+  "cucumber-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.452,
+    "r": 0.854,
+    "sha256": "5eddfc944e3da694493ed5ffaf430e1408b012bdbf1d358b028e83764ffa6ea1"
+  },
+  "eggplant-1-seed": {
+    "cx": 0.498,
+    "cy": 0.698,
+    "r": 0.304,
+    "sha256": "f4e35373564b9adbf8dda498a9aa7aa9fd976cc9f9c40a7dacfc8edca50aa801"
+  },
+  "eggplant-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.61,
+    "r": 0.345,
+    "sha256": "350dd04a8179b6916f2469511b256df0d548506e143c69fbdfff14eefcb9f416"
+  },
+  "eggplant-3-vegetative": {
+    "cx": 0.494,
+    "cy": 0.544,
+    "r": 0.539,
+    "sha256": "e1c7effd618af8abed314d3c137a1e21bc64a92d1dc78778d89f7743f3a4c5aa"
+  },
+  "eggplant-4-flowering": {
+    "cx": 0.494,
+    "cy": 0.488,
+    "r": 0.658,
+    "sha256": "474a451dae2a9aeb4ddee8b260b2d3f160b88e60ff762cf709d0e5d639d00b1d"
+  },
+  "eggplant-5-harvest": {
+    "cx": 0.494,
+    "cy": 0.467,
+    "r": 0.693,
+    "sha256": "bcd183261682761e1ce3f7a5880bc24c94ba94142baae8356666b838f006ebf3"
+  },
+  "garlic-1-seed": {
+    "cx": 0.498,
+    "cy": 0.677,
+    "r": 0.358,
+    "sha256": "8f3138579ecf56bb225acb0bbcfcd153ff9feec83e7aa52c9bc61b8c2fc44e27"
+  },
+  "garlic-2-seedling": {
+    "cx": 0.5,
+    "cy": 0.708,
+    "r": 0.309,
+    "sha256": "8df0374d4c350c98e297a9bb90359e7e5ce94bf1f1b7e3a571ea2f4ce14046a5"
+  },
+  "garlic-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.55,
+    "r": 0.477,
+    "sha256": "98b499144bb0beae925ce5256acae058826f1d35e9b242aeec14f39dff58cd56"
+  },
+  "garlic-4-sizing": {
+    "cx": 0.498,
+    "cy": 0.525,
+    "r": 0.658,
+    "sha256": "0b1a012f86ebb7418e1fd7d76f1a153f6337d00ec3ed36f9dc0aad93531c933e"
+  },
+  "garlic-5-harvest": {
+    "cx": 0.496,
+    "cy": 0.504,
+    "r": 0.754,
+    "sha256": "cf2c6add6a73c7af780eb7d10f8911e9c4e63072c7cb79233ac435aaebeaf63c"
+  },
+  "head-lettuce-1-seed": {
+    "cx": 0.492,
+    "cy": 0.7,
+    "r": 0.292,
+    "sha256": "cb18dea4063cba8e8b304fb3d58571d9d2ed277058f2f10ce5721bf722dd0c5c"
+  },
+  "head-lettuce-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.683,
+    "r": 0.185,
+    "sha256": "cb2a5be69fa653f5bbcf11c246f75fb1c4c384d2ef163c50c3c53880e0dcf86f"
+  },
+  "head-lettuce-3-vegetative": {
+    "cx": 0.502,
+    "cy": 0.71,
+    "r": 0.361,
+    "sha256": "94243fde68bc0e6e3ce42ee04235b986ed3c50a950e8fea3f2e0e17a283e3131"
+  },
+  "head-lettuce-4-sizing": {
+    "cx": 0.492,
+    "cy": 0.717,
+    "r": 0.451,
+    "sha256": "29e96b195a0d9d11d1a24ab93ae3434304eb9252dad4a4168284f4a607aad288"
+  },
+  "head-lettuce-5-harvest": {
+    "cx": 0.49,
+    "cy": 0.702,
+    "r": 0.561,
+    "sha256": "0523b9f560d6908e0b7f3c7f0fefd230b3f82870051943dc75970ba2a09d19c7"
+  },
+  "leaf-lettuce-1-seed": {
+    "cx": 0.492,
+    "cy": 0.7,
+    "r": 0.292,
+    "sha256": "cb18dea4063cba8e8b304fb3d58571d9d2ed277058f2f10ce5721bf722dd0c5c"
+  },
+  "leaf-lettuce-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.683,
+    "r": 0.185,
+    "sha256": "cb2a5be69fa653f5bbcf11c246f75fb1c4c384d2ef163c50c3c53880e0dcf86f"
+  },
+  "leaf-lettuce-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.642,
+    "r": 0.392,
+    "sha256": "3eabc37b112e381b5a42bf174716cd22c223201f7f2f8dd04f14fab730de954e"
+  },
+  "leaf-lettuce-4-sizing": {
+    "cx": 0.496,
+    "cy": 0.613,
+    "r": 0.604,
+    "sha256": "c6e2e1643b77f908a8e2f3aca6b56b37ed771fe2ceaca4ecb0f06a52d4f7137b"
+  },
+  "leaf-lettuce-5-harvest": {
+    "cx": 0.5,
+    "cy": 0.594,
+    "r": 0.814,
+    "sha256": "27c8250f7787c5a5b732058bf02e4f314c95ee34dc970fe0e7b7cfb6c594ae91"
+  },
+  "onion-1-seed": {
+    "cx": 0.498,
+    "cy": 0.704,
+    "r": 0.24,
+    "sha256": "fdaf070ae6f62f7d768ad1341d352ee64672019495e2272f92a14ce4cb41aff8"
+  },
+  "onion-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.679,
+    "r": 0.286,
+    "sha256": "be6a5877c3f0f7a72362202419acf31b68c57e179422656ab360d52cc8b22e7e"
+  },
+  "onion-3-vegetative": {
+    "cx": 0.496,
+    "cy": 0.575,
+    "r": 0.425,
+    "sha256": "66d3dcec2b5bae22a94f5166cd2b767bc8c6e8b23b956cea56924c82167ddcb2"
+  },
+  "onion-4-sizing": {
+    "cx": 0.496,
+    "cy": 0.525,
+    "r": 0.609,
+    "sha256": "b87b836ebe71bb4005f0c521f7f3d8bae05dda85a41629e369253b648fcfa989"
+  },
+  "onion-5-harvest": {
+    "cx": 0.485,
+    "cy": 0.569,
+    "r": 0.682,
+    "sha256": "9048a15543e88580e0a8f97c69e539160e81ea593f048ad216a8af5b602f6344"
+  },
+  "parsley-1-seed": {
+    "cx": 0.502,
+    "cy": 0.702,
+    "r": 0.222,
+    "sha256": "aa7e0dc04fcd3b2a858e0a8343ec8f4aea0bbb845abe84eb87f0e18518a852b6"
+  },
+  "parsley-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.681,
+    "r": 0.258,
+    "sha256": "67de9d483707eb974fcf89deb2dc068e899e7abf880c8615882f5a8187db10ce"
+  },
+  "parsley-3-vegetative": {
+    "cx": 0.496,
+    "cy": 0.638,
+    "r": 0.364,
+    "sha256": "e89ff3df4a963b62ff27ec557d2c690f4cac6e4af5d828561e985173db1cfeac"
+  },
+  "parsley-4-sizing": {
+    "cx": 0.496,
+    "cy": 0.602,
+    "r": 0.528,
+    "sha256": "abf79c9e2c4c012f010a0390d26b763b8f8a4af64500cfa6264493aca514b4a8"
+  },
+  "parsley-5-harvest": {
+    "cx": 0.5,
+    "cy": 0.577,
+    "r": 0.661,
+    "sha256": "d319ce3d0fc3a3ba625442df5b1468e3130e80190f005b6a006217ecb4d55f2c"
+  },
+  "pea-1-seed": {
+    "cx": 0.504,
+    "cy": 0.667,
+    "r": 0.295,
+    "sha256": "8e42156f8b5fd00e51e6a6f4326310812c759b5f561a5c7598ee63cf2ac625d9"
+  },
+  "pea-2-seedling": {
+    "cx": 0.502,
+    "cy": 0.583,
+    "r": 0.387,
+    "sha256": "2357d005ed5a03aa9c3e534085694632689ae2de17c2d833a86d05b2bc6698c1"
+  },
+  "pea-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.492,
+    "r": 0.77,
+    "sha256": "a4a451fef156019e3f9719bf02c9c778d5f41f14ca65be7492d5559f2fd8e60f"
+  },
+  "pea-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.467,
+    "r": 0.811,
+    "sha256": "430328916b9352925ebd4257d8f32245f23213bba350c20961e37696544493fa"
+  },
+  "pea-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.483,
+    "r": 0.89,
+    "sha256": "f911927b5196628fab8c4230a46b5e57cb84bbe388104fa6237f027a46d791e7"
+  },
+  "pepper-1-seed": {
+    "cx": 0.488,
+    "cy": 0.667,
+    "r": 0.293,
+    "sha256": "7bede0d73023bc7f95fa74e012c1a2033be97903d9847a1b7658fbabc8a63159"
+  },
+  "pepper-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.621,
+    "r": 0.352,
+    "sha256": "f2774c827b30d19a61405f82347b30e9d596d6bc7b1d4a7bc4863f4ea18163d6"
+  },
+  "pepper-3-vegetative": {
+    "cx": 0.504,
+    "cy": 0.502,
+    "r": 0.626,
+    "sha256": "21ef564ce3fb5e3875ef373479acd2aa3f0466b7e8ee318529f5dd556ed3218e"
+  },
+  "pepper-4-flowering": {
+    "cx": 0.502,
+    "cy": 0.475,
+    "r": 0.679,
+    "sha256": "ea357fc7b05723997629984431cbabf283013ba31b8254f2ed3496af831977de"
+  },
+  "pepper-5-harvest": {
+    "cx": 0.5,
+    "cy": 0.446,
+    "r": 0.736,
+    "sha256": "99cfd6df996107c2ca57a2d3d1ae76a7abfe3fa1bdc82c92d4bda6df2cc5cf3d"
+  },
+  "pole-bean-1-seed": {
+    "cx": 0.498,
+    "cy": 0.642,
+    "r": 0.236,
+    "sha256": "faa33d461e9b8e988299708ba08c07b0eed57d51866355a3a6afad76809772a1"
+  },
+  "pole-bean-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.569,
+    "r": 0.446,
+    "sha256": "8a2f6d716791d30d869313f54a650182af4935018989ca78b219a88f23746f2d"
+  },
+  "pole-bean-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.49,
+    "r": 0.676,
+    "sha256": "541ff1108c5ca0e2e358eac14abb9d8621d1e00ea046cccee17177d86410419a"
+  },
+  "pole-bean-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.456,
+    "r": 0.744,
+    "sha256": "54c92d0b86c065f45faf606481aef6968dcac42b1d128875eecccdf4f2563233"
+  },
+  "pole-bean-5-harvest": {
+    "cx": 0.5,
+    "cy": 0.431,
+    "r": 0.798,
+    "sha256": "079ad8795ff7ab8272a51ced7c63ea26db2534e925cd8b2ad97e00f63c6fbd36"
+  },
+  "potato-1-seed": {
+    "cx": 0.498,
+    "cy": 0.683,
+    "r": 0.252,
+    "sha256": "b2ee2b9927587f866acd9c54d079f61ff5a9f08d3ea56e8981fb9f854d051b67"
+  },
+  "potato-2-seedling": {
+    "cx": 0.496,
+    "cy": 0.665,
+    "r": 0.221,
+    "sha256": "601ea9a87c153da29bd702bbe6a652c6e64dc5aeaa367373baae05d7757b820f"
+  },
+  "potato-3-vegetative": {
+    "cx": 0.496,
+    "cy": 0.577,
+    "r": 0.458,
+    "sha256": "b8a1d82317c6d88b453d97ab6c358157e2c7b6c905d376a7a65b4a223f0edcc2"
+  },
+  "potato-4-flowering": {
+    "cx": 0.5,
+    "cy": 0.488,
+    "r": 0.675,
+    "sha256": "ac96326070f29fc098a7d0acc87feafeeb921f77c5586b9538f6f5068103372a"
+  },
+  "potato-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.508,
+    "r": 0.775,
+    "sha256": "0502732f2978ccb910d7abed653a3faaa2b5cc22b848743d0e89039650f73938"
+  },
+  "pumpkin-1-seed": {
+    "cx": 0.492,
+    "cy": 0.694,
+    "r": 0.318,
+    "sha256": "6dfbb957371b5bd59719d50506001864de26f68e3d125bcbe7242c2bc89ffe10"
+  },
+  "pumpkin-2-seedling": {
+    "cx": 0.496,
+    "cy": 0.648,
+    "r": 0.259,
+    "sha256": "6f7b93d656bd9ea63afe5d0d2a919af4889ca23a51c9393418b6b058476dde8f"
+  },
+  "pumpkin-3-vegetative": {
+    "cx": 0.481,
+    "cy": 0.533,
+    "r": 0.79,
+    "sha256": "f790c0bafdca0ce99585f708d83b99a6d2360f2ac7ecb4d5d4d23d8710a0379b"
+  },
+  "pumpkin-4-flowering": {
+    "cx": 0.5,
+    "cy": 0.506,
+    "r": 0.916,
+    "sha256": "d803fbb434b00f8afe02e18d6d9a023b11bb003736038c152344e03ae02c5b84"
+  },
+  "pumpkin-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.508,
+    "r": 0.947,
+    "sha256": "705c62b3cf4d7fffcd39c3c7961a30ef3c5d5392200eb95e2ef2b50f8a7443a4"
+  },
+  "radish-1-seed": {
+    "cx": 0.502,
+    "cy": 0.702,
+    "r": 0.23,
+    "sha256": "0c13252ecdfe12ef16b8335f23746decf454345be7c55c4a2319a10af77aac42"
+  },
+  "radish-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.696,
+    "r": 0.194,
+    "sha256": "e7cb8a5a29c4e53b819846e481a90b4b739d0bdc61b1214293cae457f870a881"
+  },
+  "radish-3-vegetative": {
+    "cx": 0.496,
+    "cy": 0.652,
+    "r": 0.327,
+    "sha256": "4841fc470759120d5aa8a613637ce3370b1603b57e61eb0a01bfad38c0e615cc"
+  },
+  "radish-4-sizing": {
+    "cx": 0.498,
+    "cy": 0.629,
+    "r": 0.432,
+    "sha256": "2631feb31f48d4760321958dad2d8d1e632f947a3a390f78ec1d761c318178f6"
+  },
+  "radish-5-harvest": {
+    "cx": 0.5,
+    "cy": 0.604,
+    "r": 0.567,
+    "sha256": "439e7fe729956f5d666f1bfacf782a9324f3a6d356cd90c129ed67beab03dadd"
+  },
+  "rosemary-1-seed": {
+    "cx": 0.481,
+    "cy": 0.702,
+    "r": 0.216,
+    "sha256": "2b21d622302f7997c9d0029622579ce74e5d8bf14be333be8de922317a855da4"
+  },
+  "rosemary-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.692,
+    "r": 0.186,
+    "sha256": "d28d7b907e1a060572daa1075df32080125a035f85402ed35a1d4b265312f2e4"
+  },
+  "rosemary-3-vegetative": {
+    "cx": 0.49,
+    "cy": 0.565,
+    "r": 0.443,
+    "sha256": "04138fc4f630b06afee7cd96a06b4198aa0b48ea434732c845e7d1930f246ecc"
+  },
+  "rosemary-4-sizing": {
+    "cx": 0.498,
+    "cy": 0.527,
+    "r": 0.562,
+    "sha256": "f0409be17b4db4ae4f97d5dfff07150a42996d30212d3c8e44e39635ad7b7706"
+  },
+  "rosemary-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.483,
+    "r": 0.731,
+    "sha256": "ed5ca0099f6c1ac23d0e3cb4312b20fd8cf02de5671823db0d8388cd753c2ecc"
+  },
+  "spearmint-1-seed": {
+    "cx": 0.498,
+    "cy": 0.702,
+    "r": 0.208,
+    "sha256": "e8b56276d4dbe579489d122d0cf81362499039387888e3adfaf1cd151d3697f1"
+  },
+  "spearmint-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.7,
+    "r": 0.163,
+    "sha256": "f2d5d3a41ba659ba28fd8ea726af0014073fb3c6c94e08df2827ed694848959d"
+  },
+  "spearmint-3-vegetative": {
+    "cx": 0.479,
+    "cy": 0.556,
+    "r": 0.455,
+    "sha256": "f4eff70b51e6b8a0039ffed13dbd1a8f322c806dc445c8c2cd14faeb9842f892"
+  },
+  "spearmint-4-sizing": {
+    "cx": 0.519,
+    "cy": 0.527,
+    "r": 0.651,
+    "sha256": "ba6e3de6a166fefa2790abe08fd04463d42169957b7e957a717a0557a73f3abf"
+  },
+  "spearmint-5-harvest": {
+    "cx": 0.5,
+    "cy": 0.471,
+    "r": 0.897,
+    "sha256": "5a1f168350d5fd813d89953880b7de5ff972fefb1c29c8739ca7f9387944976d"
+  },
+  "spinach-1-seed": {
+    "cx": 0.498,
+    "cy": 0.698,
+    "r": 0.294,
+    "sha256": "8a8265c9bf5f6d2e5345fde26289dea20afdb48b92847f9e8730de53096395ad"
+  },
+  "spinach-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.648,
+    "r": 0.344,
+    "sha256": "a06356848da6c21e337d162f672448bc46f59f31b84f513b8555dd8eddd15315"
+  },
+  "spinach-3-vegetative": {
+    "cx": 0.504,
+    "cy": 0.675,
+    "r": 0.437,
+    "sha256": "57f465b9396908d25c987ee37551ff308d4f8919f2367a030c54c3ea46e71afa"
+  },
+  "spinach-4-sizing": {
+    "cx": 0.502,
+    "cy": 0.658,
+    "r": 0.576,
+    "sha256": "d00275069e1d6f87cd171cd489a7b6c378904c60984de7044cf162609aa59278"
+  },
+  "spinach-5-harvest": {
+    "cx": 0.504,
+    "cy": 0.615,
+    "r": 0.718,
+    "sha256": "68b48fc7e9be5bfb5d88f88e4f58c52c3f0eff6dbb7d040cdbd383c707373c76"
+  },
+  "strawberry-1-seed": {
+    "cx": 0.498,
+    "cy": 0.596,
+    "r": 0.512,
+    "sha256": "9ad2969e143251e1772c7755c4b545dec43ce94a03f54fb4c2e02bf1456c00ef"
+  },
+  "strawberry-2-seedling": {
+    "cx": 0.496,
+    "cy": 0.729,
+    "r": 0.43,
+    "sha256": "346f1da9a7601f9c647bd93ef89a7b8040b5896eb5adc30a820f195cbfe4c992"
+  },
+  "strawberry-3-vegetative": {
+    "cx": 0.521,
+    "cy": 0.606,
+    "r": 0.688,
+    "sha256": "7505e866d2a62f6911d632820c38d0bcc0548290070bccd8eb85cee07259c5e6"
+  },
+  "strawberry-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.583,
+    "r": 0.7,
+    "sha256": "9e16d2298c2c97c0de19b4b2729016313c32e91351df69267b1d13d811786585"
+  },
+  "strawberry-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.575,
+    "r": 0.787,
+    "sha256": "606ad19f384af27650bf05f8e6f1d4bc74fb1cac79f280dc1f6fc87a83d8bbc3"
+  },
+  "summer-squash-1-seed": {
+    "cx": 0.5,
+    "cy": 0.663,
+    "r": 0.338,
+    "sha256": "713d50cf0ab9f9872f021215d2d6e6806c52c1ffead3b374e39d457f56cb9eb6"
+  },
+  "summer-squash-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.577,
+    "r": 0.409,
+    "sha256": "402ad19976fec13c1d0f3ee6b6735d814233670a62858aff3c77c17648b04e9e"
+  },
+  "summer-squash-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.573,
+    "r": 0.846,
+    "sha256": "b19b9854f90306d1737500998bd1a21ac0135ce59c9273061b4a868382525ed5"
+  },
+  "summer-squash-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.563,
+    "r": 0.871,
+    "sha256": "1fb7fc8cd3d7ce1f587f30c3a92c4415391d96fbcefb32468e051fc71e4a5b62"
+  },
+  "summer-squash-5-harvest": {
+    "cx": 0.502,
+    "cy": 0.573,
+    "r": 0.835,
+    "sha256": "5bce518ccd509e61e0682fdea3024f47aa5b4b3d34d7245aac6c687d19a988b9"
+  },
+  "sweet-basil-1-seed": {
+    "cx": 0.498,
+    "cy": 0.644,
+    "r": 0.217,
+    "sha256": "6e32f4fee9652a6050c4bc0c47f72e17fd78a086427c2f878d35c01a36d6aec4"
+  },
+  "sweet-basil-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.635,
+    "r": 0.297,
+    "sha256": "75b2b3226f94b2ab89a81188fc9f486eea6fe8feddaa8989c5a7498d713fbee8"
+  },
+  "sweet-basil-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.513,
+    "r": 0.593,
+    "sha256": "74b31bf35c89587e1c1e7fb1cbcc9337d0cce53d127cb510e5400c7190b684ac"
+  },
+  "sweet-basil-4-sizing": {
+    "cx": 0.498,
+    "cy": 0.515,
+    "r": 0.595,
+    "sha256": "ea2c7c894d813030fcb1f0b40e2819622eea5f2078eb6f703f3d5b1ef5e06d60"
+  },
+  "sweet-basil-5-harvest": {
+    "cx": 0.49,
+    "cy": 0.538,
+    "r": 0.632,
+    "sha256": "fa4e2f1a382204eafd440379c1605dd069506394fb35d7294dd1d98b5849c20b"
+  },
+  "sweet-corn-1-seed": {
+    "cx": 0.498,
+    "cy": 0.698,
+    "r": 0.269,
+    "sha256": "eb615f7faeaf6e48d1fd07a847ef205325b8ad8cff963ec4d612776705803cfc"
+  },
+  "sweet-corn-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.696,
+    "r": 0.167,
+    "sha256": "38147f2078dd0fe97a3a6f635335855fcbbc945e932c1e698495f5abd2601d06"
+  },
+  "sweet-corn-3-vegetative": {
+    "cx": 0.5,
+    "cy": 0.548,
+    "r": 0.484,
+    "sha256": "52cdc02c7c2e9b16524aa31879bd170504b4cee350b5c20aa21b4443d0c53673"
+  },
+  "sweet-corn-4-flowering": {
+    "cx": 0.5,
+    "cy": 0.423,
+    "r": 0.756,
+    "sha256": "9f6248ff8ea7a6e6335b39eaea214729fd62eabd6683d287209ed4e3f7b9bd18"
+  },
+  "sweet-corn-5-harvest": {
+    "cx": 0.5,
+    "cy": 0.419,
+    "r": 0.781,
+    "sha256": "615a590a69557c36476c3405e3056f72ef0d517f29fe32a2a6c36af0a4b0e911"
+  },
+  "thyme-1-seed": {
+    "cx": 0.498,
+    "cy": 0.7,
+    "r": 0.184,
+    "sha256": "484ac88a79e63807a62cbdaa6a9a4853b39437e813d8e5d936c7b24616fcda14"
+  },
+  "thyme-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.721,
+    "r": 0.109,
+    "sha256": "e64a0e0a26db6cb956b3ab8d0d6fff2e58f17ac0ea3d1ed97cfed1f1e17b254f"
+  },
+  "thyme-3-vegetative": {
+    "cx": 0.496,
+    "cy": 0.675,
+    "r": 0.35,
+    "sha256": "c045964640c6078f15708a6eaa3f7c3d909efb25dab197c2938a189e2226b25a"
+  },
+  "thyme-4-sizing": {
+    "cx": 0.496,
+    "cy": 0.652,
+    "r": 0.536,
+    "sha256": "6161706496c52a535fabd50a5ccb26be94a3e935b477424b87238b01f4e6f845"
+  },
+  "thyme-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.631,
+    "r": 0.714,
+    "sha256": "99d5ab5badedfc5fb4af2d295406882821434850f1115b3ad523bafb71ebda67"
+  },
+  "tomato-1-seed": {
+    "cx": 0.498,
+    "cy": 0.648,
+    "r": 0.182,
+    "sha256": "2181bcae4d0846744eb399d018c23b5c7533c8d8f38b20a40ab7b32cfbdfb056"
+  },
+  "tomato-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.631,
+    "r": 0.309,
+    "sha256": "0a5a7a4eb94d11aabd0a40ee45b879f48756dfa828cae166175f5d86a7f2838e"
+  },
+  "tomato-3-vegetative": {
+    "cx": 0.477,
+    "cy": 0.488,
+    "r": 0.648,
+    "sha256": "36de78852ae158612356bd902bf1fd930b3d59937286bbb0553b3650b7b3cffb"
+  },
+  "tomato-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.477,
+    "r": 0.663,
+    "sha256": "cac18b517305928c3222d71ca94689da098b5fd230d1aa9a91718ae1069e7744"
+  },
+  "tomato-5-harvest": {
+    "cx": 0.471,
+    "cy": 0.465,
+    "r": 0.707,
+    "sha256": "312326ac60d22e77610ffd06ddd69bd8a5b6d2144600c40407ae1df476cb7fc4"
+  },
+  "watermelon-1-seed": {
+    "cx": 0.49,
+    "cy": 0.698,
+    "r": 0.263,
+    "sha256": "7176494a495233463f481326a56105dad8b3d8b2cdb3bacc0b3809db2255f828"
+  },
+  "watermelon-2-seedling": {
+    "cx": 0.498,
+    "cy": 0.648,
+    "r": 0.26,
+    "sha256": "b5b00949c051ca06b37438755b22c2160cdf73840ee25cbd4567cdb4913418e2"
+  },
+  "watermelon-3-vegetative": {
+    "cx": 0.49,
+    "cy": 0.615,
+    "r": 0.738,
+    "sha256": "d1eed26c00f2746970cbd8ee72556c23ed2530ab172011d813798cc23ebb414b"
+  },
+  "watermelon-4-flowering": {
+    "cx": 0.492,
+    "cy": 0.6,
+    "r": 0.875,
+    "sha256": "3a2ecda464791d3a6cb328718f390bc090e394b0a56a851b96e57ae292244679"
+  },
+  "watermelon-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.596,
+    "r": 0.921,
+    "sha256": "f35168f888598fc1296cccd7dcaa442ca55ca89759f8980923f881fc5ad7e178"
+  },
+  "winter-squash-1-seed": {
+    "cx": 0.492,
+    "cy": 0.694,
+    "r": 0.318,
+    "sha256": "6dfbb957371b5bd59719d50506001864de26f68e3d125bcbe7242c2bc89ffe10"
+  },
+  "winter-squash-2-seedling": {
+    "cx": 0.496,
+    "cy": 0.648,
+    "r": 0.259,
+    "sha256": "6f7b93d656bd9ea63afe5d0d2a919af4889ca23a51c9393418b6b058476dde8f"
+  },
+  "winter-squash-3-vegetative": {
+    "cx": 0.498,
+    "cy": 0.556,
+    "r": 0.748,
+    "sha256": "39fa65726f37b54731b252648f28cd375c58aceef69b592dc04f26783554aae9"
+  },
+  "winter-squash-4-flowering": {
+    "cx": 0.498,
+    "cy": 0.552,
+    "r": 0.891,
+    "sha256": "ab13a0470f023cf50636f69307364160998345643707db82ce915f11a50b8e0c"
+  },
+  "winter-squash-5-harvest": {
+    "cx": 0.498,
+    "cy": 0.538,
+    "r": 0.962,
+    "sha256": "36ff2f5cf78f3b4bc1a37353357658ec1e83c41d97952843d9f8b5c433511a97"
+  }
+}

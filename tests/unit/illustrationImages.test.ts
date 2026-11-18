@@ -90,4 +90,14 @@ describe('withRootSize', () => {
     const comment = '<!-- old: <svg width="1" height="1"> -->';
     expect(withRootSize(`${comment}\n<svg viewBox="0 0 1 1"></svg>`)).toBe(`${comment}\n<svg viewBox="0 0 1 1" ${SIZE}></svg>`);
   });
+
+  it('replaces the root viewBox when one is given', () => {
+    expect(withRootSize('<svg viewBox="0 0 120 120" width="9"><g/></svg>', 240, '1 2 3 3'))
+      .toBe(`<svg ${SIZE} viewBox="1 2 3 3"><g/></svg>`);
+  });
+
+  it('adds a viewBox when the root has none', () => {
+    expect(withRootSize('<svg xmlns="http://www.w3.org/2000/svg"></svg>', 240, '1 2 3 3'))
+      .toBe(`<svg xmlns="http://www.w3.org/2000/svg" ${SIZE} viewBox="1 2 3 3"></svg>`);
+  });
 });

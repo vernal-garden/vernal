@@ -11,7 +11,8 @@ import { conflictLines } from '../../lib/conflicts';
 import FitLine from './FitLine';
 import { useRegisterCanvas } from '../../context/CanvasPresenceContext';
 import { isHarvestReady, stageLabel } from '../../lib/growthStages';
-import { cropClass, illustrationUrl } from '../../lib/illustrations';
+import { cropClass, illustrationFile, illustrationUrl } from '../../lib/illustrations';
+import { fitViewBox } from '../../lib/illustrationFit';
 import { useIllustration } from '../../lib/illustrationImages';
 import { shortDate, todayPacific } from '../../lib/guideDates';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -31,6 +32,13 @@ const GRID_HIDE_THRESHOLD = 0.4;
 const HANDLE_HALF = 6;
 const MARKER_RADIUS = GRID_PX * 0.38;
 const MARKER_HIT_RADIUS = GRID_PX * 0.5;
+// Plant art sits on a light disc inside the marker so it reads on any marker colour.
+const DISC_COLOR = '#F5F1EB';
+const DISC_RADIUS = MARKER_RADIUS * 0.75;
+// Module level so the clip function is stable across renders.
+const clipDisc = (ctx: Konva.Context) => {
+  ctx.arc(0, 0, DISC_RADIUS, 0, Math.PI * 2, false);
+};
 
 // Phase 54: plant count on the marker, and the "Plants here" save debounce.
 // Plus Jakarta Sans isn't bundled yet, so this resolves to system-ui.
@@ -521,8 +529,13 @@ const PlantingMarker = memo(function PlantingMarker({
   const { anchored } = planting.growth;
   const showMark = !plain && tier === 'large' && anchored && stage !== null;
   // Before the plain return so the hook always runs. Art is only requested
-  // when the mark shows; null draws today's mark.
-  const art = useIllustration(showMark && stage !== null ? illustrationUrl(planting.illustrationKey, stage) : null);
+  // when the mark shows; a missing manifest entry passes null, which draws
+  // today's procedural mark.
+  const artFile = showMark && stage !== null ? illustrationFile(planting.illustrationKey, stage) : null;
+  const art = useIllustration(
+    artFile && stage !== null ? illustrationUrl(planting.illustrationKey, stage) : null,
+    artFile && stage !== null ? fitViewBox(artFile, stage) : null,
+  );
 
   if (plain) {
     return (
@@ -552,15 +565,23 @@ const PlantingMarker = memo(function PlantingMarker({
         fill={tier === 'small' && ready ? '#E6B85C' : color}
         opacity={0.88}
       />
+      {showHarvest && (
+        <Circle radius={MARKER_RADIUS} fill="rgba(230, 184, 92, 0.10)" listening={false} />
+      )}
       {showMark && (art ? (
-        <KonvaImage
-          image={art}
-          x={-MARKER_RADIUS * 0.75}
-          y={-MARKER_RADIUS * 0.75}
-          width={MARKER_RADIUS * 1.5}
-          height={MARKER_RADIUS * 1.5}
-          listening={false}
-        />
+        <>
+          <Circle radius={DISC_RADIUS} fill={DISC_COLOR} listening={false} />
+          <Group clipFunc={clipDisc} listening={false}>
+            <KonvaImage
+              image={art}
+              x={-DISC_RADIUS}
+              y={-DISC_RADIUS}
+              width={2 * DISC_RADIUS}
+              height={2 * DISC_RADIUS}
+              listening={false}
+            />
+          </Group>
+        </>
       ) : (
         <Shape sceneFunc={sceneFunc} listening={false} />
       ))}
@@ -602,7 +623,6 @@ const PlantingMarker = memo(function PlantingMarker({
       )}
       {showHarvest && (
         <>
-          <Circle radius={MARKER_RADIUS} fill="rgba(230, 184, 92, 0.10)" listening={false} />
           <Circle ref={brightnessRef} radius={MARKER_RADIUS} fill="#fff" opacity={0.12} listening={false} />
           <Circle
             radius={MARKER_RADIUS - 2 * px}
