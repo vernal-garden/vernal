@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
+import { CAMBIUM_CONSENT_VERSION } from '../lib/legal';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -63,11 +64,11 @@ describe('POST /api/corrections — daily cap', () => {
     for (let i = 0; i < 9; i++) await addCorrection(accountId, await cambiumSeed(`Fresh ${i}`));
 
     const tenth = await cambiumSeed('Tenth');
-    const ok = await agent.post('/api/corrections').send({ cambiumSeedId: tenth, correctionText: 'fix' });
+    const ok = await agent.post('/api/corrections').send({ cambiumSeedId: tenth, correctionText: 'fix', consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(ok.status).toBe(201);
 
     const eleventh = await cambiumSeed('Eleventh');
-    const res = await agent.post('/api/corrections').send({ cambiumSeedId: eleventh, correctionText: 'fix' });
+    const res = await agent.post('/api/corrections').send({ cambiumSeedId: eleventh, correctionText: 'fix', consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(res.status).toBe(429);
     expect(res.body.error).toBe("You've sent 10 corrections today. Please try again tomorrow.");
   });
@@ -82,7 +83,7 @@ describe('POST /api/corrections — parallel submissions at the cap', () => {
     for (let i = 0; i < 3; i++) seeds.push(await cambiumSeed(`Race ${i}`));
 
     const results = await Promise.all(
-      seeds.map((s) => raceAgent.post('/api/corrections').send({ cambiumSeedId: s, correctionText: 'fix' })),
+      seeds.map((s) => raceAgent.post('/api/corrections').send({ cambiumSeedId: s, correctionText: 'fix', consentVersion: CAMBIUM_CONSENT_VERSION })),
     );
     const statuses = results.map((r) => r.status).sort();
     expect(statuses).toEqual([201, 429, 429]);
@@ -106,10 +107,10 @@ describe('POST /api/corrections — one open per seed', () => {
   });
 
   it('409s a second open correction for the same seed, allows after resolution', async () => {
-    const first = await agent2.post('/api/corrections').send({ cambiumSeedId: seedId, correctionText: 'one' });
+    const first = await agent2.post('/api/corrections').send({ cambiumSeedId: seedId, correctionText: 'one', consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(first.status).toBe(201);
 
-    const dup = await agent2.post('/api/corrections').send({ cambiumSeedId: seedId, correctionText: 'two' });
+    const dup = await agent2.post('/api/corrections').send({ cambiumSeedId: seedId, correctionText: 'two', consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(dup.status).toBe(409);
     expect(dup.body.error).toBe('You already have a pending correction for this seed.');
 
@@ -117,7 +118,54 @@ describe('POST /api/corrections — one open per seed', () => {
       `UPDATE moderation_items SET status = 'approved' WHERE cambium_seed_id = $1 AND type = 'correction'`,
       [seedId],
     );
-    const again = await agent2.post('/api/corrections').send({ cambiumSeedId: seedId, correctionText: 'three' });
+    const again = await agent2.post('/api/corrections').send({ cambiumSeedId: seedId, correctionText: 'three', consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(again.status).toBe(201);
+  });
+});
+
+describe('POST /api/corrections — consent', () => {
+  const CHANGED = "Cambium's sharing terms have changed. Reload the page to see them.";
+  let consentAgent: ReturnType<typeof request.agent>;
+  let seedId: number;
+
+  beforeAll(async () => {
+    await createUser('corrections-consent@example.com');
+    consentAgent = await loginAgent('corrections-consent@example.com');
+    seedId = await cambiumSeed('Consent Seed');
+  });
+
+  async function rowsFor() {
+    const { rows } = await pool.query<{ consent_version: string | null; consent_at: Date | null }>(
+      `SELECT consent_version, consent_at FROM moderation_items WHERE cambium_seed_id = $1 AND type = 'correction'`,
+      [seedId],
+    );
+    return rows;
+  }
+
+  it('missing consentVersion → 409', async () => {
+    const res = await consentAgent.post('/api/corrections').send({ cambiumSeedId: seedId, correctionText: 'fix' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(CHANGED);
+    expect(await rowsFor()).toHaveLength(0);
+  });
+
+  it('old consentVersion → 409 and no row', async () => {
+    const res = await consentAgent
+      .post('/api/corrections')
+      .send({ cambiumSeedId: seedId, correctionText: 'fix', consentVersion: '2026-01-01' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(CHANGED);
+    expect(await rowsFor()).toHaveLength(0);
+  });
+
+  it('current consentVersion records version and time', async () => {
+    const res = await consentAgent
+      .post('/api/corrections')
+      .send({ cambiumSeedId: seedId, correctionText: 'fix', consentVersion: CAMBIUM_CONSENT_VERSION });
+    expect(res.status).toBe(201);
+    const rows = await rowsFor();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].consent_version).toBe(CAMBIUM_CONSENT_VERSION);
+    expect(rows[0].consent_at).not.toBeNull();
   });
 });

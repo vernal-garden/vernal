@@ -1,6 +1,7 @@
 // client/src/components/catalogue/CorrectionModal.tsx
 import { useEffect, useRef, useState } from 'react';
 import { post } from '../../lib/api';
+import { CAMBIUM_CONSENT_VERSION, CAMBIUM_LICENSES_URL } from '../../lib/legal';
 
 interface Props {
   cambiumSeedId: string;
@@ -40,7 +41,11 @@ export default function CorrectionModal({ cambiumSeedId, seedName, onClose }: Pr
     setStatus('saving');
     setErrorMsg('');
     try {
-      await post('/api/corrections', { cambiumSeedId, correctionText: text.trim() });
+      await post('/api/corrections', {
+        cambiumSeedId,
+        correctionText: text.trim(),
+        consentVersion: CAMBIUM_CONSENT_VERSION,
+      });
       setStatus('done');
     } catch (err: unknown) {
       const body = (err as { body?: { error?: string } })?.body;
@@ -104,6 +109,15 @@ export default function CorrectionModal({ cambiumSeedId, seedName, onClose }: Pr
             <div style={{ fontSize: 11, color: 'var(--c-text-3)', marginBottom: 'var(--sp-3)' }}>
               {text.length}/2000
             </div>
+
+            <p style={{ margin: '0 0 var(--sp-3)', fontSize: 13, color: 'var(--c-text-2)' }}>
+              Corrections become part of Cambium and are shared under <a
+                href={CAMBIUM_LICENSES_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--c-primary-dark)', textDecoration: 'underline' }}
+              >its open data licenses</a>.
+            </p>
 
             {status === 'error' && (
               <div style={{ fontSize: 13, color: 'var(--c-danger)', marginBottom: 'var(--sp-3)' }}>{errorMsg}</div>

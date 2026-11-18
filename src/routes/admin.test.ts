@@ -3,6 +3,7 @@ import request from 'supertest';
 import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 import app from '../index';
+import { CAMBIUM_CONSENT_VERSION } from '../lib/legal';
 import { EVENT_KEYS, MICRO_FEEDBACK_TRIGGERS } from '../lib/eventKeys';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -152,11 +153,12 @@ async function insertModerationItem(opts: {
   seedId?: number | null;
   submittedBy?: number | null;
   content?: Record<string, unknown>;
+  consentVersion?: string | null;
 }) {
   const status = opts.status ?? 'new';
   const { rows } = await pool.query<{ id: number }>(
-    `INSERT INTO moderation_items (type, status, cambium_seed_id, seed_id, submitted_by, content, resolved_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO moderation_items (type, status, cambium_seed_id, seed_id, submitted_by, content, resolved_at, consent_version, consent_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text, CASE WHEN $8::text IS NULL THEN NULL ELSE NOW() END)
      RETURNING id`,
     [
       opts.type,
@@ -166,6 +168,7 @@ async function insertModerationItem(opts: {
       opts.submittedBy ?? null,
       JSON.stringify(opts.content ?? {}),
       status === 'approved' || status === 'rejected' ? new Date() : null,
+      'consentVersion' in opts ? opts.consentVersion : CAMBIUM_CONSENT_VERSION,
     ],
   );
   return rows[0].id;
@@ -507,6 +510,62 @@ describe('Phase 37 admin API', () => {
         expect(res.status).toBe(409);
         expect(res.body).toEqual({ error: 'This item is already resolved.' });
       }
+    });
+
+    describe('consent hold', () => {
+      const HELD = { error: 'Held: no consent on file for this submission.' };
+
+      it('approving a NULL-consent new_seed item is 409 and changes nothing', async () => {
+        const seedId = await insertPersonalSeed(userId, 'Consent Held Pea');
+        const itemId = await insertModerationItem({
+          type: 'new_seed',
+          seedId,
+          submittedBy: userId,
+          content: { commonName: 'Consent Held Pea' },
+          consentVersion: null,
+        });
+        const res = await adminAgent
+          .patch(`/api/admin/moderation/${itemId}`)
+          .send({ action: 'approve' });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual(HELD);
+
+        const item = await pool.query('SELECT status, resolved_at FROM moderation_items WHERE id = $1', [itemId]);
+        expect(item.rows[0].status).toBe('new');
+        expect(item.rows[0].resolved_at).toBeNull();
+        const seed = await pool.query('SELECT contribution_status FROM seeds WHERE id = $1', [seedId]);
+        expect(seed.rows[0].contribution_status).toBe('pending');
+      });
+
+      it('approving a NULL-consent correction is 409 and leaves it unresolved', async () => {
+        const itemId = await insertModerationItem({ type: 'correction', cambiumSeedId, consentVersion: null });
+        const res = await adminAgent
+          .patch(`/api/admin/moderation/${itemId}`)
+          .send({ action: 'approve' });
+        expect(res.status).toBe(409);
+        expect(res.body).toEqual(HELD);
+        const item = await pool.query('SELECT status, resolved_at FROM moderation_items WHERE id = $1', [itemId]);
+        expect(item.rows[0].status).toBe('new');
+        expect(item.rows[0].resolved_at).toBeNull();
+      });
+
+      it('rejecting a NULL-consent item still works', async () => {
+        const itemId = await insertModerationItem({ type: 'correction', cambiumSeedId, consentVersion: null });
+        const res = await adminAgent
+          .patch(`/api/admin/moderation/${itemId}`)
+          .send({ action: 'reject' });
+        expect(res.status).toBe(200);
+        expect(res.body.status).toBe('rejected');
+      });
+
+      it('approving an item with consent works', async () => {
+        const itemId = await insertModerationItem({ type: 'correction', cambiumSeedId });
+        const res = await adminAgent
+          .patch(`/api/admin/moderation/${itemId}`)
+          .send({ action: 'approve' });
+        expect(res.status).toBe(200);
+        expect(res.body.status).toBe('approved');
+      });
     });
 
     it('approving a new_seed item marks the seed approved', async () => {

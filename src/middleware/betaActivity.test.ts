@@ -18,7 +18,7 @@ vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
 import app from '../index';
 import { db } from '../lib/db';
 import { logger } from '../lib/logger';
-import { BETA_TERMS_VERSION } from '../lib/legal';
+import { BETA_TERMS_VERSION, CAMBIUM_CONSENT_VERSION } from '../lib/legal';
 import { invalidateBetaSettings } from '../lib/beta';
 import { getServerConfig, setServerConfigForTests } from '../lib/serverConfig';
 import { currentSeason } from '../lib/season';
@@ -335,7 +335,7 @@ describe('active weeks through the app', () => {
       .send({ plantingIds: [f.plantingId] });
     expect(stage.status).toBe(200);
 
-    const contribute = await f.agent.post(`/api/seeds/${f.seedId}/contribute`).send({});
+    const contribute = await f.agent.post(`/api/seeds/${f.seedId}/contribute`).send({ consentVersion: CAMBIUM_CONSENT_VERSION });
     expect(contribute.status).toBe(200);
 
     expect(await weeks(f.accountId)).toHaveLength(0);

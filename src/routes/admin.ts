@@ -662,8 +662,9 @@ router.patch('/moderation/:id', async (req, res) => {
       status: string;
       seed_id: number | null;
       submitted_by: number | null;
+      consent_version: string | null;
     }>(
-      'SELECT type, status, seed_id, submitted_by FROM moderation_items WHERE id = $1 FOR UPDATE',
+      'SELECT type, status, seed_id, submitted_by, consent_version FROM moderation_items WHERE id = $1 FOR UPDATE',
       [id],
     );
     if (existing.rows.length === 0) {
@@ -675,6 +676,11 @@ router.patch('/moderation/:id', async (req, res) => {
     if (item.status === 'approved' || item.status === 'rejected') {
       await client.query('ROLLBACK');
       res.status(409).json({ error: 'This item is already resolved.' });
+      return;
+    }
+    if (action === 'approve' && item.consent_version === null) {
+      await client.query('ROLLBACK');
+      res.status(409).json({ error: 'Held: no consent on file for this submission.' });
       return;
     }
 
