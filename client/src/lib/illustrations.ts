@@ -8,12 +8,47 @@ export type CropClass = 'F' | 'L' | 'B';
 type Stage = 1 | 2 | 3 | 4 | 5;
 
 export const ILLUSTRATIONS: Record<string, Record<Stage, string>> = {
+  'asparagus': {
+    1: 'asparagus-1-seed.svg',
+    2: 'asparagus-2-seedling.svg',
+    3: 'asparagus-3-vegetative.svg',
+    4: 'asparagus-4-sizing.svg',
+    5: 'asparagus-5-harvest.svg',
+  },
+  'beet': {
+    1: 'beet-1-seed.svg',
+    2: 'beet-2-seedling.svg',
+    3: 'beet-3-vegetative.svg',
+    4: 'beet-4-sizing.svg',
+    5: 'beet-5-harvest.svg',
+  },
+  'broccoli': {
+    1: 'broccoli-1-seed.svg',
+    2: 'broccoli-2-seedling.svg',
+    3: 'broccoli-3-vegetative.svg',
+    4: 'broccoli-4-heading.svg',
+    5: 'broccoli-5-harvest.svg',
+  },
   'bush-bean': {
     1: 'bush-bean-1-seed.svg',
     2: 'bush-bean-2-seedling.svg',
     3: 'bush-bean-3-vegetative.svg',
     4: 'bush-bean-4-flowering.svg',
     5: 'bush-bean-5-harvest.svg',
+  },
+  'cabbage': {
+    1: 'cabbage-1-seed.svg',
+    2: 'cabbage-2-seedling.svg',
+    3: 'cabbage-3-vegetative.svg',
+    4: 'cabbage-4-sizing.svg',
+    5: 'cabbage-5-harvest.svg',
+  },
+  'cantaloupe': {
+    1: 'cantaloupe-1-seed.svg',
+    2: 'cantaloupe-2-seedling.svg',
+    3: 'cantaloupe-3-vegetative.svg',
+    4: 'cantaloupe-4-flowering.svg',
+    5: 'cantaloupe-5-harvest.svg',
   },
   'carrot': {
     1: 'carrot-1-seed.svg',
@@ -22,6 +57,13 @@ export const ILLUSTRATIONS: Record<string, Record<Stage, string>> = {
     4: 'carrot-4-sizing.svg',
     5: 'carrot-5-harvest.svg',
   },
+  'cauliflower': {
+    1: 'cauliflower-1-seed.svg',
+    2: 'cauliflower-2-seedling.svg',
+    3: 'cauliflower-3-vegetative.svg',
+    4: 'cauliflower-4-heading.svg',
+    5: 'cauliflower-5-harvest.svg',
+  },
   'cilantro': {
     1: 'cilantro-1-seed.svg',
     2: 'cilantro-2-seedling.svg',
@@ -29,12 +71,40 @@ export const ILLUSTRATIONS: Record<string, Record<Stage, string>> = {
     4: 'cilantro-4-sizing.svg',
     5: 'cilantro-5-harvest.svg',
   },
+  'collards': {
+    1: 'collards-1-seed.svg',
+    2: 'collards-2-seedling.svg',
+    3: 'collards-3-vegetative.svg',
+    4: 'collards-4-sizing.svg',
+    5: 'collards-5-harvest.svg',
+  },
   'cucumber': {
     1: 'cucumber-1-seed.svg',
     2: 'cucumber-2-seedling.svg',
     3: 'cucumber-3-vegetative.svg',
     4: 'cucumber-4-flowering.svg',
     5: 'cucumber-5-harvest.svg',
+  },
+  'eggplant': {
+    1: 'eggplant-1-seed.svg',
+    2: 'eggplant-2-seedling.svg',
+    3: 'eggplant-3-vegetative.svg',
+    4: 'eggplant-4-flowering.svg',
+    5: 'eggplant-5-harvest.svg',
+  },
+  'garlic': {
+    1: 'garlic-1-seed.svg',
+    2: 'garlic-2-seedling.svg',
+    3: 'garlic-3-vegetative.svg',
+    4: 'garlic-4-sizing.svg',
+    5: 'garlic-5-harvest.svg',
+  },
+  'head-lettuce': {
+    1: 'head-lettuce-1-seed.svg',
+    2: 'head-lettuce-2-seedling.svg',
+    3: 'head-lettuce-3-vegetative.svg',
+    4: 'head-lettuce-4-sizing.svg',
+    5: 'head-lettuce-5-harvest.svg',
   },
   'leaf-lettuce': {
     1: 'leaf-lettuce-1-seed.svg',
@@ -113,6 +183,20 @@ export const ILLUSTRATIONS: Record<string, Record<Stage, string>> = {
     4: 'spearmint-4-sizing.svg',
     5: 'spearmint-5-harvest.svg',
   },
+  'spinach': {
+    1: 'spinach-1-seed.svg',
+    2: 'spinach-2-seedling.svg',
+    3: 'spinach-3-vegetative.svg',
+    4: 'spinach-4-sizing.svg',
+    5: 'spinach-5-harvest.svg',
+  },
+  'strawberry': {
+    1: 'strawberry-1-seed.svg',
+    2: 'strawberry-2-seedling.svg',
+    3: 'strawberry-3-vegetative.svg',
+    4: 'strawberry-4-flowering.svg',
+    5: 'strawberry-5-harvest.svg',
+  },
   'summer-squash': {
     1: 'summer-squash-1-seed.svg',
     2: 'summer-squash-2-seedling.svg',
@@ -154,6 +238,13 @@ export const ILLUSTRATIONS: Record<string, Record<Stage, string>> = {
     3: 'watermelon-3-vegetative.svg',
     4: 'watermelon-4-flowering.svg',
     5: 'watermelon-5-harvest.svg',
+  },
+  'winter-squash': {
+    1: 'winter-squash-1-seed.svg',
+    2: 'winter-squash-2-seedling.svg',
+    3: 'winter-squash-3-vegetative.svg',
+    4: 'winter-squash-4-flowering.svg',
+    5: 'winter-squash-5-harvest.svg',
   },
 };
 

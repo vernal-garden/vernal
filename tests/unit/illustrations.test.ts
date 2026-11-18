@@ -16,6 +16,8 @@ const PALETTE = new Set([
   '#4F6B5A',
 ]);
 const STROKE_WIDTHS = new Set([1.5, 0.75]);
+// Silhouette stroke: an art width plus 1.5, or 1.5 on a filled shape.
+const SILHOUETTE_STROKE_WIDTHS = new Set([1.5, 2.25, 3]);
 const OPACITIES = new Set([0.2, 0.3, 0.5, 0.65, 0.9]);
 const MAX_BYTES = 6144;
 
@@ -58,6 +60,10 @@ function rootAttrs(svg: string): Map<string, string> {
   }
   return out;
 }
+
+// The <g data-role="silhouette-stroke"> outline drawn behind the art. It holds
+// no nested <g>, so the first </g> closes it.
+const SILHOUETTE = /<g\b(?:"[^"]*"|'[^']*'|[^'">])*\bdata-role\s*=\s*["']silhouette-stroke["'](?:"[^"]*"|'[^']*'|[^'">])*>[\s\S]*?<\/g\s*>/gi;
 
 const isHex = (v: string) => /^#[0-9a-f]+$/i.test(v);
 
@@ -149,8 +155,14 @@ describe('SVG style guide (section 07)', () => {
   });
 
   it('stroke-width is only 1.5 or .75', () => {
-    expect(failures(svg => [...new Set(props(svg)
+    expect(failures(svg => [...new Set(props(svg.replace(SILHOUETTE, ''))
       .filter(p => p.name === 'stroke-width' && !STROKE_WIDTHS.has(Number(p.value)))
+      .map(p => `stroke-width="${p.value}"`))])).toEqual([]);
+  });
+
+  it('silhouette-stroke group: stroke-width is 1.5, 2.25 or 3', () => {
+    expect(failures(svg => [...new Set((svg.match(SILHOUETTE) ?? []).flatMap(props)
+      .filter(p => p.name === 'stroke-width' && !SILHOUETTE_STROKE_WIDTHS.has(Number(p.value)))
       .map(p => `stroke-width="${p.value}"`))])).toEqual([]);
   });
 
@@ -233,6 +245,10 @@ describe('cropClass', () => {
 
   it('carrot is a sizing crop (L)', () => {
     expect(cropClass('carrot')).toBe('L');
+  });
+
+  it('broccoli is a heading crop (B)', () => {
+    expect(cropClass('broccoli')).toBe('B');
   });
 
   it('returns null for an unknown key, a prototype key and null', () => {
