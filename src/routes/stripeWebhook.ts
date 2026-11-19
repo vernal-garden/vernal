@@ -1,11 +1,12 @@
 import type { Request, Response } from 'express';
 import type { PoolClient } from 'pg';
-import type Stripe from 'stripe';
+import Stripe from 'stripe';
 import { db } from '../lib/db';
 import { getStripe } from '../lib/stripe';
 import { logger } from '../lib/logger';
 import { cancelSubscriptionNow, retrieveSubscription } from '../lib/billing';
 import { formatUsd, recordOwnerEvent, sendOwnerAlert } from '../lib/ownerAlerts';
+import { checkoutAllowed, recordCountryCheck, type CheckKind, type CheckoutPlan } from '../lib/checkoutCountry';
 
 // POST /api/webhooks/stripe — mounted directly in src/index.ts so it can use
 // express.raw() ahead of the global express.json() middleware.
@@ -217,6 +218,152 @@ async function planLifetimeGrant(session: Stripe.Checkout.Session): Promise<Appl
   };
 }
 
+function stripeErrorCode(err: unknown): string | undefined {
+  return err instanceof Stripe.errors.StripeInvalidRequestError ? err.code : undefined;
+}
+
+// The issuing country of the card behind a payment intent's latest charge;
+// null when there is no card or Stripe doesn't report its country.
+async function cardCountryOf(paymentIntentId: string): Promise<string | null> {
+  const intent = await getStripe().paymentIntents.retrieve(paymentIntentId, { expand: ['latest_charge'] });
+  const charge = intent.latest_charge;
+  if (!charge || typeof charge === 'string') return null;
+  return charge.payment_method_details?.card?.country ?? null;
+}
+
+// The payment intent that paid an invoice. `invoice.payments` is only there
+// when expanded and is itself a paged list, so the invoice payments API is
+// used instead.
+async function invoicePaymentIntent(invoiceId: string): Promise<string | null> {
+  const { data } = await getStripe().invoicePayments.list({ invoice: invoiceId, limit: 10 });
+  const intents = data.filter((p) => p.payment.type === 'payment_intent');
+  const chosen = intents.find((p) => p.status === 'paid') ?? intents[0];
+  return idOf(chosen?.payment.payment_intent);
+}
+
+// With its default payment method expanded, or null if Stripe no longer has it.
+async function subscriptionWithCard(subId: string): Promise<Stripe.Subscription | null> {
+  try {
+    return await getStripe().subscriptions.retrieve(subId, { expand: ['default_payment_method'] });
+  } catch (err) {
+    if (stripeErrorCode(err) === 'resource_missing') return null;
+    throw err;
+  }
+}
+
+type CountryRefusal = { kind: CheckKind; country: string | null };
+
+// The billing address is checked first, so it wins when both fail. A paid
+// checkout must show an allowed card country (unknown counts as not allowed);
+// a free one is checked on its card only if it has one.
+async function countryRefusalOf(
+  session: Stripe.Checkout.Session,
+  paymentIntent: string | null,
+  sub: Stripe.Subscription | null,
+): Promise<CountryRefusal | null> {
+  const address = session.customer_details?.address?.country ?? null;
+  if (!checkoutAllowed(address)) return { kind: 'billing_address', country: address };
+
+  if (session.payment_status !== 'no_payment_required') {
+    const card = paymentIntent ? await cardCountryOf(paymentIntent) : null;
+    if (!card) logger.warn('No card country on a paid checkout; refusing it', { sessionId: session.id });
+    return checkoutAllowed(card) ? null : { kind: 'card_country', country: card };
+  }
+
+  const method = sub?.default_payment_method;
+  if (!method || typeof method === 'string' || !method.card) return null;
+  return checkoutAllowed(method.card.country) ? null : { kind: 'card_country', country: method.card.country };
+}
+
+const PLAN_LABELS: Record<CheckoutPlan, string> = { monthly: 'Monthly', annual: 'Annual', lifetime: 'Lifetime' };
+
+async function checkoutPlanOf(session: Stripe.Checkout.Session, sub: Stripe.Subscription | null): Promise<CheckoutPlan> {
+  const plan = session.metadata?.plan;
+  if (plan === 'monthly' || plan === 'annual' || plan === 'lifetime') return plan;
+  if (session.mode === 'payment') return 'lifetime';
+  const subId = idOf(session.subscription);
+  const interval = (sub ?? (subId ? await retrieveSubscription(subId) : null))?.items.data[0]?.price.recurring?.interval;
+  if (interval === 'month') return 'monthly';
+  if (interval === 'year') return 'annual';
+  logger.warn('Could not tell the plan of a refused checkout; counted as monthly');
+  return 'monthly';
+}
+
+// The idempotency key covers a retry after the transaction failed. A charge
+// that is already refunded counts as done. Returns false when there was no
+// payment to refund, so the owner is told to refund by hand.
+async function refundInFull(sessionId: string, paymentIntent: string | null): Promise<boolean> {
+  if (!paymentIntent) {
+    logger.error('No payment found to refund for a refused checkout; refund it by hand', undefined, { sessionId });
+    return false;
+  }
+  try {
+    await getStripe().refunds.create(
+      { payment_intent: paymentIntent },
+      { idempotencyKey: `country-refund-${sessionId}` },
+    );
+  } catch (err) {
+    if (stripeErrorCode(err) !== 'charge_already_refunded') throw err;
+  }
+  return true;
+}
+
+const REFUNDED_LINE = 'Refunded: paid plans are US-only at launch.';
+const CANCELLED_LINE = 'Cancelled: paid plans are US-only at launch.';
+const REFUND_NEEDED_LINE =
+  'Refund needed: no payment was found to refund automatically. Refund it in the Stripe dashboard.';
+
+// Paid plans are US-only at launch. Runs before anything is granted: a
+// checkout from elsewhere is refunded (when paid) and its subscription
+// cancelled, then recorded and alerted. Returns null when the checkout is allowed.
+// Access to a subscription comes from the customer.subscription.* events; if
+// `created` already landed, the account is set back to free here, and if it
+// lands later it sees the cancelled subscription and leaves the account free.
+async function planCountryRefusal(session: Stripe.Checkout.Session): Promise<Apply | null> {
+  const paid = session.payment_status !== 'no_payment_required';
+  const subId = session.mode === 'subscription' ? idOf(session.subscription) : null;
+
+  let paymentIntent: string | null = null;
+  if (session.mode === 'payment') {
+    paymentIntent = idOf(session.payment_intent);
+  } else if (paid) {
+    const invoiceId = idOf(session.invoice);
+    paymentIntent = invoiceId ? await invoicePaymentIntent(invoiceId) : null;
+  }
+  const sub = !paid && subId ? await subscriptionWithCard(subId) : null;
+
+  const refusal = await countryRefusalOf(session, paymentIntent, sub);
+  if (!refusal) return null;
+
+  const plan = await checkoutPlanOf(session, sub);
+  if (subId) await cancelSubscriptionNow(subId);
+  let outcome = CANCELLED_LINE;
+  if (paid) outcome = (await refundInFull(session.id, paymentIntent)) ? REFUNDED_LINE : REFUND_NEEDED_LINE;
+  const amount = amountOf(session.amount_total, session.currency);
+
+  return async (client, alerts) => {
+    await recordCountryCheck({ country: refusal.country, plan, kind: refusal.kind }, client);
+    if (subId) {
+      await client.query(
+        `UPDATE accounts
+            SET subscription_tier = 'free', stripe_subscription_id = NULL, subscription_period_end = NULL,
+                subscription_cancelled_at = NULL, updated_at = NOW()
+          WHERE stripe_subscription_id = $1 AND subscription_interval IS DISTINCT FROM 'lifetime'`,
+        [subId],
+      );
+    }
+    alerts.push({
+      kind: 'checkout_refused_country',
+      subject: 'Checkout refused: outside the US',
+      lines: [
+        sentence([PLAN_LABELS[plan], refusal.country ?? 'country unknown', amount]),
+        outcome,
+      ],
+      link: USERS_LINK,
+    });
+  };
+}
+
 // Refunds and disputes only affect lifetime access; subscriptions follow
 // Stripe's own lifecycle. The payment intent is kept so a won dispute can
 // still find the account. Returns whether a lifetime account was revoked.
@@ -291,15 +438,20 @@ async function planEvent(event: Stripe.Event): Promise<Apply | null> {
       // Delayed methods (bank debits) complete unpaid; the async events decide.
       if (session.mode === 'subscription') {
         // 'no_payment_required' (full discounts, trials) counts too.
-        return session.payment_status === 'unpaid' ? noop : planSubscriptionStart(session);
+        if (session.payment_status === 'unpaid') return noop;
+        return (await planCountryRefusal(session)) ?? planSubscriptionStart(session);
       }
       if (session.mode !== 'payment' || session.payment_status !== 'paid') return noop;
-      return planLifetimeGrant(session);
+      // A refused lifetime purchase must not reach planLifetimeGrant, which
+      // cancels the account's current subscription.
+      return (await planCountryRefusal(session)) ?? planLifetimeGrant(session);
     }
     case 'checkout.session.async_payment_succeeded': {
       const session = event.data.object;
-      if (session.mode === 'payment') return planLifetimeGrant(session);
-      return session.mode === 'subscription' ? planSubscriptionStart(session) : noop;
+      if (session.mode !== 'payment' && session.mode !== 'subscription') return noop;
+      const refusal = await planCountryRefusal(session);
+      if (refusal) return refusal;
+      return session.mode === 'payment' ? planLifetimeGrant(session) : planSubscriptionStart(session);
     }
     case 'checkout.session.async_payment_failed':
       logger.warn('Stripe delayed payment failed', { sessionId: event.data.object.id });
