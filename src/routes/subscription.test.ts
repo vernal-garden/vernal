@@ -196,6 +196,18 @@ describe('POST /api/subscription/checkout — guards', () => {
     expect(sessionsCreate).toHaveBeenCalledTimes(1);
   });
 
+  it('turns on automatic tax and collects the billing address', async () => {
+    await createUser('co-tax@example.com', { stripeCustomerId: 'cus_tax' });
+    const agent = await loginAgent('co-tax@example.com');
+    const res = await agent.post('/api/subscription/checkout').send({ interval: 'monthly' });
+    expect(res.status).toBe(200);
+    expect(sessionsCreate.mock.calls[0][0]).toMatchObject({
+      automatic_tax: { enabled: true },
+      billing_address_collection: 'required',
+      customer_update: { address: 'auto', name: 'auto' },
+    });
+  });
+
   it('uses the stored customer when a concurrent request saved one first', async () => {
     const id = await createUser('co-race@example.com');
     const agent = await loginAgent('co-race@example.com');
