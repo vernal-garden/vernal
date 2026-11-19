@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useConfig } from '../context/ConfigContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useDashboard } from '../hooks/useMetrics';
 import { track } from '../lib/track';
@@ -21,6 +22,7 @@ import AdvancedPanel from '../components/metrics/AdvancedPanel';
 // what the server has already totalled.
 export default function DataMetricsPage() {
   const isMobile = useIsMobile();
+  const { weather } = useConfig();
   // null until the user picks a season: the first load asks the server for
   // its current season.
   const [season, setSeason] = useState<number | null>(null);
@@ -187,7 +189,13 @@ export default function DataMetricsPage() {
               <>
                 <SoilSummaryCard soil={data.paid.soil} gardens={data.gardens} isPastSeason={isPastSeason} season={data.season} />
                 <AmendmentSummaryCard amendments={data.paid.amendments} gardens={data.gardens} isPastSeason={isPastSeason} season={data.season} />
-                <WeatherCard weather={data.paid.weather} isCurrentSeason={data.season === data.currentSeason} />
+                {(weather || data.paid.weather.station !== null) && (
+                  <WeatherCard
+                    weather={data.paid.weather}
+                    isCurrentSeason={data.season === data.currentSeason}
+                    localWeather={weather}
+                  />
+                )}
                 <div style={fullWidth}>
                   <AdvancedPanel advanced={data.paid.advanced} isMobile={isMobile} />
                 </div>

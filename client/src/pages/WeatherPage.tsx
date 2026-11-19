@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useConfig } from '../context/ConfigContext';
 import UpgradePrompt from '../components/UpgradePrompt';
 import { useWeather } from '../hooks/useWeather';
 import CurrentConditions from '../components/weather/CurrentConditions';
@@ -50,6 +51,7 @@ const toggleBtnSt = (active: boolean): React.CSSProperties => ({
 
 export default function WeatherPage() {
   const { account, isAccount } = useAuth();
+  const { weather } = useConfig();
   const isSupporter = account?.subscriptionTier === 'supporter';
 
   const {
@@ -126,7 +128,7 @@ export default function WeatherPage() {
     );
   }
 
-  const showSetup = error === 'location_not_set' && connections.length === 0;
+  const showSetup = connections.length === 0 && (error === 'location_not_set' || !weather);
 
   function collapseStation() {
     setStationOpen(false);
@@ -189,15 +191,21 @@ export default function WeatherPage() {
       </div>
 
       {showSetup && (
-        <WeatherSetupCard error={error} units={units} onConnected={reload} onTryLocalWeather={refreshCurrent} />
+        <WeatherSetupCard
+          error={error}
+          units={units}
+          localWeather={weather}
+          onConnected={reload}
+          onTryLocalWeather={refreshCurrent}
+        />
       )}
 
       {!showSetup && current && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-5)' }}>
           <CurrentConditions reading={current} units={units} onRefresh={handleRefresh} refreshing={refreshing} />
-          {current.source === 'public_weather' && history.length === 0 && <WeatherCredit />}
+          {weather && current.source === 'public_weather' && history.length === 0 && <WeatherCredit />}
           <HistoryChart history={history} units={units} />
-          {history.length > 0 && <WeatherCredit />}
+          {weather && history.length > 0 && <WeatherCredit />}
           <GrowingInsights insights={insights} units={units} />
         </div>
       )}

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { patch, del } from '../../lib/api';
 import { useResendVerification } from '../../hooks/useResendVerification';
+import { useConfig } from '../../context/ConfigContext';
+import { EMAIL_CHANGE_OFF, GOOGLE_OFF_MAIL_ON, GOOGLE_OFF_MAIL_OFF } from '../../lib/selfHostCopy';
 import type { AccountData } from './types';
 import {
   cardSt,
@@ -53,6 +55,7 @@ function VerifyEmailBanner({
 }
 
 function EmailSection({ account, onUpdate }: Props) {
+  const { googleSignIn, mail } = useConfig();
   const [newEmail, setNewEmail] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
   const [sending, setSending] = useState(false);
@@ -93,6 +96,11 @@ function EmailSection({ account, onUpdate }: Props) {
       <div style={cardSt}>
         <h3 style={cardTitleSt}>Email</h3>
         <p style={bodyTextSt}>Your account uses an external sign-in. Email change is not available.</p>
+        {!googleSignIn && (
+          <p style={{ ...bodyTextSt, marginTop: 'var(--sp-2)' }}>
+            {mail ? GOOGLE_OFF_MAIL_ON : GOOGLE_OFF_MAIL_OFF}
+          </p>
+        )}
       </div>
     );
   }
@@ -102,7 +110,9 @@ function EmailSection({ account, onUpdate }: Props) {
       <h3 style={cardTitleSt}>Email</h3>
       <p style={bodyTextSt}>{account.email}</p>
 
-      {account.pendingEmail ? (
+      {!mail ? (
+        <p style={{ ...bodyTextSt, marginTop: 'var(--sp-4)' }}>{EMAIL_CHANGE_OFF}</p>
+      ) : account.pendingEmail ? (
         <div style={{ marginTop: 'var(--sp-4)' }}>
           <p style={bodyTextSt}>
             Confirmation sent to {account.pendingEmail}. Check your inbox and click the link to confirm.
@@ -217,12 +227,13 @@ function PasswordSection() {
 }
 
 export default function EmailSecuritySettings({ account, onUpdate }: Props) {
+  const { mail } = useConfig();
   return (
     <section>
       <h2 style={{ margin: '0 0 var(--sp-4)', fontFamily: 'var(--font-display)', fontSize: 20, color: 'var(--c-text)' }}>
         Email & Security
       </h2>
-      {account.isPasswordAccount && account.email && !account.emailVerified && (
+      {mail && account.isPasswordAccount && account.email && !account.emailVerified && (
         <VerifyEmailBanner email={account.email} onUpdate={onUpdate} />
       )}
       <EmailSection account={account} onUpdate={onUpdate} />

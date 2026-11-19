@@ -32,7 +32,7 @@ function formatSync(iso: string): string | null {
   return Number.isNaN(d.getTime()) ? null : SYNC_FORMAT.format(d);
 }
 
-function sourceLine(weather: PaidMetrics['weather']): string | null {
+function sourceLine(weather: PaidMetrics['weather'], localWeather: boolean): string | null {
   const { station, locationLabel } = weather;
   if (station) {
     const provider = PROVIDER_LABEL[station.provider] ?? station.provider;
@@ -41,7 +41,7 @@ function sourceLine(weather: PaidMetrics['weather']): string | null {
     return `Your ${provider} station · ${synced ? `last synced ${synced}` : 'not synced yet'}`;
   }
   // ED: replace with final copy
-  if (locationLabel !== null) return `Local weather service · ${locationLabel}`;
+  if (localWeather && locationLabel !== null) return `Local weather service · ${locationLabel}`;
   return null;
 }
 
@@ -62,11 +62,14 @@ function weekLine(weather: PaidMetrics['weather']): string | null {
 export default function WeatherCard({
   weather,
   isCurrentSeason,
+  localWeather,
 }: {
   weather: PaidMetrics['weather'];
   isCurrentSeason: boolean;
+  // False when the server has no public weather service: only the station's data is shown.
+  localWeather: boolean;
 }) {
-  const source = sourceLine(weather);
+  const source = sourceLine(weather, localWeather);
   const week = weekLine(weather);
   const insights = weather.insights
     .filter((i) => CARD_INSIGHT_KINDS.has(i.kind))
@@ -87,21 +90,21 @@ export default function WeatherCard({
           ))}
         </ul>
       )}
-      {!isCurrentSeason && weather.locationLabel !== null && (
+      {localWeather && !isCurrentSeason && weather.locationLabel !== null && (
         // ED: replace with final copy
         <p style={bodyTextStyle}>Recent weather is shown for the current season only.</p>
       )}
-      {weather.historyUnavailable && (
+      {localWeather && weather.historyUnavailable && (
         // ED: replace with final copy
         <p style={bodyTextStyle}>Weather history isn't available right now.</p>
       )}
-      {noLocation && (
+      {localWeather && noLocation && (
         <Link to="/weather" style={{ ...linkStyle, alignSelf: 'flex-start' }}>
           {/* ED: replace with final copy */}
           Set your location to see local weather.
         </Link>
       )}
-      {(week || insights.length > 0) && <WeatherCredit />}
+      {localWeather && (week || insights.length > 0) && <WeatherCredit />}
       <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: 'var(--sp-4)', marginTop: 'auto' }}>
         {/* ED: replace with final copy */}
         <Link to="/weather" style={linkStyle}>View weather</Link>

@@ -2,6 +2,8 @@ import { useEffect, useState, FormEvent } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import * as api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
+import { useConfig } from '../context/ConfigContext';
+import { RESET_NEEDS_MAIL } from '../lib/selfHostCopy';
 import AuthFormLayout from '../components/AuthFormLayout';
 
 const OAUTH_ERRORS: Record<string, string> = {
@@ -14,6 +16,7 @@ const OAUTH_ERRORS: Record<string, string> = {
 
 export default function LoginPage() {
   const { refetchAfterSignIn } = useAuth();
+  const { mail } = useConfig();
   const navigate = useNavigate();
   const location = useLocation();
   const returnTo =
@@ -121,7 +124,13 @@ export default function LoginPage() {
         </button>
       </form>
 
-      {!showForgot && (
+      {!mail && (
+        <p style={{ margin: '0.875rem 0 0', textAlign: 'center', fontSize: 14, color: 'var(--c-text-2)' }}>
+          {RESET_NEEDS_MAIL}
+        </p>
+      )}
+
+      {mail && !showForgot && (
         <div style={{ marginTop: '0.875rem', textAlign: 'center' }}>
           <button
             type="button"
@@ -133,7 +142,7 @@ export default function LoginPage() {
         </div>
       )}
 
-      {showForgot && (
+      {mail && showForgot && (
         <div style={{ marginTop: '1rem', padding: '1rem', background: '#f9fafb', borderRadius: '8px' }}>
           {forgotSent ? (
             <p style={{ margin: 0, fontSize: '0.875rem', color: '#374151' }}>

@@ -1,6 +1,7 @@
 // client/src/hooks/useWeather.ts
 import { useCallback, useEffect, useState } from 'react';
 import { get, patch, del, ApiError } from '../lib/api';
+import { useConfig } from '../context/ConfigContext';
 import type { UnitSystem } from '../lib/units';
 import type { WeatherInsight } from '../types/weather';
 
@@ -45,6 +46,7 @@ function classifyError(e: unknown): WeatherErrorKind {
 }
 
 export function useWeather() {
+  const { weather } = useConfig();
   const [connections, setConnections] = useState<WeatherConnection[]>([]);
   const [current, setCurrent] = useState<CurrentReading | null>(null);
   const [history, setHistory] = useState<HistoryPoint[]>([]);
@@ -98,10 +100,11 @@ export function useWeather() {
         .catch(() => {}),
       loadConnections(),
       loadCurrent(),
-      loadHistory(),
+      // History is public-weather only; without the service it always fails.
+      weather ? loadHistory() : Promise.resolve(),
     ]);
     setLoading(false);
-  }, [loadConnections, loadCurrent, loadHistory]);
+  }, [loadConnections, loadCurrent, loadHistory, weather]);
 
   useEffect(() => {
     load();
