@@ -334,15 +334,20 @@ function SupporterView({ data }: { data: SubscriptionData }) {
         <p style={bodyTextSt}>
           {data.cancelledAt
             ? `Active until ${formatDate(data.periodEnd)}. Your subscription won't renew.`
-            : `Next billing date: ${formatDate(data.periodEnd)}`}
+            : data.hasCustomer
+              ? `Next billing date: ${formatDate(data.periodEnd)}`
+              : // Working copy, pending Vernal MD confirmation.
+                'Supporter access, no billing.'}
         </p>
       )}
 
-      <div style={{ marginTop: 'var(--sp-4)' }}>
-        <button type="button" onClick={handleManageBilling} disabled={portalLoading} style={secondaryButtonSt}>
-          {portalLoading ? 'Redirecting…' : isLifetime ? 'View payment history' : 'Manage billing'}
-        </button>
-      </div>
+      {data.hasCustomer && (
+        <div style={{ marginTop: 'var(--sp-4)' }}>
+          <button type="button" onClick={handleManageBilling} disabled={portalLoading} style={secondaryButtonSt}>
+            {portalLoading ? 'Redirecting…' : isLifetime ? 'View payment history' : 'Manage billing'}
+          </button>
+        </div>
+      )}
 
       {portalError && <p style={errorTextSt}>{portalError}</p>}
     </div>
