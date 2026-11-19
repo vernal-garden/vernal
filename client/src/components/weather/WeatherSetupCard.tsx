@@ -16,11 +16,13 @@ const cardSt: React.CSSProperties = {
 interface Props {
   error: WeatherErrorKind | null;
   units: UnitSystem;
+  // False when the server has no public weather service: only the station option is offered.
+  localWeather: boolean;
   onConnected: () => void;
   onTryLocalWeather: () => Promise<void>;
 }
 
-export default function WeatherSetupCard({ error, units, onConnected, onTryLocalWeather }: Props) {
+export default function WeatherSetupCard({ error, units, localWeather, onConnected, onTryLocalWeather }: Props) {
   const [mode, setMode] = useState<'choose' | 'connect-tempest'>('choose');
   const [triedLocal, setTriedLocal] = useState(false);
   const [tryingLocal, setTryingLocal] = useState(false);
@@ -61,8 +63,9 @@ export default function WeatherSetupCard({ error, units, onConnected, onTryLocal
           lineHeight: 1.6,
         }}
       >
-        Connect a personal weather station for hyper-local readings, or use the local weather
-        service for your area.
+        {localWeather
+          ? 'Connect a personal weather station for hyper-local readings, or use the local weather service for your area.'
+          : 'Connect a personal weather station for hyper-local readings.'}
       </p>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
@@ -107,35 +110,37 @@ export default function WeatherSetupCard({ error, units, onConnected, onTryLocal
           ))}
         </div>
 
-        <div
-          style={cardSt}
-          role="button"
-          tabIndex={0}
-          onClick={handleTryLocal}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              handleTryLocal();
-            }
-          }}
-        >
+        {localWeather && (
           <div
-            style={{
-              fontFamily: 'var(--font-ui)',
-              fontSize: 14,
-              fontWeight: 600,
-              color: 'var(--c-text)',
+            style={cardSt}
+            role="button"
+            tabIndex={0}
+            onClick={handleTryLocal}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleTryLocal();
+              }
             }}
           >
-            {tryingLocal ? 'Checking…' : 'Use local weather'}
+            <div
+              style={{
+                fontFamily: 'var(--font-ui)',
+                fontSize: 14,
+                fontWeight: 600,
+                color: 'var(--c-text)',
+              }}
+            >
+              {tryingLocal ? 'Checking…' : 'Use local weather'}
+            </div>
+            <p style={{ margin: '4px 0 0', fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-text-2)' }}>
+              Use publicly available weather data for your garden's location.
+            </p>
           </div>
-          <p style={{ margin: '4px 0 0', fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-text-2)' }}>
-            Use publicly available weather data for your garden's location.
-          </p>
-        </div>
+        )}
       </div>
 
-      {triedLocal && error === 'location_not_set' && (
+      {localWeather && triedLocal && error === 'location_not_set' && (
         <p style={{ marginTop: 'var(--sp-4)', fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--c-warning)' }}>
           Set your location first — visit{' '}
           <Link to="/account" className="m-own-line" style={{ color: 'var(--c-primary)' }}>

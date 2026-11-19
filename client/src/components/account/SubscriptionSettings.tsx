@@ -11,6 +11,8 @@ import { useAuth } from '../../context/AuthContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { OUTSIDE_US, residenceName } from '../../lib/usStates';
 import ResidenceStateForm from '../lifetime/ResidenceStateForm';
+import { useConfig } from '../../context/ConfigContext';
+import { ALL_FEATURES_ON } from '../../lib/selfHostCopy';
 
 const SUPPORTER_FEATURES = [
   'Soil readings — track pH and nutrients per bed over time',
@@ -440,7 +442,37 @@ function BetaView() {
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 
+function SubscriptionHeading() {
+  return (
+    <h2
+      style={{
+        margin: '0 0 var(--sp-4)',
+        fontFamily: 'var(--font-display)',
+        fontSize: 20,
+        color: 'var(--c-text)',
+      }}
+    >
+      Subscription
+    </h2>
+  );
+}
+
+// With billing off there is nothing to load or buy, so the body below (and its
+// GET /api/subscription) is never mounted.
 export default function SubscriptionSettings() {
+  const { billing } = useConfig();
+  if (!billing) {
+    return (
+      <section>
+        <SubscriptionHeading />
+        <p style={bodyTextSt}>{ALL_FEATURES_ON}</p>
+      </section>
+    );
+  }
+  return <BillingSubscription />;
+}
+
+function BillingSubscription() {
   const { data, loading, error, reload } = useSubscription();
   const [searchParams] = useSearchParams();
   const subscribed = searchParams.get('subscribed') === 'true';
@@ -465,16 +497,7 @@ export default function SubscriptionSettings() {
 
   return (
     <section>
-      <h2
-        style={{
-          margin: '0 0 var(--sp-4)',
-          fontFamily: 'var(--font-display)',
-          fontSize: 20,
-          color: 'var(--c-text)',
-        }}
-      >
-        Subscription
-      </h2>
+      <SubscriptionHeading />
 
       {subscribed && data && (
         <div

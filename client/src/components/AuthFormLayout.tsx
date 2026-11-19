@@ -1,6 +1,7 @@
 import { ReactNode, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { googleSignInHref } from '../lib/googleSignIn';
+import { useConfig } from '../context/ConfigContext';
 
 const GoogleG = () => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -30,10 +31,17 @@ export default function AuthFormLayout({
   children,
 }: Props) {
   const googleHref = googleSignInHref(returnTo);
+  const { googleSignIn } = useConfig();
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (focusHeading) headingRef.current?.focus();
-  }, [focusHeading]);
+    if (focusHeading) {
+      headingRef.current?.focus();
+    } else if (!googleSignIn) {
+      // No Google button to lead the page: start on the email field, if this step has one.
+      bodyRef.current?.querySelector<HTMLInputElement>('input[type="email"]')?.focus();
+    }
+  }, [focusHeading, googleSignIn]);
 
   return (
     <div style={{
@@ -44,7 +52,7 @@ export default function AuthFormLayout({
       background: '#f5f5f0',
       padding: '1rem',
     }}>
-      <div style={{
+      <div ref={bodyRef} style={{
         background: '#fff',
         borderRadius: '12px',
         padding: '2.5rem',
@@ -61,33 +69,35 @@ export default function AuthFormLayout({
 
         {signInOptions && (
           <>
-            <a
-              href={googleHref}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '0.5rem',
-                width: '100%',
-                padding: '0.625rem 1rem',
-                border: '1px solid #d1d5db',
-                borderRadius: '6px',
-                background: '#fff',
-                color: '#374151',
-                fontSize: '0.9375rem',
-                fontWeight: 500,
-                textDecoration: 'none',
-                boxSizing: 'border-box',
-              }}
-            >
-              <GoogleG />
-              Continue with Google
-            </a>
+            {googleSignIn && (
+              <a
+                href={googleHref}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '0.5rem',
+                  width: '100%',
+                  padding: '0.625rem 1rem',
+                  border: '1px solid #d1d5db',
+                  borderRadius: '6px',
+                  background: '#fff',
+                  color: '#374151',
+                  fontSize: '0.9375rem',
+                  fontWeight: 500,
+                  textDecoration: 'none',
+                  boxSizing: 'border-box',
+                }}
+              >
+                <GoogleG />
+                Continue with Google
+              </a>
+            )}
 
             <p
               data-testid="auth-legal-notice"
               style={{
-                margin: '0.75rem 0 0',
+                margin: googleSignIn ? '0.75rem 0 0' : '0.75rem 0 1.25rem',
                 fontSize: '0.75rem',
                 lineHeight: 1.5,
                 color: '#9ca3af',
@@ -100,18 +110,20 @@ export default function AuthFormLayout({
               <Link to="/privacy" style={{ color: '#4f7c3f', fontWeight: 500 }}>Privacy Policy</Link>.
             </p>
 
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.75rem',
-              margin: '1.25rem 0',
-              color: '#9ca3af',
-              fontSize: '0.875rem',
-            }}>
-              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-              or
-              <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
-            </div>
+            {googleSignIn && (
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                margin: '1.25rem 0',
+                color: '#9ca3af',
+                fontSize: '0.875rem',
+              }}>
+                <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+                or
+                <div style={{ flex: 1, height: '1px', background: '#e5e7eb' }} />
+              </div>
+            )}
           </>
         )}
 
