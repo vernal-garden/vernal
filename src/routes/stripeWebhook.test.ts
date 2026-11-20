@@ -30,6 +30,26 @@ const signer = new Stripe(process.env.STRIPE_SECRET_KEY!);
 const retrieveSub = vi.spyOn(appStripe.subscriptions, 'retrieve');
 const cancelSub = vi.spyOn(appStripe.subscriptions, 'cancel');
 const listSubs = vi.spyOn(appStripe.subscriptions, 'list');
+const retrievePi = vi.spyOn(appStripe.paymentIntents, 'retrieve');
+const listInvoicePayments = vi.spyOn(appStripe.invoicePayments, 'list');
+const createRefund = vi.spyOn(appStripe.refunds, 'create');
+
+// A payment intent whose latest charge was paid by a card from `country`.
+function intent(country: string | null) {
+  return {
+    id: 'pi_card',
+    object: 'payment_intent',
+    latest_charge: { id: 'ch_card', object: 'charge', payment_method_details: { card: { country } } },
+  };
+}
+
+function invoicePayments(paymentIntent: string) {
+  return {
+    data: [
+      { id: 'inpay_1', object: 'invoice_payment', status: 'paid', payment: { type: 'payment_intent', payment_intent: paymentIntent } },
+    ],
+  };
+}
 
 let seq = 0;
 
@@ -98,7 +118,7 @@ function sub(id: string, customer: string, status = 'active', overrides: Record<
 
 beforeAll(async () => {
   await pool.query(
-    'TRUNCATE accounts, guest_sessions, password_reset_tokens, stripe_events, owner_events RESTART IDENTITY CASCADE',
+    'TRUNCATE accounts, guest_sessions, password_reset_tokens, stripe_events, owner_events, checkout_country_checks RESTART IDENTITY CASCADE',
   );
 });
 beforeEach(() => {
@@ -108,6 +128,13 @@ beforeEach(() => {
   retrieveSub.mockRejectedValue(new Error('unexpected subscriptions.retrieve'));
   cancelSub.mockRejectedValue(new Error('unexpected subscriptions.cancel'));
   listSubs.mockResolvedValue({ data: [] } as never);
+  retrievePi.mockReset();
+  listInvoicePayments.mockReset();
+  createRefund.mockReset();
+  // Checkouts pass the country check (US card) unless a test says otherwise.
+  retrievePi.mockResolvedValue(intent('US') as never);
+  listInvoicePayments.mockResolvedValue(invoicePayments('pi_invoice') as never);
+  createRefund.mockRejectedValue(new Error('unexpected refunds.create'));
 });
 afterAll(() => pool.end());
 
@@ -278,6 +305,9 @@ function checkoutSession(customer: string, overrides: Record<string, unknown> = 
     payment_status: 'paid',
     customer,
     payment_intent: `pi_${seq}`,
+    invoice: `in_${seq}`,
+    // US-only checkout: a US billing address, and (by default) a US card.
+    customer_details: { address: { country: 'US' } },
     ...overrides,
   };
 }
@@ -522,7 +552,9 @@ describe.skipIf(!WEBHOOK_SECRET)('owner events and alerts', () => {
 
   it('a no_payment_required subscription checkout counts, with a zero amount', async () => {
     const account = await createAccount();
-    retrieveSub.mockResolvedValueOnce(sub('sub_start_5', account.customer) as never);
+    // Retrieved twice: by the country check (no default payment method, so the
+    // US address alone decides), then for the alert's interval.
+    retrieveSub.mockResolvedValue(sub('sub_start_5', account.customer) as never);
     const session = checkoutSession(account.customer, {
       mode: 'subscription',
       payment_status: 'no_payment_required',
@@ -776,5 +808,367 @@ describe.skipIf(!WEBHOOK_SECRET)('owner events and alerts', () => {
     expect(await kinds()).toEqual([]);
     await noAlert();
     await expectNoLeak(account, ['evt_ignored']);
+  });
+});
+
+describe.skipIf(!WEBHOOK_SECRET)('US-only checkout', () => {
+  const OWNER = 'owner-alerts@example.test';
+  const REFUNDED = 'Refunded: paid plans are US-only at launch.';
+  const CANCELLED = 'Cancelled: paid plans are US-only at launch.';
+  let warn: MockInstance;
+
+  beforeEach(async () => {
+    process.env.ALERT_EMAIL_TO = OWNER;
+    await pool.query('TRUNCATE owner_events, checkout_country_checks RESTART IDENTITY');
+    sendMailMock.mockClear();
+    warn = vi.spyOn(logger, 'warn');
+  });
+  afterEach(() => {
+    process.env.ALERT_EMAIL_TO = '';
+    warn.mockRestore();
+  });
+
+  async function checks() {
+    const { rows } = await pool.query<{ country: string | null; plan: string; check_kind: string }>(
+      'SELECT country, plan, check_kind FROM checkout_country_checks ORDER BY id',
+    );
+    return rows.map((r) => [r.country, r.plan, r.check_kind]);
+  }
+
+  async function kinds(): Promise<string[]> {
+    return (await pool.query<{ kind: string }>('SELECT kind FROM owner_events ORDER BY id')).rows.map((r) => r.kind);
+  }
+
+  function alerts(): { subject: string; text: string }[] {
+    return sendMailMock.mock.calls.filter(([m]) => m.to === OWNER).map(([m]) => m as { subject: string; text: string });
+  }
+
+  function lines(n: number): string[] {
+    return alerts()[0].text.split('\n\n').slice(0, n);
+  }
+
+  function lifetimeSession(customer: string, country: string, overrides: Record<string, unknown> = {}) {
+    return checkoutSession(customer, {
+      amount_total: 4000,
+      currency: 'usd',
+      customer_details: { address: { country } },
+      ...overrides,
+    });
+  }
+
+  function subscriptionSession(customer: string, subId: string, country: string, overrides: Record<string, unknown> = {}) {
+    return checkoutSession(customer, {
+      mode: 'subscription',
+      subscription: subId,
+      payment_intent: null,
+      amount_total: 500,
+      currency: 'usd',
+      customer_details: { address: { country } },
+      ...overrides,
+    });
+  }
+
+  // A no_payment_required subscription, with its default payment method expanded.
+  function freeSub(id: string, customer: string, cardCountry: string | null | undefined) {
+    const method = cardCountry === undefined ? null : { id: 'pm_1', object: 'payment_method', card: { country: cardCountry } };
+    return sub(id, customer, 'active', { default_payment_method: method });
+  }
+
+  it('a US address and US card: lifetime is granted, nothing refunded or recorded', async () => {
+    const { id, customer } = await createAccount();
+    const session = lifetimeSession(customer, 'US', { payment_intent: 'pi_us_1' });
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(retrievePi).toHaveBeenCalledWith('pi_us_1', { expand: ['latest_charge'] });
+    expect(createRefund).not.toHaveBeenCalled();
+    expect(await checks()).toEqual([]);
+    expect(await accountRow(id)).toMatchObject({ subscription_interval: 'lifetime', stripe_lifetime_payment_intent: 'pi_us_1' });
+  });
+
+  it('a US address and US card on a subscription: subscription_started, no refund or cancel', async () => {
+    const { customer } = await createAccount();
+    retrieveSub.mockResolvedValueOnce(sub('sub_us_1', customer) as never);
+    const session = subscriptionSession(customer, 'sub_us_1', 'US', { invoice: 'in_us_1' });
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(listInvoicePayments).toHaveBeenCalledWith({ invoice: 'in_us_1', limit: 10 });
+    expect(retrievePi).toHaveBeenCalledWith('pi_invoice', { expand: ['latest_charge'] });
+    expect(createRefund).not.toHaveBeenCalled();
+    expect(cancelSub).not.toHaveBeenCalled();
+    expect(await kinds()).toEqual(['subscription_started']);
+    expect(await checks()).toEqual([]);
+  });
+
+  it('a US territory counts as US', async () => {
+    const { id, customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('PR') as never);
+    await sendEvent('checkout.session.completed', lifetimeSession(customer, 'pr'));
+    expect((await accountRow(id)).subscription_interval).toBe('lifetime');
+    expect(await checks()).toEqual([]);
+  });
+
+  it('a GB card on a lifetime checkout is refunded, recorded and alerted, and grants nothing', async () => {
+    const { id, customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockResolvedValue({ id: 're_1' } as never);
+    const session = lifetimeSession(customer, 'US', { payment_intent: 'pi_gb_1' });
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(createRefund).toHaveBeenCalledTimes(1);
+    expect(createRefund).toHaveBeenCalledWith({ payment_intent: 'pi_gb_1' }, { idempotencyKey: `country-refund-${session.id}` });
+    expect(await accountRow(id)).toMatchObject({
+      subscription_tier: 'free',
+      subscription_interval: null,
+      stripe_lifetime_payment_intent: null,
+    });
+    expect(await checks()).toEqual([['GB', 'lifetime', 'card_country']]);
+    expect(await kinds()).toEqual([]);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(alerts()[0].subject).toBe('[Vernal app] Checkout refused: outside the US');
+    expect(lines(2)).toEqual(['Lifetime, GB, $40.00.', REFUNDED]);
+    expect(alerts()[0].text).toMatch(/Open users: \S+\/admin\/users$/);
+  });
+
+  it('a FR billing address with a US card is refused on the address', async () => {
+    const { id, customer } = await createAccount();
+    createRefund.mockResolvedValue({ id: 're_2' } as never);
+    const session = lifetimeSession(customer, 'FR', { payment_intent: 'pi_fr_1' });
+    await sendEvent('checkout.session.completed', session);
+    expect(createRefund).toHaveBeenCalledWith({ payment_intent: 'pi_fr_1' }, { idempotencyKey: `country-refund-${session.id}` });
+    expect(await checks()).toEqual([['FR', 'lifetime', 'billing_address']]);
+    expect((await accountRow(id)).subscription_tier).toBe('free');
+  });
+
+  it('the billing address wins when both the address and the card fail', async () => {
+    const { customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockResolvedValue({ id: 're_3' } as never);
+    await sendEvent('checkout.session.completed', lifetimeSession(customer, 'FR'));
+    expect(await checks()).toEqual([['FR', 'lifetime', 'billing_address']]);
+  });
+
+  it('a paid checkout with no card country fails closed', async () => {
+    const { id, customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent(null) as never);
+    createRefund.mockResolvedValue({ id: 're_4' } as never);
+    const session = lifetimeSession(customer, 'US');
+    await sendEvent('checkout.session.completed', session);
+    expect(createRefund).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('No card country on a paid checkout; refusing it', { sessionId: session.id });
+    expect(await checks()).toEqual([[null, 'lifetime', 'card_country']]);
+    expect((await accountRow(id)).subscription_tier).toBe('free');
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(lines(1)).toEqual(['Lifetime, country unknown, $40.00.']);
+  });
+
+  it('a charge Stripe has already refunded counts as refunded', async () => {
+    const { customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockRejectedValue(
+      new Stripe.errors.StripeInvalidRequestError({
+        type: 'invalid_request_error',
+        code: 'charge_already_refunded',
+        message: 'Charge has already been refunded.',
+      } as never),
+    );
+    expect((await sendEvent('checkout.session.completed', lifetimeSession(customer, 'US'))).status).toBe(200);
+    expect(await checks()).toEqual([['GB', 'lifetime', 'card_country']]);
+  });
+
+  it('any other refund error fails the event so Stripe retries it', async () => {
+    const { customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockRejectedValue(new Error('Stripe down'));
+    const res = await sendEvent('checkout.session.completed', lifetimeSession(customer, 'US'), 'evt_refund_fail');
+    expect(res.status).toBe(500);
+    expect(await checks()).toEqual([]);
+    const { rowCount } = await pool.query("SELECT 1 FROM stripe_events WHERE event_id = 'evt_refund_fail'");
+    expect(rowCount).toBe(0);
+  });
+
+  it('a GB card on a paid subscription refunds the invoice payment and cancels the subscription', async () => {
+    const { customer } = await createAccount();
+    listInvoicePayments.mockResolvedValue(invoicePayments('pi_sub_gb') as never);
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    retrieveSub.mockResolvedValue(sub('sub_gb_1', customer) as never);
+    cancelSub.mockResolvedValue(sub('sub_gb_1', customer, 'canceled') as never);
+    createRefund.mockResolvedValue({ id: 're_5' } as never);
+    const session = subscriptionSession(customer, 'sub_gb_1', 'US', { invoice: 'in_gb_1', metadata: { plan: 'annual' } });
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(listInvoicePayments).toHaveBeenCalledWith({ invoice: 'in_gb_1', limit: 10 });
+    expect(retrievePi).toHaveBeenCalledWith('pi_sub_gb', { expand: ['latest_charge'] });
+    expect(createRefund).toHaveBeenCalledWith({ payment_intent: 'pi_sub_gb' }, { idempotencyKey: `country-refund-${session.id}` });
+    expect(cancelSub).toHaveBeenCalledWith('sub_gb_1');
+    expect(await kinds()).toEqual([]);
+    expect(await checks()).toEqual([['GB', 'annual', 'card_country']]);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(lines(2)).toEqual(['Annual, GB, $5.00.', REFUNDED]);
+  });
+
+  it('prefers the paid invoice payment over an earlier failed attempt', async () => {
+    const { customer } = await createAccount();
+    listInvoicePayments.mockResolvedValue({
+      data: [
+        { id: 'inpay_a', status: 'canceled', payment: { type: 'payment_intent', payment_intent: 'pi_failed' } },
+        { id: 'inpay_b', status: 'paid', payment: { type: 'payment_intent', payment_intent: 'pi_good' } },
+      ],
+    } as never);
+    retrieveSub.mockResolvedValueOnce(sub('sub_pref_1', customer) as never);
+    await sendEvent('checkout.session.completed', subscriptionSession(customer, 'sub_pref_1', 'US'));
+    expect(retrievePi).toHaveBeenCalledWith('pi_good', { expand: ['latest_charge'] });
+    expect(await kinds()).toEqual(['subscription_started']);
+  });
+
+  it('a paid subscription with no payment found is cancelled and the alert asks for a manual refund', async () => {
+    const { customer } = await createAccount();
+    listInvoicePayments.mockResolvedValue({ data: [] } as never);
+    retrieveSub.mockResolvedValue(sub('sub_nopay', customer) as never);
+    cancelSub.mockResolvedValue(sub('sub_nopay', customer, 'canceled') as never);
+    const session = subscriptionSession(customer, 'sub_nopay', 'US');
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(cancelSub).toHaveBeenCalledWith('sub_nopay');
+    expect(createRefund).not.toHaveBeenCalled();
+    expect(await checks()).toEqual([[null, 'monthly', 'card_country']]);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(lines(2)).toEqual([
+      'Monthly, country unknown, $5.00.',
+      'Refund needed: no payment was found to refund automatically. Refund it in the Stripe dashboard.',
+    ]);
+    expect(alerts()[0].text).not.toContain('Refunded:');
+  });
+
+  it('a refused subscription whose created event landed first sets the account back to free', async () => {
+    const { id, customer } = await createAccount();
+    retrieveSub.mockResolvedValueOnce(sub('sub_first', customer) as never);
+    await sendEvent('customer.subscription.created', sub('sub_first', customer));
+    expect(await accountRow(id)).toMatchObject({ subscription_tier: 'supporter', stripe_subscription_id: 'sub_first' });
+
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    retrieveSub.mockResolvedValue(sub('sub_first', customer) as never);
+    cancelSub.mockResolvedValue(sub('sub_first', customer, 'canceled') as never);
+    createRefund.mockResolvedValue({ id: 're_6' } as never);
+    expect((await sendEvent('checkout.session.completed', subscriptionSession(customer, 'sub_first', 'US'))).status).toBe(200);
+    expect(cancelSub).toHaveBeenCalledWith('sub_first');
+    expect(await accountRow(id)).toMatchObject({ subscription_tier: 'free', stripe_subscription_id: null });
+    // No plan in the metadata: read from the subscription's price.
+    expect(await checks()).toEqual([['GB', 'monthly', 'card_country']]);
+
+    // The cancel's own deleted event leaves it free and counts nothing.
+    retrieveSub.mockResolvedValue(sub('sub_first', customer, 'canceled') as never);
+    await sendEvent('customer.subscription.deleted', sub('sub_first', customer, 'canceled'));
+    expect(await accountRow(id)).toMatchObject({ subscription_tier: 'free', stripe_subscription_id: null });
+    expect(await kinds()).toEqual([]);
+  });
+
+  it('a refused subscription whose created event lands later stays free', async () => {
+    const { id, customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    retrieveSub.mockResolvedValue(sub('sub_late', customer) as never);
+    cancelSub.mockResolvedValue(sub('sub_late', customer, 'canceled') as never);
+    createRefund.mockResolvedValue({ id: 're_7' } as never);
+    await sendEvent('checkout.session.completed', subscriptionSession(customer, 'sub_late', 'US'));
+    expect((await accountRow(id)).subscription_tier).toBe('free');
+
+    // planSubscription works from the live (cancelled) state.
+    retrieveSub.mockResolvedValue(sub('sub_late', customer, 'canceled') as never);
+    await sendEvent('customer.subscription.created', sub('sub_late', customer));
+    expect((await accountRow(id)).subscription_tier).toBe('free');
+  });
+
+  it('a refused subscription only resets the account holding that subscription', async () => {
+    const other = await createAccount({ tier: 'supporter', interval: 'monthly', subId: 'sub_keep_other' });
+    const { customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    retrieveSub.mockResolvedValue(sub('sub_refused_x', customer) as never);
+    cancelSub.mockResolvedValue(sub('sub_refused_x', customer, 'canceled') as never);
+    createRefund.mockResolvedValue({ id: 're_8' } as never);
+    await sendEvent('checkout.session.completed', subscriptionSession(customer, 'sub_refused_x', 'US'));
+    expect(await accountRow(other.id)).toMatchObject({ subscription_tier: 'supporter', stripe_subscription_id: 'sub_keep_other' });
+  });
+
+  it('no_payment_required with a GB default card: cancelled, not refunded, alerted', async () => {
+    const { customer } = await createAccount();
+    retrieveSub.mockResolvedValue(freeSub('sub_free_gb', customer, 'GB') as never);
+    cancelSub.mockResolvedValue(sub('sub_free_gb', customer, 'canceled') as never);
+    const session = subscriptionSession(customer, 'sub_free_gb', 'US', { payment_status: 'no_payment_required', amount_total: 0 });
+    expect((await sendEvent('checkout.session.completed', session)).status).toBe(200);
+    expect(retrieveSub).toHaveBeenCalledWith('sub_free_gb', { expand: ['default_payment_method'] });
+    expect(listInvoicePayments).not.toHaveBeenCalled();
+    expect(retrievePi).not.toHaveBeenCalled();
+    expect(createRefund).not.toHaveBeenCalled();
+    expect(cancelSub).toHaveBeenCalledWith('sub_free_gb');
+    expect(await kinds()).toEqual([]);
+    expect(await checks()).toEqual([['GB', 'monthly', 'card_country']]);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(lines(2)).toEqual(['Monthly, GB, $0.00.', CANCELLED]);
+  });
+
+  it('no_payment_required with no default card and a US address is allowed', async () => {
+    const { customer } = await createAccount();
+    retrieveSub.mockResolvedValue(freeSub('sub_free_us', customer, undefined) as never);
+    const session = subscriptionSession(customer, 'sub_free_us', 'US', { payment_status: 'no_payment_required', amount_total: 0 });
+    await sendEvent('checkout.session.completed', session);
+    expect(cancelSub).not.toHaveBeenCalled();
+    expect(createRefund).not.toHaveBeenCalled();
+    expect(await kinds()).toEqual(['subscription_started']);
+    expect(await checks()).toEqual([]);
+  });
+
+  it('no_payment_required with no default card and a FR address is cancelled on the address', async () => {
+    const { customer } = await createAccount();
+    retrieveSub.mockResolvedValue(freeSub('sub_free_fr', customer, undefined) as never);
+    cancelSub.mockResolvedValue(sub('sub_free_fr', customer, 'canceled') as never);
+    const session = subscriptionSession(customer, 'sub_free_fr', 'FR', { payment_status: 'no_payment_required', amount_total: 0 });
+    await sendEvent('checkout.session.completed', session);
+    expect(cancelSub).toHaveBeenCalledWith('sub_free_fr');
+    expect(createRefund).not.toHaveBeenCalled();
+    expect(await checks()).toEqual([['FR', 'monthly', 'billing_address']]);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    expect(lines(2)).toEqual(['Monthly, FR, $0.00.', CANCELLED]);
+  });
+
+  it('a delayed lifetime payment from outside the US is refused too', async () => {
+    const { id, customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockResolvedValue({ id: 're_9' } as never);
+    await sendEvent('checkout.session.async_payment_succeeded', lifetimeSession(customer, 'US'));
+    expect(createRefund).toHaveBeenCalledTimes(1);
+    expect((await accountRow(id)).subscription_tier).toBe('free');
+    expect(await checks()).toEqual([['GB', 'lifetime', 'card_country']]);
+  });
+
+  it('the same refused event delivered twice refunds, records and alerts once', async () => {
+    const { customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockResolvedValue({ id: 're_10' } as never);
+    const session = lifetimeSession(customer, 'US');
+    expect((await sendEvent('checkout.session.completed', session, 'evt_refused_twice')).status).toBe(200);
+    expect((await sendEvent('checkout.session.completed', session, 'evt_refused_twice')).status).toBe(200);
+    expect(createRefund).toHaveBeenCalledTimes(1);
+    expect(await checks()).toEqual([['GB', 'lifetime', 'card_country']]);
+    await vi.waitFor(() => expect(alerts()).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(alerts()).toHaveLength(1);
+  });
+
+  it('a refused lifetime purchase does not cancel the live subscription', async () => {
+    const { id, customer } = await createAccount({ tier: 'supporter', interval: 'monthly', subId: 'sub_live_keep' });
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockResolvedValue({ id: 're_11' } as never);
+    expect((await sendEvent('checkout.session.completed', lifetimeSession(customer, 'US'))).status).toBe(200);
+    expect(cancelSub).not.toHaveBeenCalled();
+    expect(retrieveSub).not.toHaveBeenCalled();
+    expect(await accountRow(id)).toMatchObject({
+      subscription_tier: 'supporter',
+      subscription_interval: 'monthly',
+      stripe_subscription_id: 'sub_live_keep',
+    });
+  });
+
+  it('the refund then arriving as charge.refunded changes nothing on a refused lifetime purchase', async () => {
+    const { id, customer } = await createAccount();
+    retrievePi.mockResolvedValue(intent('GB') as never);
+    createRefund.mockResolvedValue({ id: 're_12' } as never);
+    await sendEvent('checkout.session.completed', lifetimeSession(customer, 'US', { payment_intent: 'pi_refused_life' }));
+    await sendEvent('charge.refunded', { id: 'ch_refused', object: 'charge', refunded: true, payment_intent: 'pi_refused_life' });
+    expect(await accountRow(id)).toMatchObject({ subscription_tier: 'free', stripe_lifetime_payment_intent: null });
+    expect(await kinds()).toEqual([]);
   });
 });
