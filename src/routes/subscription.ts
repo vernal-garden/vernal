@@ -6,7 +6,6 @@ import { logger } from '../lib/logger';
 import { getStripe } from '../lib/stripe';
 import { getServerConfig } from '../lib/serverConfig';
 import { effectiveTier } from '../lib/tier';
-import { checkoutAllowed, recordCountryCheck } from '../lib/checkoutCountry';
 import { getBetaSettings, betaAccessApplies } from '../lib/beta';
 import { requireAuth } from '../middleware/auth';
 import { checkoutLimiter } from '../middleware/rateLimiters';
@@ -89,15 +88,9 @@ router.get('/', async (req, res) => {
 
 // POST /api/subscription/checkout
 router.post('/checkout', requireBilling, checkoutLimiter, async (req, res) => {
-  const { interval, billingCountry } = req.body as { interval?: unknown; billingCountry?: unknown };
+  const { interval } = req.body as { interval?: unknown };
   if (interval !== 'monthly' && interval !== 'annual' && interval !== 'lifetime') {
     return res.status(400).json({ error: 'interval must be monthly, annual, or lifetime' });
-  }
-  const country = typeof billingCountry === 'string' ? billingCountry.trim().toUpperCase() : '';
-  if (!/^[A-Z]{2}$/.test(country)) {
-    return res
-      .status(400)
-      .json({ error: 'Choose the country of your billing address.', code: 'country_required' });
   }
 
   const mode: Stripe.Checkout.SessionCreateParams.Mode =
@@ -105,14 +98,6 @@ router.post('/checkout', requireBilling, checkoutLimiter, async (req, res) => {
   const accountId = req.session!.account!.id;
 
   try {
-    // Paid plans are US-only for now; refuse before any account or Stripe work.
-    if (!checkoutAllowed(country)) {
-      await recordCountryCheck({ country, plan: interval, kind: 'before_checkout' });
-      return res
-        .status(403)
-        .json({ error: 'Paid plans are available in the US only for now.', code: 'country_not_supported' });
-    }
-
     const { rows } = await db.query<{
       email: string;
       display_name: string | null;
@@ -197,8 +182,7 @@ router.post('/checkout', requireBilling, checkoutLimiter, async (req, res) => {
       customer_update: { address: 'auto', name: 'auto' },
       success_url: process.env.STRIPE_SUCCESS_URL!,
       cancel_url: process.env.STRIPE_CANCEL_URL!,
-      payment_method_types: ['card'],
-      metadata: { accountId: String(accountId), plan: interval },
+      metadata: { accountId: String(accountId) },
       ...(mode === 'subscription'
         ? { subscription_data: { metadata: { accountId: String(accountId) } } }
         : {}),
