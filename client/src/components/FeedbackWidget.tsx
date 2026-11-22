@@ -3,6 +3,7 @@ import * as api from '../lib/api';
 import { ApiError } from '../lib/api';
 import { useCanvasMounted } from '../context/CanvasPresenceContext';
 import router from '../routes';
+import { getFeedbackOpener, onOpenFeedbackPanel } from '../lib/feedbackPanel';
 
 // Persistent feedback widget — surface 3.1 of the Feedback Pipeline spec.
 
@@ -40,6 +41,7 @@ function sourceSurfaceFor(pathname: string): string {
   if (pathname === '/account' || pathname.startsWith('/account/')) return 'account_settings';
   if (pathname === '/gardens') return 'my_gardens';
   if (pathname === '/weather') return 'weather';
+  if (pathname === '/about') return 'about';
   if (/^\/garden\/[^/]+\/soil$/.test(pathname)) return 'soil';
   if (/^\/garden\/[^/]+\/amendments$/.test(pathname)) return 'amendments';
   return 'other';
@@ -107,6 +109,9 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
 
   const rootRef = useRef<HTMLDivElement>(null);
   const fabRef = useRef<HTMLButtonElement>(null);
+  const firstChipRef = useRef<HTMLButtonElement>(null);
+  // Where focus goes back to on Escape / Close: the FAB, or the control that opened us.
+  const openerRef = useRef<HTMLElement | null>(null);
   const closeTimer = useRef<number | undefined>(undefined);
 
   const hidden = HIDDEN_PATHS.has(pathname);
@@ -122,13 +127,31 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
     }
   }
 
+  function restoreFocus() {
+    const opener = openerRef.current;
+    if (opener && opener.isConnected) opener.focus();
+    else fabRef.current?.focus();
+  }
+
+  // Other surfaces (e.g. the About page) can open the panel. Already open: no-op.
+  useEffect(() => onOpenFeedbackPanel(() => {
+    if (open) return;
+    openerRef.current = getFeedbackOpener();
+    setOpen(true);
+  }), [open]);
+
+  // Opening by either route moves focus into the panel.
+  useEffect(() => {
+    if (open) firstChipRef.current?.focus();
+  }, [open]);
+
   // Escape and click-outside both dismiss without submitting.
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         close();
-        fabRef.current?.focus();
+        restoreFocus();
       }
     }
     function onPointer(e: PointerEvent) {
@@ -220,7 +243,7 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
             <button
               type="button"
               aria-label="Close"
-              onClick={() => { close(); fabRef.current?.focus(); }}
+              onClick={() => { close(); restoreFocus(); }}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer',
                 color: 'var(--c-text-3)', fontSize: 20, lineHeight: 1,
@@ -244,11 +267,12 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
           ) : (
             <>
               <div role="radiogroup" aria-label="Category" style={{ display: 'flex', gap: 'var(--sp-2)' }}>
-                {CHIPS.map((chip) => {
+                {CHIPS.map((chip, i) => {
                   const selected = category === chip.value;
                   return (
                     <button
                       key={chip.value}
+                      ref={i === 0 ? firstChipRef : undefined}
                       type="button"
                       role="radio"
                       aria-checked={selected}
@@ -337,7 +361,13 @@ export default function FeedbackWidget({ bottomOffset = 0 }: Props) {
         type="button"
         aria-label="Send feedback"
         aria-expanded={open}
-        onClick={() => (open ? close() : setOpen(true))}
+        onClick={() => {
+          if (open) close();
+          else {
+            openerRef.current = fabRef.current;
+            setOpen(true);
+          }
+        }}
         style={{
           position: 'fixed',
           bottom: fabBottom,

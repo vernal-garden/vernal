@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import WeatherCredit from '../components/weather/WeatherCredit';
 import { secondaryTextStyle } from '../components/metrics/styles';
+import { openFeedbackPanel } from '../lib/feedbackPanel';
 
 const REPO_URL = 'https://github.com/vernal-garden/vernal';
 
@@ -32,6 +33,16 @@ const linkStyle: CSSProperties = {
   fontSize: 14,
   fontWeight: 600,
   color: 'var(--c-primary)',
+};
+
+// A button that reads as one of the links above.
+const buttonLinkStyle: CSSProperties = {
+  ...linkStyle,
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  cursor: 'pointer',
+  textAlign: 'left',
 };
 
 function ExternalLink({ href, testId, children }: { href: string; testId: string; children: string }) {
@@ -88,10 +99,22 @@ export default function AboutPage() {
         </section>
 
         <section style={sectionStyle} aria-label="Feedback">
-          <ExternalLink href={`${REPO_URL}/issues`} testId="about-issues-link">
+          <button
+            type="button"
+            data-testid="about-feedback-button"
+            onClick={() => openFeedbackPanel()}
+            style={buttonLinkStyle}
+          >
             Report a bug or request a feature
-          </ExternalLink>
-          <p style={bodyStyle}>You can also use the feedback button in the corner of the screen.</p>
+          </button>
+          <p style={bodyStyle}>Opens the same feedback panel as the button in the corner.</p>
+          <p style={{ ...bodyStyle, ...secondaryTextStyle }}>
+            Contributors can also{' '}
+            <ExternalLink href={`${REPO_URL}/issues`} testId="about-issues-link">
+              file issues on GitHub
+            </ExternalLink>
+            .
+          </p>
         </section>
       </div>
     </div>
