@@ -629,6 +629,7 @@ router.get('/plant-options', async (req: Request, res: Response) => {
        LEFT JOIN cambium.seeds cs ON cs.id = p.cambium_seed_id
        WHERE (g.owner_id = $1 OR g.guest_session_id = $2)
          AND p.season = $3
+         AND p.state = 'growing'
          AND ($4::text IS NULL
               OR (CASE WHEN p.seed_id IS NOT NULL THEN s.common_name ELSE cs.common_name END) ILIKE $4 ESCAPE '\\'
               OR (CASE WHEN p.seed_id IS NOT NULL THEN s.scientific_name ELSE cs.scientific_name END) ILIKE $4 ESCAPE '\\')

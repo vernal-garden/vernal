@@ -6,7 +6,7 @@ import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
 import { isNumericId, textField } from '../lib/validation';
 import { LIMITS, withinCap } from '../lib/limits';
-import { currentSeason } from '../lib/season';
+import { currentSeason, isWritableSeason, nextSeason } from '../lib/season';
 import { storage, isStorageConfigError } from '../lib/storage';
 import { mediaUrl, thumbnailKey } from '../lib/media';
 import { queueR2Deletions, queueDeletedGardens, drainSoon } from '../lib/r2Cleanup';
@@ -128,6 +128,7 @@ function inCoordRange(n: number): boolean {
 
 const GARDEN_CAP_ERROR = `You can have up to ${LIMITS.gardensPerAccount} gardens.`;
 const BED_CAP_ERROR = `A garden can have up to ${LIMITS.bedsPerGarden} beds.`;
+const SEASON_TOO_FAR_ERROR = 'That season is too far ahead to plan';
 
 function validateSeason(v: unknown): { value: number } | { error: string } {
   const n = typeof v === 'string' ? parseInt(v, 10) : v;
@@ -199,7 +200,8 @@ router.get('/', async (req, res) => {
     const result = await db.query<GardenListRow>(
       `SELECT ${GARDEN_SELECT},
         (SELECT COALESCE(SUM(p.quantity), 0)::int FROM plantings p
-         WHERE p.garden_id = gardens.id AND p.season = $3)
+         WHERE p.garden_id = gardens.id AND p.season = $3
+           AND p.state = 'growing')
          AS active_planting_count
        FROM gardens
        WHERE (owner_id = $1 OR guest_session_id = $2)
@@ -542,6 +544,7 @@ router.get('/:id/seasons', async (req, res) => {
     );
     res.json({
       currentSeason: currentSeason(),
+      nextSeason: nextSeason(),
       layoutSeasons: result.rows.map(r => r.season),
     });
   } catch (err) {
@@ -714,6 +717,9 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
     } else {
       season = currentSeason();
     }
+    if (!isWritableSeason(season)) {
+      return res.status(400).json({ error: SEASON_TOO_FAR_ERROR });
+    }
 
     const labelStr = typeof label === 'string' ? label.trim() : '';
     if (labelStr.length > 255) {
@@ -790,7 +796,8 @@ router.post('/:gardenId/beds', writeLimiter, async (req, res) => {
 
 // POST /api/gardens/:gardenId/beds/carry-forward
 // Copies a past season's bed layout (geometry + labels, no plantings) into the
-// current season. Only allowed while the current season has no beds.
+// current season, or into next season when toSeason says so. Only allowed
+// while the target season has no beds.
 router.post('/:gardenId/beds/carry-forward', writeLimiter, async (req, res) => {
   const accountId = req.session!.account?.id ?? null;
   const sessionId = req.session!.id;
@@ -798,16 +805,32 @@ router.post('/:gardenId/beds/carry-forward', writeLimiter, async (req, res) => {
 
   if (!isNumericId(gardenId)) return res.status(400).json({ error: 'Invalid id' });
 
-  const season = currentSeason();
-  const { fromSeason: rawFromSeason } = (req.body ?? {}) as Record<string, unknown>;
+  const { fromSeason: rawFromSeason, toSeason: rawToSeason } = (req.body ?? {}) as Record<
+    string,
+    unknown
+  >;
   const parsedFrom = validateSeason(rawFromSeason);
   if ('error' in parsedFrom) {
     return res.status(400).json({ error: parsedFrom.error.replace(/^season/, 'fromSeason') });
   }
   const fromSeason = parsedFrom.value;
+
+  let season = currentSeason();
+  if (rawToSeason !== undefined) {
+    const parsedTo = validateSeason(rawToSeason);
+    if ('error' in parsedTo) {
+      return res.status(400).json({ error: parsedTo.error.replace(/^season/, 'toSeason') });
+    }
+    season = parsedTo.value;
+    if (season !== currentSeason() && season !== nextSeason()) {
+      return res.status(400).json({
+        error: `toSeason must be the current season (${currentSeason()}) or next season (${nextSeason()})`,
+      });
+    }
+  }
   if (fromSeason >= season) {
     return res.status(400).json({
-      error: `fromSeason must be before the current season (${season})`,
+      error: `fromSeason must be before toSeason (${season})`,
     });
   }
 
@@ -903,12 +926,16 @@ router.patch('/:gardenId/beds/:bedId', writeLimiter, async (req, res) => {
       type: 'grid' | 'freeform';
       grid_cols: number | null;
       grid_rows: number | null;
+      season: number;
     }>(
-      'SELECT id::text, type, grid_cols, grid_rows FROM beds WHERE id = $1 AND garden_id = $2',
+      'SELECT id::text, type, grid_cols, grid_rows, season FROM beds WHERE id = $1 AND garden_id = $2',
       [bedId, gardenId],
     );
     if (bedResult.rows.length === 0) {
       return res.status(404).json({ error: 'Bed not found' });
+    }
+    if (!isWritableSeason(bedResult.rows[0].season)) {
+      return res.status(400).json({ error: SEASON_TOO_FAR_ERROR });
     }
     const currentType = bedResult.rows[0].type;
     const storedGrid = { cols: bedResult.rows[0].grid_cols, rows: bedResult.rows[0].grid_rows };

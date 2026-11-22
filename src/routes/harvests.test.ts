@@ -722,6 +722,25 @@ describe('Plant options', () => {
   });
 });
 
+describe('Plant options and planned plantings', () => {
+  it('a planned planting does not make its seed a planted option', async () => {
+    const guest = await guestAgent();
+    const gardenId = await createGarden(guest);
+    const bedId = await createBed(gardenId);
+    await pool.query(
+      `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, state)
+       VALUES ($1, $2, $3, $4, 'planned')`,
+      [bedId, gardenId, SEASON, peaId],
+    );
+    await plant(bedId, gardenId, { cambiumSeedId: tomatoId });
+    const res = await guest.get('/api/harvests/plant-options');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([
+      expect.objectContaining({ cambiumSeedId: String(tomatoId), source: 'planted' }),
+    ]);
+  });
+});
+
 // ── Photos ────────────────────────────────────────────────────────────────────
 
 describe('Photos', () => {

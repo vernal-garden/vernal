@@ -52,6 +52,15 @@ let freeformPlantingId: string;
 
 const CURRENT_YEAR = currentSeason();
 
+// When a sowing event is marked done for a planting date: noon Pacific that day.
+async function noonPacific(date: string): Promise<string> {
+  const { rows } = await pool.query<{ t: Date }>(
+    `SELECT ($1::date + time '12:00') AT TIME ZONE 'America/Los_Angeles' AS t`,
+    [date],
+  );
+  return rows[0].t.toISOString();
+}
+
 beforeAll(async () => {
   await resetDb();
 
@@ -1165,14 +1174,6 @@ describe('Phase 70: growth from placement', () => {
     return rows;
   }
 
-  async function noonPacific(date: string): Promise<string> {
-    const { rows } = await pool.query<{ t: Date }>(
-      `SELECT ($1::date + time '12:00') AT TIME ZONE 'America/Los_Angeles' AS t`,
-      [date],
-    );
-    return rows[0].t.toISOString();
-  }
-
   beforeAll(async () => {
     await createUser('planting-p70@example.com');
     p70Agent = await loginAgent('planting-p70@example.com');
@@ -1243,6 +1244,24 @@ describe('Phase 70: growth from placement', () => {
     expect(res.body.growth).toMatchObject({ stage: 5, stagePct: 100, harvestReady: true });
     // The sowing event follows the new date.
     expect((await sowingEvents(seed))[0].marked_done_at?.toISOString()).toBe(await noonPacific(date));
+  });
+
+  it('PATCH a growing planting: previous-year date → 200 and stored; two years before → 400 and unchanged', async () => {
+    const seed = await timedSeed();
+    const placed = await p70Agent.post(url()).send({ cambiumSeedId: seed, cell: { x: 3, y: 6 } });
+    expect(placed.status).toBe(201);
+    const season = placed.body.season as number;
+    const ok = `${season - 1}-12-11`;
+    const good = await p70Agent.patch(`/api/plantings/${placed.body.id}`).send({ plantingDate: ok });
+    expect(good.status).toBe(200);
+    expect(good.body.plantingDate).toBe(ok);
+    const bad = await p70Agent.patch(`/api/plantings/${placed.body.id}`).send({ plantingDate: `${season - 2}-12-11` });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toBe("plantingDate must fall in the planting's season or the year before it");
+    const { rows } = await pool.query<{ d: string }>(
+      'SELECT planting_date::text AS d FROM plantings WHERE id = $1', [placed.body.id],
+    );
+    expect(rows[0].d).toBe(ok);
   });
 
   it('PATCH startMethod re-derives the stage', async () => {
@@ -1361,6 +1380,312 @@ describe('Phase 70: growth from placement', () => {
     } finally {
       await pool.query('DROP TRIGGER IF EXISTS p70_fail_sync ON sowing_events');
       await pool.query('DROP FUNCTION IF EXISTS p70_fail_sync()');
+    }
+  });
+});
+
+// ── Phase 76: planned plantings and mark-started ─────────────────────────────
+
+describe('Phase 76: planned plantings', () => {
+  // Its own account, so these writes don't run into another suite's write limit.
+  let p76Agent: ReturnType<typeof request.agent>;
+  let p76GardenId: string;
+  let currentBedId: string;
+  let nextBedId: string;
+  let farBedId: string;
+  let seedCounter = 0;
+  const NEXT_YEAR = CURRENT_YEAR + 1;
+  const bedUrl = (bed: string) => `/api/gardens/${p76GardenId}/beds/${bed}/plantings`;
+  const startUrl = () => `/api/gardens/${p76GardenId}/plantings/start`;
+
+  async function timedSeed(maturityDays = 60): Promise<number> {
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source, maturity_days_min, maturity_days_max)
+       VALUES ($1, 'active', 'editorial', $2, $2) RETURNING id`,
+      [`P76 Plant ${++seedCounter}`, maturityDays],
+    );
+    return rows[0].id;
+  }
+
+  async function gridBed(season: number): Promise<string> {
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO beds (garden_id, season, type, label, grid_x, grid_y, grid_cols, grid_rows)
+       VALUES ($1, $2, 'grid', 'P76 Bed', 0, 0, 8, 8) RETURNING id::text`,
+      [p76GardenId, season],
+    );
+    return rows[0].id;
+  }
+
+  async function storedRow(id: string) {
+    const { rows } = await pool.query<{ state: string; planting_date: string | null; start_method: string }>(
+      'SELECT state, planting_date::text, start_method FROM plantings WHERE id = $1',
+      [id],
+    );
+    return rows[0];
+  }
+
+  beforeAll(async () => {
+    await createUser('planting-p76@example.com');
+    p76Agent = await loginAgent('planting-p76@example.com');
+    const garden = await p76Agent.post('/api/gardens').send({
+      name: 'P76 Garden', style: 'grid', zone: '7b', growingMethod: 'in_ground',
+    });
+    p76GardenId = garden.body.id;
+    currentBedId = await gridBed(CURRENT_YEAR);
+    nextBedId = await gridBed(NEXT_YEAR);
+    farBedId = await gridBed(CURRENT_YEAR + 2);
+  });
+
+  it('a growing POST returns state growing', async () => {
+    const seed = await timedSeed();
+    const res = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seed, cell: { x: 7, y: 7 } });
+    expect(res.status).toBe(201);
+    expect(res.body.state).toBe('growing');
+    expect(res.body.plantingDate).toBe(todayPacific());
+  });
+
+  it('POST planned stores a null date and returns a null stage', async () => {
+    const seed = await timedSeed();
+    const res = await p76Agent.post(bedUrl(currentBedId)).send({
+      cambiumSeedId: seed, cell: { x: 0, y: 0 }, state: 'planned', startMethod: 'transplanted',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.state).toBe('planned');
+    expect(res.body.plantingDate).toBeNull();
+    expect(res.body.startMethod).toBe('transplanted');
+    expect(res.body.growth.stage).toBeNull();
+    expect(res.body.growth.harvestReady).toBe(false);
+    expect(await storedRow(res.body.id)).toEqual({
+      state: 'planned', planting_date: null, start_method: 'transplanted',
+    });
+    // GET reads the same.
+    const list = await p76Agent.get(`/api/gardens/${p76GardenId}/plantings`);
+    const found = list.body.data.find((p: { id: string }) => p.id === res.body.id);
+    expect(found.state).toBe('planned');
+    expect(found.plantingDate).toBeNull();
+  });
+
+  it('POST into next season forces planned even if growing is sent', async () => {
+    const seed = await timedSeed();
+    const res = await p76Agent.post(bedUrl(nextBedId)).send({
+      cambiumSeedId: seed, cell: { x: 0, y: 0 }, state: 'growing',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.season).toBe(NEXT_YEAR);
+    expect(res.body.state).toBe('planned');
+    expect(res.body.plantingDate).toBeNull();
+    expect((await storedRow(res.body.id)).state).toBe('planned');
+  });
+
+  it("POST into next season with today's plantingDate stores NULL and returns state planned", async () => {
+    const seed = await timedSeed();
+    const res = await p76Agent.post(bedUrl(nextBedId)).send({
+      cambiumSeedId: seed, cell: { x: 1, y: 0 }, plantingDate: todayPacific(),
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.state).toBe('planned');
+    expect(res.body.plantingDate).toBeNull();
+    expect((await storedRow(res.body.id)).planting_date).toBeNull();
+    // A malformed date on a planned planting is ignored too.
+    const malformed = await p76Agent.post(bedUrl(currentBedId)).send({
+      cambiumSeedId: seed, cell: { x: 1, y: 0 }, state: 'planned', plantingDate: 'soon',
+    });
+    expect(malformed.status).toBe(201);
+    expect(malformed.body.plantingDate).toBeNull();
+  });
+
+  it('POST growing with a plantingDate two years before the bed season → 400, no row', async () => {
+    const seed = await timedSeed();
+    const res = await p76Agent.post(bedUrl(currentBedId)).send({
+      cambiumSeedId: seed, cell: { x: 6, y: 6 }, plantingDate: `${CURRENT_YEAR - 2}-12-11`,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("plantingDate must fall in the planting's season or the year before it");
+    const { rows } = await pool.query(
+      'SELECT id FROM plantings WHERE bed_id = $1 AND cell_x = 6 AND cell_y = 6',
+      [currentBedId],
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it('POST with an unknown state → 400, even into next season', async () => {
+    const seed = await timedSeed();
+    for (const bed of [currentBedId, nextBedId]) {
+      const res = await p76Agent.post(bedUrl(bed)).send({ cambiumSeedId: seed, cell: { x: 2, y: 0 }, state: 'dormant' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("state must be 'planned' or 'growing'");
+    }
+  });
+
+  it('POST into season current+2 → 400', async () => {
+    const seed = await timedSeed();
+    const res = await p76Agent.post(bedUrl(farBedId)).send({ cambiumSeedId: seed, cell: { x: 0, y: 0 } });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('That season is too far ahead to plan');
+  });
+
+  it('grid drop of a planned plant onto a growing same plant → 409', async () => {
+    const seed = await timedSeed();
+    const growing = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seed, cell: { x: 3, y: 0 } });
+    expect(growing.status).toBe(201);
+    const res = await p76Agent.post(bedUrl(currentBedId)).send({
+      cambiumSeedId: seed, cell: { x: 3, y: 0 }, state: 'planned',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CELL_OCCUPIED');
+    expect(res.body.occupant.id).toBe(growing.body.id);
+    // Two planned plantings of the same plant still merge.
+    const a = await p76Agent.post(bedUrl(nextBedId)).send({ cambiumSeedId: seed, cell: { x: 3, y: 0 }, quantity: 2 });
+    const b = await p76Agent.post(bedUrl(nextBedId)).send({ cambiumSeedId: seed, cell: { x: 3, y: 0 }, quantity: 3 });
+    expect(b.status).toBe(200);
+    expect(b.body.merged).toBe(true);
+    expect(b.body.id).toBe(a.body.id);
+    expect(b.body.quantity).toBe(5);
+  });
+
+  it('PATCH plantingDate on a planned planting → 400; startMethod may change', async () => {
+    const seed = await timedSeed();
+    const placed = await p76Agent.post(bedUrl(nextBedId)).send({ cambiumSeedId: seed, cell: { x: 4, y: 0 } });
+    const dated = await p76Agent.patch(`/api/plantings/${placed.body.id}`).send({ plantingDate: `${NEXT_YEAR}-04-01` });
+    expect(dated.status).toBe(400);
+    expect(dated.body.error).toBe('Use mark-started to give a planned plant a date');
+    const method = await p76Agent.patch(`/api/plantings/${placed.body.id}`).send({ startMethod: 'transplanted' });
+    expect(method.status).toBe(200);
+    expect(method.body.state).toBe('planned');
+    expect(method.body.startMethod).toBe('transplanted');
+    expect(method.body.plantingDate).toBeNull();
+    expect(method.body.growth.stage).toBeNull();
+  });
+
+  it('/start marks two planned plantings growing, dates them, and the Guide event becomes done', async () => {
+    const seedA = await timedSeed();
+    const seedB = await timedSeed();
+    const a = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seedA, cell: { x: 0, y: 1 }, state: 'planned' });
+    const b = await p76Agent.post(bedUrl(currentBedId)).send({
+      cambiumSeedId: seedB, cell: { x: 1, y: 1 }, state: 'planned', startMethod: 'transplanted',
+    });
+    // Planned plantings don't sow: no done event yet.
+    const { rows: before } = await pool.query(
+      'SELECT 1 FROM sowing_events WHERE garden_id = $1 AND cambium_seed_id = $2 AND marked_done_at IS NOT NULL',
+      [p76GardenId, seedA],
+    );
+    expect(before).toHaveLength(0);
+
+    const today = todayPacific();
+    const sown = await p76Agent.post(startUrl()).send({
+      plantingIds: [a.body.id], startMethod: 'sown', plantingDate: today,
+    });
+    expect(sown.status).toBe(200);
+    expect(sown.body.data).toHaveLength(1);
+    expect(sown.body.data[0]).toMatchObject({ id: a.body.id, state: 'growing', plantingDate: today, startMethod: 'sown' });
+    expect(sown.body.data[0].growth.stage).toBe(1);
+
+    const transplanted = await p76Agent.post(startUrl()).send({
+      plantingIds: [Number(b.body.id)], startMethod: 'transplanted', plantingDate: today,
+    });
+    expect(transplanted.status).toBe(200);
+    expect(transplanted.body.data[0]).toMatchObject({ id: b.body.id, state: 'growing', plantingDate: today });
+    expect(transplanted.body.data[0].growth.stage).toBe(2);
+
+    expect(await storedRow(a.body.id)).toEqual({ state: 'growing', planting_date: today, start_method: 'sown' });
+    for (const seed of [seedA, seedB]) {
+      const { rows } = await pool.query<{ marked_done_at: Date | null }>(
+        'SELECT marked_done_at FROM sowing_events WHERE garden_id = $1 AND cambium_seed_id = $2 ORDER BY id',
+        [p76GardenId, seed],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].marked_done_at?.toISOString()).toBe(await noonPacific(today));
+    }
+  });
+
+  it('/start takes several plantings at once', async () => {
+    const seed = await timedSeed();
+    const a = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seed, cell: { x: 2, y: 1 }, state: 'planned' });
+    const b = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seed, cell: { x: 3, y: 1 }, state: 'planned' });
+    const res = await p76Agent.post(startUrl()).send({
+      plantingIds: [b.body.id, a.body.id, a.body.id], startMethod: 'sown', plantingDate: todayPacific(),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.data.map((p: { id: string }) => p.id).sort()).toEqual([a.body.id, b.body.id].sort());
+    expect(res.body.data.every((p: { state: string }) => p.state === 'growing')).toBe(true);
+  });
+
+  it('/start on a growing planting → 409 and changes nothing', async () => {
+    const seed = await timedSeed();
+    const planned = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seed, cell: { x: 4, y: 1 }, state: 'planned' });
+    const growing = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seed, cell: { x: 5, y: 1 } });
+    const res = await p76Agent.post(startUrl()).send({
+      plantingIds: [planned.body.id, growing.body.id], startMethod: 'sown', plantingDate: todayPacific(),
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Already in the ground');
+    expect((await storedRow(planned.body.id)).state).toBe('planned');
+  });
+
+  it("/start with a date outside the season's year → 400", async () => {
+    const seed = await timedSeed();
+    const planned = await p76Agent.post(bedUrl(currentBedId)).send({ cambiumSeedId: seed, cell: { x: 6, y: 1 }, state: 'planned' });
+    const res = await p76Agent.post(startUrl()).send({
+      plantingIds: [planned.body.id], startMethod: 'sown', plantingDate: `${NEXT_YEAR}-03-01`,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("plantingDate must fall in the planting's season or the year before it");
+    expect((await storedRow(planned.body.id)).state).toBe('planned');
+  });
+
+  // NEXT_YEAR is nextSeason(), so these stay writable whenever they run.
+  it('/start a next-season planting with a date in the year before → 200', async () => {
+    const seed = await timedSeed();
+    const planned = await p76Agent.post(bedUrl(nextBedId)).send({ cambiumSeedId: seed, cell: { x: 0, y: 5 }, state: 'planned' });
+    expect(planned.status).toBe(201);
+    const res = await p76Agent.post(startUrl()).send({
+      plantingIds: [planned.body.id], startMethod: 'sown', plantingDate: `${NEXT_YEAR - 1}-12-11`,
+    });
+    expect(res.status).toBe(200);
+    expect(await storedRow(planned.body.id)).toMatchObject({ state: 'growing', planting_date: `${NEXT_YEAR - 1}-12-11` });
+  });
+
+  it('/start a next-season planting with a date two years before → 400', async () => {
+    const seed = await timedSeed();
+    const planned = await p76Agent.post(bedUrl(nextBedId)).send({ cambiumSeedId: seed, cell: { x: 1, y: 5 }, state: 'planned' });
+    expect(planned.status).toBe(201);
+    const res = await p76Agent.post(startUrl()).send({
+      plantingIds: [planned.body.id], startMethod: 'sown', plantingDate: `${NEXT_YEAR - 2}-12-11`,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("plantingDate must fall in the planting's season or the year before it");
+    expect((await storedRow(planned.body.id)).state).toBe('planned');
+  });
+
+  it("/start with another garden's planting → 404", async () => {
+    const res = await p76Agent.post(startUrl()).send({
+      plantingIds: [gridPlantingId], startMethod: 'sown', plantingDate: todayPacific(),
+    });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Planting not found');
+    // Another session can't start plantings in this garden.
+    const other = await otherAgent.post(startUrl()).send({
+      plantingIds: [gridPlantingId], startMethod: 'sown', plantingDate: todayPacific(),
+    });
+    expect(other.status).toBe(404);
+  });
+
+  it('/start validates its body', async () => {
+    const today = todayPacific();
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ plantingIds: [], startMethod: 'sown', plantingDate: today }, 'plantingIds must be an array of 1 to 200 ids'],
+      [{ plantingIds: Array.from({ length: 201 }, (_, i) => i + 1), startMethod: 'sown', plantingDate: today },
+        'plantingIds must be an array of 1 to 200 ids'],
+      [{ plantingIds: [0], startMethod: 'sown', plantingDate: today }, 'plantingIds must contain positive integer ids'],
+      [{ plantingIds: [1], startMethod: 'cloned', plantingDate: today }, "startMethod must be 'sown' or 'transplanted'"],
+      [{ plantingIds: [1], startMethod: 'sown' }, 'plantingDate is required'],
+      [{ plantingIds: [1], startMethod: 'sown', plantingDate: '3/1' }, 'plantingDate must be a date string (YYYY-MM-DD)'],
+      [{ plantingIds: [1], startMethod: 'sown', plantingDate: `${CURRENT_YEAR}-02-30` }, 'plantingDate must be a real date'],
+    ];
+    for (const [body, error] of cases) {
+      const res = await p76Agent.post(startUrl()).send(body);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(error);
     }
   });
 });

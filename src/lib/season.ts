@@ -28,3 +28,14 @@ export function currentSeason(now: Date = new Date()): number {
 export function todayPacific(now: Date = new Date()): string {
   return DATE_FORMAT.format(now);
 }
+
+// The season after the current one: where planned plantings go.
+export function nextSeason(now: Date = new Date()): number {
+  return currentSeason(now) + 1;
+}
+
+// Seasons up to and including next season accept new plantings; earlier
+// seasons that are over still do, later ones do not.
+export function isWritableSeason(season: number, now: Date = new Date()): boolean {
+  return season <= nextSeason(now);
+}

@@ -5,10 +5,10 @@ import { logger } from '../lib/logger';
 import { LIMITS, withinCap } from '../lib/limits';
 import { requireSession } from '../middleware/auth';
 import { writeLimiter } from '../middleware/rateLimiters';
-import { isNumericId } from '../lib/validation';
-import { currentSeason, todayPacific } from '../lib/season';
+import { isNumericId, isRealDate } from '../lib/validation';
+import { currentSeason, isWritableSeason, seasonOf, todayPacific } from '../lib/season';
 import { UI_MAX_QUANTITY } from '../lib/plantingQuantity';
-import { lockSowingKey, syncSowingEvent, type SeedKey } from '../lib/sowingSync';
+import { lockSowingKey, seedKeyString, syncSowingEvent, type SeedKey } from '../lib/sowingSync';
 import { deriveGrowth } from '../jobs/nightly';
 import { recomputeHarvestableCount } from '../lib/gardenBadges';
 import { invalidateMetrics } from '../lib/metricsCache';
@@ -28,6 +28,9 @@ plantingsFlatRouter.use(requireSession);
 
 type StartMethod = 'sown' | 'transplanted';
 
+// A planned planting is in the plan but not in the ground yet: it has no date.
+type PlantingState = 'planned' | 'growing';
+
 interface PlantingRow {
   id: string;
   bed_id: string;
@@ -36,8 +39,9 @@ interface PlantingRow {
   seed_id: string | null;
   cambium_seed_id: string | null;
   quantity: number;
-  planting_date: string;
+  planting_date: string | null;
   start_method: StartMethod;
+  state: PlantingState;
   cell_x: number | null;
   cell_y: number | null;
   point_x: string | null;
@@ -77,17 +81,20 @@ interface PatchPlantingRow extends PlantingRow {
   grid_rows: number | null;
 }
 
-// planting_date is still nullable (a later release adds NOT NULL), and older
-// code may write NULL; such a planting reads as dated the Pacific day it was
-// created, as deriveGrowth and syncSowingEvent treat it.
+// A planned planting has no date. For a growing one, planting_date is still
+// nullable (a later release adds NOT NULL), and older code may write NULL; such
+// a planting reads as dated the Pacific day it was created, as deriveGrowth and
+// syncSowingEvent treat it.
 const PLANTING_DATE_SQL =
-  `COALESCE(p.planting_date, (p.created_at AT TIME ZONE 'America/Los_Angeles')::date)::text AS planting_date`;
+  `CASE WHEN p.state = 'planned' THEN NULL
+   ELSE COALESCE(p.planting_date, (p.created_at AT TIME ZONE 'America/Los_Angeles')::date)::text
+   END AS planting_date`;
 
 // Extended SELECT for GET handlers — includes companion resolution via JOINs.
 const PLANTING_GET_QUERY = `
   SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
     p.seed_id::text, p.cambium_seed_id::text,
-    p.quantity, ${PLANTING_DATE_SQL}, p.start_method,
+    p.quantity, ${PLANTING_DATE_SQL}, p.start_method, p.state,
     p.cell_x, p.cell_y, p.point_x, p.point_y,
     p.growth_stage_pct, p.growth_stage, p.displayed_growth_stage,
     p.harvest_ready, p.harvest_window_end,
@@ -112,6 +119,9 @@ const MAX_DISPLAYED_STAGE_IDS = 500;
 // Freeform point coordinates stay within the canvas bounds beds use.
 const MAX_COORD = 100000;
 
+// Upper bound on plantingIds per mark-started request.
+const MAX_START_IDS = 200;
+
 // ── Formatters ───────────────────────────────────────────────────────────────
 
 function formatPlanting(row: PlantingRow) {
@@ -125,6 +135,7 @@ function formatPlanting(row: PlantingRow) {
     quantity: row.quantity,
     plantingDate: row.planting_date,
     startMethod: row.start_method,
+    state: row.state,
     cell: row.cell_x !== null ? { x: row.cell_x, y: row.cell_y } : null,
     point: row.point_x !== null ? { x: Number(row.point_x), y: Number(row.point_y) } : null,
     growth: {
@@ -152,6 +163,7 @@ interface OccupantRow {
   seed_id: string | null;
   cambium_seed_id: string | null;
   quantity: number;
+  state: PlantingState;
   cambium_identity: string | null;
   common_name: string | null;
 }
@@ -245,8 +257,22 @@ function plantingDateError(v: unknown): string | null {
   return null;
 }
 
+const PLANTING_DATE_SEASON_ERROR =
+  "plantingDate must fall in the planting's season or the year before it";
+
+// A season's plants may be started in its own year or the year before
+// (seeds started indoors over winter).
+function plantingDateInSeasonRange(date: string, season: number): boolean {
+  const y = seasonOf(date);
+  return y === season || y === season - 1;
+}
+
 function isStartMethod(v: unknown): v is StartMethod {
   return v === 'sown' || v === 'transplanted';
+}
+
+function isPlantingState(v: unknown): v is PlantingState {
+  return v === 'planned' || v === 'growing';
 }
 
 const START_METHOD_ERROR = "startMethod must be 'sown' or 'transplanted'";
@@ -277,20 +303,20 @@ async function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise
 }
 
 // Best-effort follow-ups once a planting write has committed. Derives the
-// planting's growth (when plantingId is given) so the response carries its new
+// plantings' growth (when ids are given) so the response carries their new
 // stage, then refreshes the garden's harvest badge and drops cached metrics. A
 // failure is logged and never fails the request: the write stands and the
 // nightly job catches up.
 async function afterPlantingWrite(
   gardenId: string,
   accountId: number | null,
-  plantingId: string | null,
+  plantingIds: string[],
 ): Promise<void> {
-  if (plantingId !== null) {
+  if (plantingIds.length > 0) {
     try {
-      await deriveGrowth({ plantingIds: [Number(plantingId)], db });
+      await deriveGrowth({ plantingIds: plantingIds.map(Number), db });
     } catch (err) {
-      logger.error('Deriving growth after a planting write failed', err, { plantingId });
+      logger.error('Deriving growth after a planting write failed', err, { plantingIds });
     }
   }
   try {
@@ -375,6 +401,133 @@ gardenPlantingsRouter.patch('/displayed-stage', writeLimiter, async (req, res) =
     res.json({ updated: result.rowCount ?? 0 });
   } catch (err) {
     logger.error('PATCH /gardens/:gardenId/plantings/displayed-stage failed', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── gardenPlantingsRouter: POST /api/gardens/:gardenId/plantings/start ────────
+// Marks planned plantings started: each goes in the ground on plantingDate with
+// startMethod, which sows it, so its sowing event is synced in the same
+// transaction.
+
+gardenPlantingsRouter.post('/start', writeLimiter, async (req, res) => {
+  const accountId = req.session!.account?.id ?? null;
+  const { gardenId } = req.params as Record<string, string>;
+
+  if (!isNumericId(gardenId)) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+
+  const { plantingIds, startMethod, plantingDate } = (req.body ?? {}) as Record<string, unknown>;
+  if (
+    !Array.isArray(plantingIds) ||
+    plantingIds.length < 1 ||
+    plantingIds.length > MAX_START_IDS
+  ) {
+    return res.status(400).json({
+      error: `plantingIds must be an array of 1 to ${MAX_START_IDS} ids`,
+    });
+  }
+  // Integers or digit strings (ids are strings in responses); isNumericId caps
+  // them at int4.
+  const ids = plantingIds.map(id => (typeof id === 'number' ? String(id) : id));
+  if (!ids.every(id => isNumericId(id))) {
+    return res.status(400).json({ error: 'plantingIds must contain positive integer ids' });
+  }
+  const uniqueIds = [...new Set(ids as string[])];
+  if (!isStartMethod(startMethod)) {
+    return res.status(400).json({ error: START_METHOD_ERROR });
+  }
+  // Required here: missing reads as null.
+  const dateErr = plantingDateError(plantingDate === undefined ? null : plantingDate);
+  if (dateErr) return res.status(400).json({ error: dateErr });
+  const date = plantingDate as string;
+  if (!isRealDate(date)) {
+    return res.status(400).json({ error: 'plantingDate must be a real date' });
+  }
+
+  try {
+    const found = await ownGarden(gardenId, req.session!);
+    if (!found) return res.status(404).json({ error: 'Garden not found' });
+
+    // One sowing key per (seed, season), sorted so concurrent writes take the
+    // advisory locks the same way round.
+    const sowingKeys = (rows: Array<{ season: number; seed_id: string | null; cambium_seed_id: string | null }>) => {
+      const keys = new Map<string, { seedKey: SeedKey; season: number }>();
+      for (const r of rows) {
+        const seedKey = plantingSeedKey(r);
+        keys.set(`${seedKeyString(seedKey)}:${r.season}`, { seedKey, season: r.season });
+      }
+      return [...keys.keys()].sort().map(k => keys.get(k)!);
+    };
+
+    const refusal = await inTransaction(async (client) => {
+      // Sow locks before row locks, the order DELETE takes them in, so the two
+      // can't deadlock. The keys are read unlocked; syncSowingEvent below
+      // locks any key that changed in between.
+      const { rows: unlocked } = await client.query<{
+        season: number;
+        seed_id: string | null;
+        cambium_seed_id: string | null;
+      }>(
+        `SELECT season, seed_id::text, cambium_seed_id::text
+         FROM plantings
+         WHERE garden_id = $1 AND id = ANY($2::bigint[])`,
+        [gardenId, uniqueIds],
+      );
+      for (const { seedKey, season } of sowingKeys(unlocked)) {
+        await lockSowingKey(client, Number(gardenId), seedKey, season);
+      }
+
+      // Then the rows, so two starts of the same planting can't both see it
+      // planned. NO KEY UPDATE (what the UPDATE takes anyway) leaves the FK
+      // checks of sowing-event inserts unblocked.
+      const { rows } = await client.query<{
+        id: string;
+        season: number;
+        state: PlantingState;
+        seed_id: string | null;
+        cambium_seed_id: string | null;
+      }>(
+        `SELECT id::text, season, state, seed_id::text, cambium_seed_id::text
+         FROM plantings
+         WHERE garden_id = $1 AND id = ANY($2::bigint[])
+         ORDER BY id
+         FOR NO KEY UPDATE`,
+        [gardenId, uniqueIds],
+      );
+      if (rows.length !== uniqueIds.length) {
+        return { status: 404, error: 'Planting not found' };
+      }
+      if (rows.some(r => r.state !== 'planned')) {
+        return { status: 409, error: 'Already in the ground' };
+      }
+      if (rows.some(r => !plantingDateInSeasonRange(date, r.season))) {
+        return { status: 400, error: PLANTING_DATE_SEASON_ERROR };
+      }
+
+      await client.query(
+        `UPDATE plantings
+         SET state = 'growing', planting_date = $2, start_method = $3, updated_at = NOW()
+         WHERE id = ANY($1::bigint[])`,
+        [uniqueIds, date, startMethod],
+      );
+
+      for (const { seedKey, season } of sowingKeys(rows)) {
+        await syncSowingEvent(client, Number(gardenId), seedKey, season);
+      }
+      return null;
+    });
+    if (refusal) return res.status(refusal.status).json({ error: refusal.error });
+
+    await afterPlantingWrite(gardenId, accountId, uniqueIds);
+    const { rows } = await db.query<PlantingRow>(
+      `${PLANTING_GET_QUERY} WHERE p.id = ANY($1::bigint[]) ORDER BY p.id`,
+      [uniqueIds],
+    );
+    res.json({ data: rows.map(formatPlanting) });
+  } catch (err) {
+    logger.error('POST /gardens/:gardenId/plantings/start failed', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -494,11 +647,29 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       quantity = body.quantity as number;
     }
 
-    // plantingDate (optional): placing a plant sows it, today unless told otherwise.
-    let plantingDate = todayPacific();
-    if (body.plantingDate !== undefined) {
+    // state (optional, default 'growing'). A bed in a later season than the
+    // current one can only hold planned plantings, whatever was sent.
+    let state: PlantingState = 'growing';
+    if (body.state !== undefined) {
+      if (!isPlantingState(body.state)) {
+        return res.status(400).json({ error: "state must be 'planned' or 'growing'" });
+      }
+      state = body.state;
+    }
+    if (!isWritableSeason(bed.season)) {
+      return res.status(400).json({ error: 'That season is too far ahead to plan' });
+    }
+    if (bed.season > currentSeason()) state = 'planned';
+
+    // plantingDate (optional): placing a plant sows it, today unless told
+    // otherwise. A planned planting has no date, so any date sent is ignored.
+    let plantingDate: string | null = state === 'planned' ? null : todayPacific();
+    if (state === 'growing' && body.plantingDate !== undefined) {
       const dateErr = plantingDateError(body.plantingDate);
       if (dateErr) return res.status(400).json({ error: dateErr });
+      if (!plantingDateInSeasonRange(body.plantingDate as string, bed.season)) {
+        return res.status(400).json({ error: PLANTING_DATE_SEASON_ERROR });
+      }
       plantingDate = body.plantingDate as string;
     }
 
@@ -552,11 +723,11 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       const { rows: insertRows } = await client.query<{ id: string }>(
         `INSERT INTO plantings
            (bed_id, garden_id, season, seed_id, cambium_seed_id, quantity, planting_date,
-            start_method, cell_x, cell_y, point_x, point_y)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            start_method, state, cell_x, cell_y, point_x, point_y)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          RETURNING id::text`,
         [bedId, gardenId, bed.season, seedId, cambiumSeedId, quantity, plantingDate,
-         startMethod, cellX, cellY, pointX, pointY],
+         startMethod, state, cellX, cellY, pointX, pointY],
       );
       await syncSowingEvent(client, Number(gardenId), requestKey, bed.season);
       return insertRows[0].id;
@@ -594,7 +765,8 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
         return { kind: 'placed', id: await insertPlanting(client), merged: false };
       });
     } else {
-      // Grid bed: one planting per cell. Same plant merges; a different plant is refused.
+      // Grid bed: one planting per cell. The same plant in the same state merges;
+      // a different plant, or the same plant in the other state, is refused.
       const requestIdentity =
         cambiumSeedId !== null ? String(cambiumSeedId) : requestSeedSourceId;
 
@@ -606,7 +778,7 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
           (cambiumSeedId !== null && occ.cambium_seed_id === String(cambiumSeedId));
         const sameIdentity =
           occ.cambium_identity !== null && occ.cambium_identity === requestIdentity;
-        if (!sameSeedRecord && !sameIdentity) {
+        if ((!sameSeedRecord && !sameIdentity) || occ.state !== state) {
           return { kind: 'refused', status: 409, body: cellOccupiedBody(occ) };
         }
         // SQL mirrors mergedQuantity() in lib/plantingQuantity.ts; computed in SQL
@@ -625,7 +797,7 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       const findOccupant = async (client: PoolClient): Promise<OccupantRow | null> => {
         const { rows } = await client.query<OccupantRow>(
           `SELECT p.id::text, p.seed_id::text, p.cambium_seed_id::text,
-                  p.quantity,
+                  p.quantity, p.state,
                   COALESCE(p.cambium_seed_id, s.cambium_source_id)::text
                     AS cambium_identity,
                   COALESCE(cs.common_name, s.common_name) AS common_name
@@ -664,7 +836,7 @@ plantingsNestedRouter.post('/', writeLimiter, async (req, res) => {
       return res.status(500).json({ error: 'Internal server error' });
     }
 
-    await afterPlantingWrite(gardenId, accountId, outcome.id);
+    await afterPlantingWrite(gardenId, accountId, [outcome.id]);
     const { rows } = await db.query<PlantingRow>(`${PLANTING_GET_QUERY} WHERE p.id = $1`, [outcome.id]);
     return res
       .status(outcome.merged ? 200 : 201)
@@ -688,7 +860,7 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
     const { rows: existing } = await db.query<PatchPlantingRow>(
       `SELECT p.id::text, p.bed_id::text, p.garden_id::text, p.season,
               p.seed_id::text, p.cambium_seed_id::text,
-              p.quantity, ${PLANTING_DATE_SQL}, p.start_method,
+              p.quantity, ${PLANTING_DATE_SQL}, p.start_method, p.state,
               p.cell_x, p.cell_y, p.point_x, p.point_y,
               p.growth_stage_pct, p.growth_stage, p.displayed_growth_stage,
               p.harvest_ready, p.harvest_window_end,
@@ -728,8 +900,15 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
     }
 
     if (body.plantingDate !== undefined) {
+      // A planned planting gets its date only by being marked started.
+      if (planting.state === 'planned') {
+        return res.status(400).json({ error: 'Use mark-started to give a planned plant a date' });
+      }
       const dateErr = plantingDateError(body.plantingDate);
       if (dateErr) return res.status(400).json({ error: dateErr });
+      if (!plantingDateInSeasonRange(body.plantingDate as string, planting.season)) {
+        return res.status(400).json({ error: PLANTING_DATE_SEASON_ERROR });
+      }
       updates.push(`planting_date = $${idx++}`);
       values.push(body.plantingDate);
     }
@@ -829,7 +1008,7 @@ plantingsFlatRouter.patch('/:id', writeLimiter, async (req, res) => {
       if (occ.length === 0) throw err;
       return res.status(409).json(cellOccupiedBody(occ[0]));
     }
-    await afterPlantingWrite(planting.garden_id, accountId, growthChanged ? plantingId : null);
+    await afterPlantingWrite(planting.garden_id, accountId, growthChanged ? [plantingId] : []);
     const { rows } = await db.query<PlantingRow>(
       `${PLANTING_GET_QUERY} WHERE p.id = $1`,
       [plantingId],
@@ -880,7 +1059,7 @@ plantingsFlatRouter.delete('/:id', writeLimiter, async (req, res) => {
       return row;
     });
     if (!deleted) return res.status(404).json({ error: 'Planting not found' });
-    await afterPlantingWrite(deleted.garden_id, accountId, null);
+    await afterPlantingWrite(deleted.garden_id, accountId, []);
     res.status(204).send();
   } catch (err) {
     logger.error('DELETE /plantings/:id failed', err);

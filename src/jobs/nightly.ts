@@ -10,6 +10,7 @@ import { exportKey } from '../lib/exportWorker';
 import { harvestableCountSql } from '../lib/gardenBadges';
 import { STAGE_BOUNDS } from '../lib/growthStages';
 import { currentSeason } from '../lib/season';
+import { runSowingReminders } from '../lib/sowingReminders';
 
 // The only writer of plantings.growth_stage_pct, growth_stage, harvest_ready,
 // and harvest_window_end — routes must never write these fields directly; they
@@ -24,7 +25,8 @@ import { currentSeason } from '../lib/season';
 // stage 1 with null pct and is never harvest-ready. A transplanted planting is
 // never below stage 2. Stage bounds come from STAGE_BOUNDS so SQL and
 // stageFor() can't drift; pct is rounded to the column's two decimals before
-// the stage is chosen. With plantingIds, only those plantings are derived.
+// the stage is chosen. A planned planting (no date yet) has no growth: null
+// stage and pct, no harvest window, never harvest-ready. With plantingIds, only those plantings are derived.
 type Queryable = Pick<PoolClient, 'query'>;
 
 export async function deriveGrowth(
@@ -38,6 +40,7 @@ export async function deriveGrowth(
         p.indicator_dismissed_at,
         p.season,
         p.start_method,
+        p.state,
         COALESCE(p.planting_date,
           (p.created_at AT TIME ZONE 'America/Los_Angeles')::date) AS sow_date,
         -- NULL + n stays NULL, so a seed without maturity days stays NULL.
@@ -60,7 +63,7 @@ export async function deriveGrowth(
     calc AS (
       SELECT a.*,
         -- GREATEST/LEAST skip NULLs, so guard no-maturity rows.
-        CASE WHEN a.maturity IS NOT NULL THEN
+        CASE WHEN a.state = 'growing' AND a.maturity IS NOT NULL THEN
           ROUND(LEAST(100.0, GREATEST(0.0,
             ((NOW() AT TIME ZONE 'America/Los_Angeles')::date - a.sow_date)::NUMERIC
               / a.maturity * 100
@@ -71,7 +74,7 @@ export async function deriveGrowth(
     derived AS (
       SELECT c.planting_id,
         c.pct,
-        GREATEST(
+        CASE WHEN c.state = 'planned' THEN NULL ELSE GREATEST(
           CASE
             WHEN c.pct IS NULL THEN 1
             WHEN c.pct >= $3::numeric THEN 5
@@ -81,7 +84,7 @@ export async function deriveGrowth(
             ELSE 1
           END,
           CASE WHEN c.start_method = 'transplanted' THEN 2 ELSE 1 END
-        )::smallint AS stage,
+        )::smallint END AS stage,
         COALESCE(c.pct >= $3::numeric, false)
           AND c.indicator_dismissed_at IS NULL
           AND c.season = $4::int AS ready,
@@ -295,6 +298,16 @@ export async function purgeExpiredGuests(
 export async function purgeReadNotifications(): Promise<{ affected: number }> {
   const result = await db.query(
     `DELETE FROM notifications WHERE read_at IS NOT NULL AND read_at < NOW() - INTERVAL '90 days'`,
+  );
+  return { affected: result.rowCount ?? 0 };
+}
+
+// A sowing reminder is only checked against its own season, so earlier
+// seasons' rows are no longer needed.
+export async function purgeOldSowingReminders(): Promise<{ affected: number }> {
+  const result = await db.query(
+    'DELETE FROM sowing_reminders_sent WHERE season < $1',
+    [currentSeason()],
   );
   return { affected: result.rowCount ?? 0 };
 }
@@ -581,8 +594,10 @@ async function runNightlyTasks(): Promise<void> {
   const tasks: Array<[string, () => Promise<{ affected: number; failed?: number }>]> = [
     ['deriveGrowth', () => deriveGrowth()],
     ['refreshGardenBadges', refreshGardenBadges],
+    ['sowingReminders', () => runSowingReminders()],
     ['purgeExpiredGuests', purgeExpiredGuests],
     ['purgeReadNotifications', purgeReadNotifications],
+    ['purgeOldSowingReminders', purgeOldSowingReminders],
     ['purgeStripeEvents', purgeStripeEvents],
     ['purgeOldOwnerEvents', purgeOldOwnerEvents],
     ['purgeOldUsageEvents', purgeOldUsageEvents],

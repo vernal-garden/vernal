@@ -28,6 +28,7 @@ import {
   refreshGardenBadges,
   purgeExpiredGuests,
   purgeReadNotifications,
+  purgeOldSowingReminders,
   purgeStripeEvents,
   purgeOldOwnerEvents,
   purgeOldUsageEvents,
@@ -159,17 +160,18 @@ async function createPlanting(
     indicatorDismissed?: boolean;
     season?: number;
     startMethod?: 'sown' | 'transplanted';
+    state?: 'planned' | 'growing'; // planned rows have no planting_date
   } = {},
 ): Promise<number> {
   const { rows } = await pool.query<{ id: number }>(
     `INSERT INTO plantings
        (bed_id, garden_id, season, seed_id, cambium_seed_id, planting_date, indicator_dismissed_at,
-        start_method, cell_x, cell_y)
+        start_method, state, cell_x, cell_y)
      VALUES ($1, $2, $3, $4, $5,
              COALESCE($8::date,
                CASE WHEN $6::int IS NULL THEN NULL ELSE ${PACIFIC_TODAY} - $6::int END),
              CASE WHEN $7::bool THEN NOW() ELSE NULL END,
-             $9,
+             $9, $10,
              -- COUNT-derived cell_x only satisfies the one-per-cell unique index
              -- (this suite never deletes plantings mid-test).
              (SELECT COUNT(*)::int FROM plantings WHERE bed_id = $1), 0)
@@ -184,6 +186,7 @@ async function createPlanting(
       overrides.indicatorDismissed ?? false,
       overrides.plantingDate ?? null,
       overrides.startMethod ?? 'sown',
+      overrides.state ?? 'growing',
     ],
   );
   return rows[0].id;
@@ -494,6 +497,43 @@ describe('deriveGrowth', () => {
     expect(row.pct).toBe(100);
     expect(row.stage).toBe(5);
     expect(row.harvestReady).toBe(false);
+  });
+
+  it('gives a planned planting no stage and never harvest-ready', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, state: 'planned' });
+
+    await deriveGrowth();
+
+    expect(await readGrowth(plantingId)).toMatchObject({
+      pct: null,
+      stage: null,
+      harvestReady: false,
+      windowEnd: null,
+    });
+  });
+
+  it('clears the growth of a row that has become planned', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId, 60);
+    const plantingId = await createPlanting(bedId, gardenId, { seedId, plantingDateDaysAgo: 60 });
+    await deriveGrowth();
+    expect(await readGrowth(plantingId)).toMatchObject({ stage: 5, harvestReady: true });
+
+    await pool.query(
+      `UPDATE plantings SET state = 'planned', planting_date = NULL WHERE id = $1`,
+      [plantingId],
+    );
+    const result = await deriveGrowth({ plantingIds: [plantingId], db: pool });
+
+    expect(result.affected).toBe(1);
+    expect(await readGrowth(plantingId)).toMatchObject({
+      pct: null,
+      stage: null,
+      harvestReady: false,
+      windowEnd: null,
+    });
   });
 
   it('derives only the listed plantings when given plantingIds', async () => {
@@ -1020,6 +1060,29 @@ describe('purgeReadNotifications', () => {
     expect(ids).not.toContain(oldRead);
     expect(ids).toContain(oldUnread);
     expect(ids).toContain(recentRead);
+  });
+});
+
+describe('purgeOldSowingReminders', () => {
+  beforeEach(resetDb);
+
+  it('deletes reminder rows from past seasons and keeps the current and next season', async () => {
+    const gardenId = await createGarden(await createAccount());
+    for (const season of [CURRENT_YEAR - 2, CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1]) {
+      await pool.query(
+        `INSERT INTO sowing_reminders_sent (garden_id, seed_key, season, window_kind, reminder)
+         VALUES ($1, 'cambium:1', $2, 'indoor_start', 'open')`,
+        [gardenId, season],
+      );
+    }
+
+    const { affected } = await purgeOldSowingReminders();
+
+    expect(affected).toBe(2);
+    const { rows } = await pool.query<{ season: number }>(
+      'SELECT season FROM sowing_reminders_sent ORDER BY season',
+    );
+    expect(rows.map((r) => r.season)).toEqual([CURRENT_YEAR, CURRENT_YEAR + 1]);
   });
 });
 

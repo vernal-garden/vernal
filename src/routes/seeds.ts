@@ -932,7 +932,7 @@ router.delete('/:id', writeLimiter, async (req, res) => {
     );
     if (countResult.rows[0].count > 0) {
       return res.status(409).json({
-        error: 'This seed is planted in your gardens — remove those plantings first',
+        error: 'This seed is in your gardens — remove those plantings first',
         plantingCount: countResult.rows[0].count,
       });
     }

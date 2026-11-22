@@ -25,6 +25,7 @@ async function loadMailer(mail: 'smtp' | 'off' = 'smtp') {
     media: 's3',
     googleSignIn: false,
     weather: false,
+    sowingReminders: false,
     betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
     betaEndsAt: new Date('2027-01-30T08:00:00Z'),
     betaRecordsRetentionDays: null,
