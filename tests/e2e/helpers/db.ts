@@ -208,6 +208,19 @@ export async function createFeedback(opts: {
   return result.rows[0].id;
 }
 
+// The newest feedback submission with this exact message. feedback_submissions survives
+// resetTestDb, so callers pass a unique message.
+export async function getFeedbackByMessage(message: string): Promise<{
+  user_id: string | null; category: string; source_surface: string | null;
+} | null> {
+  const result = await getPool().query<{ user_id: string | null; category: string; source_surface: string | null }>(
+    `SELECT user_id::text AS user_id, category, source_surface FROM feedback_submissions
+     WHERE message = $1 ORDER BY id DESC LIMIT 1`,
+    [message],
+  );
+  return result.rows[0] ?? null;
+}
+
 // The moderation queue row for a seed that has been submitted as a contribution.
 export async function getModerationItemId(seedId: number): Promise<number> {
   const result = await getPool().query<{ id: number }>(
