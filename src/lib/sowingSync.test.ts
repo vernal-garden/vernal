@@ -132,6 +132,54 @@ async function events(gardenId: number): Promise<EventRow[]> {
 }
 
 describe('syncSowingEvent', () => {
+  it('does not count planned plantings, and counts one once it is started', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId);
+    const key: SeedKey = { kind: 'seed', id: seedId };
+    const { rows } = await pool.query<{ id: number }>(
+      `INSERT INTO plantings (bed_id, garden_id, season, seed_id, state, cell_x, cell_y)
+       VALUES ($1, $2, $3, $4, 'planned', 0, 0) RETURNING id`,
+      [bedId, gardenId, SEASON, seedId],
+    );
+    const plannedId = rows[0].id;
+
+    await syncSowingEventNow(pool, gardenId, key, SEASON);
+    expect(await events(gardenId)).toEqual([]);
+
+    await pool.query(
+      `UPDATE plantings SET state = 'growing', planting_date = ${PACIFIC_TODAY} - 3 WHERE id = $1`,
+      [plannedId],
+    );
+    await syncSowingEventNow(pool, gardenId, key, SEASON);
+    const after = await events(gardenId);
+    expect(after).toHaveLength(1);
+    expect(after[0].planting_id).toBe(plannedId);
+    expect(after[0].marked_done_at).toBe(await noonPacific(3));
+  });
+
+  it('un-dones but keeps the event when only planned plantings remain', async () => {
+    const { ownerId, gardenId, bedId } = await setup();
+    const seedId = await createPersonalSeed(ownerId);
+    const key: SeedKey = { kind: 'seed', id: seedId };
+    const growing = await createPlanting(bedId, gardenId, { seedId, daysAgo: 4 });
+    await syncSowingEventNow(pool, gardenId, key, SEASON);
+    await pool.query(
+      `INSERT INTO plantings (bed_id, garden_id, season, seed_id, state, cell_x, cell_y)
+       VALUES ($1, $2, $3, $4, 'planned', 1, 0)`,
+      [bedId, gardenId, SEASON, seedId],
+    );
+
+    await pool.query(
+      `UPDATE plantings SET state = 'planned', planting_date = NULL WHERE id = $1`,
+      [growing],
+    );
+    await syncSowingEventNow(pool, gardenId, key, SEASON);
+
+    const rows = await events(gardenId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].marked_done_at).toBeNull();
+  });
+
   it('inserts a done event, shaped like the guide insert, when none exists', async () => {
     const { ownerId, gardenId, bedId } = await setup();
     const seedId = await createPersonalSeed(ownerId);

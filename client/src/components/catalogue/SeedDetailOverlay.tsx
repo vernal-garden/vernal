@@ -547,7 +547,7 @@ function PersonalDetail({ detail, isGuest, isMobile, onPromptAccount, onNavigate
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         const body = err.body as { error?: string; code?: string } | null;
-        setDeleteError(body?.error ?? "This seed is planted in your gardens — remove those plantings first");
+        setDeleteError(body?.error ?? "This seed is in your gardens — remove those plantings first");
         if (body?.code !== 'deletion_scheduled') setDeleteBlocked(true);
       } else {
         setDeleteError("Couldn't delete this seed. Try again.");

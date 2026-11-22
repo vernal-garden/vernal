@@ -28,6 +28,7 @@ describe('loadServerConfig', () => {
       media: 's3',
       googleSignIn: false,
       weather: false,
+      sowingReminders: false,
       betaApplicationsCloseAt: new Date('2027-01-01T08:00:00Z'),
       betaEndsAt: new Date('2027-01-30T08:00:00Z'),
       betaRecordsRetentionDays: null,
@@ -64,8 +65,15 @@ describe('loadServerConfig', () => {
     expect(() => loadServerConfig({ STRIPE_SECRET_KEY: '  ' })).toThrow(ConfigError);
   });
 
+  it('turns sowing reminders on only with SOWING_REMINDERS_ENABLED=true', () => {
+    expect(loadServerConfig({ ...base, SOWING_REMINDERS_ENABLED: 'true' }).sowingReminders).toBe(true);
+    expect(loadServerConfig({ ...base, SOWING_REMINDERS_ENABLED: 'false' }).sowingReminders).toBe(false);
+    expect(loadServerConfig({ ...base, SOWING_REMINDERS_ENABLED: ' ' }).sowingReminders).toBe(false);
+  });
+
   it.each([
     ['BILLING', 'bogus', 'stripe, off'],
+    ['SOWING_REMINDERS_ENABLED', 'yes', 'true, false'],
     ['MAIL_MODE', 'bogus', 'smtp, off'],
     ['MEDIA_STORAGE', 'bogus', 's3, local'],
   ])('rejects an invalid %s', (key, value, allowed) => {
@@ -338,6 +346,7 @@ describe('setServerConfigForTests', () => {
       media: 'local',
       googleSignIn: true,
       weather: true,
+      sowingReminders: true,
       betaApplicationsCloseAt: new Date(0),
       betaEndsAt: new Date(0),
       betaRecordsRetentionDays: null,

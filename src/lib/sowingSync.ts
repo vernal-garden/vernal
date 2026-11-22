@@ -31,11 +31,12 @@ export async function lockSowingKey(
 }
 
 // Keeps a (garden, seed, season) sowing event in step with its plantings:
-// placing a plant sows it. While plantings remain, the event (the lowest-id
+// placing a plant sows it. Planned plantings (state 'planned', no date yet)
+// are not placed and don't count. While growing plantings remain, the event (the lowest-id
 // one for the key, as the guide reads it) is done at noon Pacific on the
 // earliest planting date, falling back to the Pacific date a planting was
-// created while planting_date is still nullable. With none left, the event is
-// un-done but kept, since harvest entries may reference it.
+// created while planting_date is still nullable. With none left (or only
+// planned ones), the event is un-done but kept, since harvest entries may reference it.
 //
 // Must run inside a transaction the caller opened: the advisory lock is
 // transaction-scoped and serialises against other syncs for the same key.
@@ -52,7 +53,8 @@ export async function syncSowingEvent(
             (MIN(COALESCE(planting_date, (created_at AT TIME ZONE 'America/Los_Angeles')::date))
               + time '12:00') AT TIME ZONE 'America/Los_Angeles' AS done_at
      FROM plantings
-     WHERE garden_id = $1 AND ${seedKeyWhere(seedKey, '$2')} AND season = $3`,
+     WHERE garden_id = $1 AND ${seedKeyWhere(seedKey, '$2')} AND season = $3
+       AND state = 'growing'`,
     [gardenId, seedKey.id, season],
   );
   const { first_id: firstPlantingId, done_at: doneAt } = plantings[0];

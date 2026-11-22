@@ -19,7 +19,7 @@ vi.mock('../lib/r2Cleanup', async (importOriginal) => ({
 import { uploadToR2, deleteFromR2 } from '../lib/storage/s3';
 import { drainSoon } from '../lib/r2Cleanup';
 import app from '../index';
-import { currentSeason } from '../lib/season';
+import { currentSeason, nextSeason } from '../lib/season';
 
 const url = process.env.TEST_DATABASE_URL;
 if (!url) throw new Error('TEST_DATABASE_URL must be set to run tests');
@@ -756,10 +756,14 @@ describe('Seasons and carry-forward', () => {
     });
   });
 
-  it('GET /:id/seasons lists only years with beds (desc) and currentSeason', async () => {
+  it('GET /:id/seasons lists only years with beds (desc), currentSeason and nextSeason', async () => {
     const res = await agent.get(`/api/gardens/${gardenId}/seasons`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ currentSeason: S, layoutSeasons: [S - 1, S - 3] });
+    expect(res.body).toEqual({
+      currentSeason: S,
+      nextSeason: nextSeason(),
+      layoutSeasons: [S - 1, S - 3],
+    });
   });
 
   it("GET /:id/seasons for another session's garden → 404", async () => {
@@ -840,6 +844,72 @@ describe('Seasons and carry-forward', () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('This season already has beds.');
   });
+
+  it('carry-forward into next season works while the current season has beds', async () => {
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 1, toSeason: S + 1 });
+    expect(res.status).toBe(201);
+    expect(res.body.data).toHaveLength(2);
+    for (const b of res.body.data) expect(b.season).toBe(S + 1);
+
+    const again = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 1, toSeason: S + 1 });
+    expect(again.status).toBe(409);
+  });
+
+  it('carry-forward with toSeason beyond next season → 400', async () => {
+    const res = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 1, toSeason: S + 2 });
+    expect(res.status).toBe(400);
+  });
+
+  it('carry-forward with a bad toSeason or fromSeason >= toSeason → 400', async () => {
+    const bad = await agent
+      .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+      .send({ fromSeason: S - 1, toSeason: 'abc' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toMatch(/^toSeason/);
+    for (const [fromSeason, toSeason] of [[S + 1, S + 1], [S + 2, S + 1], [S, S]]) {
+      const res = await agent
+        .post(`/api/gardens/${gardenId}/beds/carry-forward`)
+        .send({ fromSeason, toSeason });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('POST bed into next season → 201; two seasons ahead → 400', async () => {
+    const body = { type: 'grid', label: 'Ahead', grid: { x: 0, y: 0, cols: 2, rows: 2 } };
+    const ok = await agent.post(`/api/gardens/${gardenId}/beds`).send({ ...body, season: S + 1 });
+    expect(ok.status).toBe(201);
+    const far = await agent.post(`/api/gardens/${gardenId}/beds`).send({ ...body, season: S + 2 });
+    expect(far.status).toBe(400);
+    expect(far.body.error).toMatch(/too far ahead/);
+  });
+
+  it('PATCH of a bed in a season beyond next → 400; DELETE succeeds', async () => {
+    const id = await insertBed(gardenId, S + 2, {
+      type: 'grid', label: 'Far', grid_x: 0, grid_y: 0, grid_cols: 1, grid_rows: 1,
+    });
+    const patch = await agent.patch(`/api/gardens/${gardenId}/beds/${id}`).send({ label: 'x' });
+    expect(patch.status).toBe(400);
+    const del = await agent.delete(`/api/gardens/${gardenId}/beds/${id}`);
+    expect(del.status).toBe(204);
+    const missing = await agent.delete(`/api/gardens/${gardenId}/beds/999999999`);
+    expect(missing.status).toBe(404);
+  });
+
+  it('DELETE of a bed in season currentSeason()+3 removes the row', async () => {
+    const id = await insertBed(gardenId, currentSeason() + 3, {
+      type: 'grid', label: 'Way far', grid_x: 0, grid_y: 0, grid_cols: 1, grid_rows: 1,
+    });
+    const del = await agent.delete(`/api/gardens/${gardenId}/beds/${id}`);
+    expect(del.status).toBe(204);
+    const { rows } = await pool.query('SELECT id FROM beds WHERE id = $1', [id]);
+    expect(rows).toHaveLength(0);
+  });
 });
 
 // ── Auth enforcement ──────────────────────────────────────────────────────────
@@ -883,6 +953,27 @@ describe('Garden list activePlantingCount', () => {
     const list = await agent.get('/api/gardens');
     const found = list.body.data.find((x: { id: string }) => x.id === g.body.id);
     expect(found.activePlantingCount).toBe(4);
+  });
+
+  it('ignores planned plantings', async () => {
+    await createUser('count-planned@example.com');
+    const agent = await loginAgent('count-planned@example.com');
+    const g = await agent.post('/api/gardens').send({ ...BASE_GARDEN, name: 'Planned Garden' });
+    const b = await agent.post(`/api/gardens/${g.body.id}/beds`).send({
+      type: 'grid', label: 'Planned Bed', grid: { x: 0, y: 0, cols: 4, rows: 4 },
+    });
+    const { rows: cs } = await pool.query<{ id: number }>(
+      `INSERT INTO cambium.seeds (common_name, moderation_status, source)
+       VALUES ('Planned Tomato', 'active', 'editorial') RETURNING id`,
+    );
+    await pool.query(
+      `INSERT INTO plantings (bed_id, garden_id, season, cambium_seed_id, quantity, cell_x, cell_y, state)
+       VALUES ($1, $2, $3, $4, 2, 0, 0, 'growing'), ($1, $2, $3, $4, 5, 1, 0, 'planned')`,
+      [b.body.id, g.body.id, currentSeason(), cs[0].id],
+    );
+    const list = await agent.get('/api/gardens');
+    const found = list.body.data.find((x: { id: string }) => x.id === g.body.id);
+    expect(found.activePlantingCount).toBe(2);
   });
 });
 

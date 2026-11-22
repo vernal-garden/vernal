@@ -454,7 +454,7 @@ describe('DELETE /api/seeds/:id', () => {
     const res = await agent1.delete(`/api/seeds/${plantedSeedId}`);
     expect(res.status).toBe(409);
     expect(res.body.plantingCount).toBe(1);
-    expect(res.body.error).toMatch(/planted/);
+    expect(res.body.error).toMatch(/in your gardens/);
     expect(await queued()).toEqual([]);
   });
 

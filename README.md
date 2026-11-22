@@ -99,6 +99,7 @@ The first migration turns on PostgreSQL's `pgcrypto` extension, which the databa
   - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` turn on Google sign-in.
   - `VISUAL_CROSSING_API_KEY` turns on local weather (a Supporter tool).
   - Leave them blank to go without.
+  - `SOWING_REMINDERS_ENABLED=true` turns on nightly sowing reminders. Unset or `false` leaves them off.
 
 When the server starts, it prints one line showing what's on, for example `[config] billing=off mail=off media=local google=off weather=off`. If a setting is missing or wrong, it stops and tells you which one.
 

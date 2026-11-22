@@ -20,6 +20,8 @@ export interface ServerConfig {
   media: 's3' | 'local';
   googleSignIn: boolean;
   weather: boolean;
+  // Nightly sowing reminders (SOWING_REMINDERS_ENABLED). Off unless set to true.
+  sowingReminders: boolean;
   // From this instant the private beta page stops taking applications.
   betaApplicationsCloseAt: Date;
   // The private beta ends at this instant; activity after it is not tracked.
@@ -140,6 +142,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   const billing = choice(env, 'BILLING', ['stripe', 'off'] as const, 'stripe');
   const mail = choice(env, 'MAIL_MODE', ['smtp', 'off'] as const, 'smtp');
   const media = choice(env, 'MEDIA_STORAGE', ['s3', 'local'] as const, 's3');
+  const sowingReminders = choice(env, 'SOWING_REMINDERS_ENABLED', ['true', 'false'] as const, 'false') === 'true';
 
   if (billing === 'stripe' && !read(env, 'STRIPE_SECRET_KEY')) {
     throw new ConfigError(
@@ -218,6 +221,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     media,
     googleSignIn: Boolean(googleId && googleSecret),
     weather: Boolean(read(env, 'VISUAL_CROSSING_API_KEY')),
+    sowingReminders,
     betaApplicationsCloseAt: closeAt,
     betaEndsAt: endsAt,
     betaRecordsRetentionDays,

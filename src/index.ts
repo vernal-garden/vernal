@@ -201,7 +201,8 @@ if (process.env.NODE_ENV !== 'test' || process.env.E2E_LISTEN === 'true') {
       console.log(
         `[config] billing=${cfg.billing} mail=${cfg.mail} media=${cfg.media} ` +
           `google=${cfg.googleSignIn ? 'on' : 'off'} weather=${cfg.weather ? 'on' : 'off'} ` +
-          `relay=${cfg.sentryRelay ? 'on' : 'off'} db_tls=${dbSslMode()}`,
+          `relay=${cfg.sentryRelay ? 'on' : 'off'} reminders=${cfg.sowingReminders ? 'on' : 'off'} ` +
+          `db_tls=${dbSslMode()}`,
       );
 
       app.listen(PORT, () => {
