@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import type { CSSProperties, KeyboardEvent } from 'react';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { SEASON_THIS, seasonPlan } from '../../lib/planningStrings';
 
 // Phase 76b: the two-option season switch (this season / plan next season),
@@ -27,9 +28,10 @@ const groupStyle: CSSProperties = {
   pointerEvents: 'auto',
 };
 
-function optionStyle(checked: boolean): CSSProperties {
+// Each option is a touch target on phones (44px); the desktop toolbar keeps 38.
+function optionStyle(checked: boolean, isMobile: boolean): CSSProperties {
   return {
-    minHeight: 38,
+    minHeight: isMobile ? 44 : 38,
     minWidth: 44,
     padding: '0 var(--sp-3)',
     border: 'none',
@@ -46,6 +48,7 @@ function optionStyle(checked: boolean): CSSProperties {
 
 export default function SeasonSwitch({ viewedSeason, nextSeason, onChange }: Props) {
   const current: SeasonChoice = viewedSeason === nextSeason ? 'next' : 'current';
+  const isMobile = useIsMobile();
   const refs = useRef<Record<SeasonChoice, HTMLButtonElement | null>>({ current: null, next: null });
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
@@ -68,7 +71,7 @@ export default function SeasonSwitch({ viewedSeason, nextSeason, onChange }: Pro
         tabIndex={checked ? 0 : -1}
         onClick={() => { if (!checked) onChange(choice); }}
         onKeyDown={onKeyDown}
-        style={optionStyle(checked)}
+        style={optionStyle(checked, isMobile)}
       >
         {label}
       </button>

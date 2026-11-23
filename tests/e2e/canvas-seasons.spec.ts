@@ -76,7 +76,7 @@ test('the new-season prompt brings last season\'s beds forward and shows the ove
   await page.reload();
   const select = page.getByRole('combobox', { name: 'Season overlay' });
   await expect(select).toBeVisible();
-  await expect(select.getByRole('option', { name: `This season (${thisYear})` })).toHaveCount(1);
+  await expect(select.getByRole('option', { name: 'No overlay' })).toHaveCount(1);
   await expect(prompt(page)).toHaveCount(0);
   await expect(overlayStatus(page)).toHaveCount(0);
 });

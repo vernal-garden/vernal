@@ -173,14 +173,14 @@ test('Zoom in and Zoom out change the stage scale', async ({ page }) => {
 });
 
 test('the season pill opens the season sheet', async ({ page }) => {
-  const pill = page.getByRole('button', { name: 'Season: This season' });
+  const pill = page.getByRole('button', { name: 'Season: No overlay' });
   await expect(pill).toBeVisible();
   await expect(pill).toHaveAttribute('aria-haspopup', 'dialog');
   await pill.tap();
 
   const sheet = page.getByRole('dialog', { name: 'Choose season' });
   await expect(sheet).toBeVisible();
-  await expect(sheet.getByRole('button', { name: `This season (${thisYear})` })).toBeVisible();
+  await expect(sheet.getByRole('button', { name: 'No overlay' })).toBeVisible();
   const overlayOption = sheet.getByRole('button', { name: `${lastYear} overlay` });
   await expect(overlayOption).toBeVisible();
 
