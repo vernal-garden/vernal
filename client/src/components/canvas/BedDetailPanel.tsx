@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import type { Bed } from '../../hooks/useGarden';
 import { GRID_PX } from './GardenCanvas';
+import { BED_PANEL_LINK } from '../../lib/planningStrings';
 
 function shoelaceArea(points: number[]): number {
   let area = 0;
@@ -47,9 +48,10 @@ interface Props {
   onAddPlant: () => void;
   gardenId: string | null;
   showDataLinks: boolean;
+  onMarkStarted?: () => void;
 }
 
-export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, onDelete, focusName, onAddPlant, gardenId, showDataLinks }: Props) {
+export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, onDelete, focusName, onAddPlant, gardenId, showDataLinks, onMarkStarted }: Props) {
   const [nameVal, setNameVal] = useState(bed.label);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -172,6 +174,16 @@ export default function BedDetailPanel({ bed, plantingCount, onClose, onRename, 
         }}>
           + Add plant
         </button>
+
+        {onMarkStarted && (
+          <button type="button" onClick={onMarkStarted} style={{
+            minHeight: 44, padding: '0 var(--sp-3)', borderRadius: 'var(--r-md)',
+            border: '1px solid var(--c-primary)', background: 'transparent',
+            color: 'var(--c-primary)', cursor: 'pointer', fontSize: 13, fontWeight: 500,
+          }}>
+            {BED_PANEL_LINK}
+          </button>
+        )}
 
         {/* Soil / amendment history for this bed (accounts only) */}
         {showDataLinks && gardenId && (

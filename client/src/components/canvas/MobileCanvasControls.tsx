@@ -4,6 +4,8 @@ import BottomSheet from '../shell/BottomSheet';
 import { DESKTOP_MESSAGES } from '../shell/BetterOnDesktop';
 import { CloseIcon } from '../shell/icons';
 import type { SeasonOverlayStatus } from './CanvasToolbar';
+import SeasonSwitch from './SeasonSwitch';
+import { nextSeasonNotice, OVERLAY_NONE } from '../../lib/planningStrings';
 
 // Phase 53: the view-only mobile canvas chrome, rendered in place of the
 // toolbar: a quiet editing note, a season pill (opens a sheet driving the
@@ -50,7 +52,11 @@ const zoomButtonStyle: CSSProperties = {
 };
 
 interface Props {
-  currentSeason: number;
+  // Phase 76b: the season the canvas shows and the season switch.
+  viewedSeason: number;
+  nextSeason: number;
+  onViewedSeasonChange: (choice: 'current' | 'next') => void;
+  // Layout seasons before viewedSeason, newest first.
   earlierSeasons: number[];
   overlaySeason: number | null;
   overlayStatus: SeasonOverlayStatus;
@@ -60,7 +66,8 @@ interface Props {
 }
 
 export default function MobileCanvasControls({
-  currentSeason, earlierSeasons, overlaySeason, overlayStatus, onOverlaySeasonChange,
+  viewedSeason, nextSeason, onViewedSeasonChange,
+  earlierSeasons, overlaySeason, overlayStatus, onOverlaySeasonChange,
   onZoomIn, onZoomOut,
 }: Props) {
   const [noteDismissed, setNoteDismissed] = useState(readNoteDismissed);
@@ -72,7 +79,7 @@ export default function MobileCanvasControls({
     ? [...earlierSeasons, overlaySeason].sort((a, b) => b - a)
     : earlierSeasons;
 
-  const pillText = overlaySeason == null ? 'This season' : `${overlaySeason} overlay`;
+  const pillText = overlaySeason == null ? OVERLAY_NONE :`${overlaySeason} overlay`;
 
   const statusText = overlaySeason == null ? null
     : overlayStatus === 'empty' ? `No canvas layout found for ${overlaySeason}.`
@@ -126,7 +133,8 @@ export default function MobileCanvasControls({
 
   return (
     <>
-      {/* Top: editing note (full width) with the season pill under its right end. */}
+      {/* Top: next-season notice and editing note (full width), with the
+          season switch and pill under their right end. */}
       <div style={{
         position: 'fixed',
         top: 'calc(var(--shell-top, 0px) + var(--sp-2))',
@@ -139,6 +147,26 @@ export default function MobileCanvasControls({
         gap: 'var(--sp-2)',
         pointerEvents: 'none',
       }}>
+        {/* Phase 76b: next-season notice */}
+        {viewedSeason === nextSeason && (
+          <div
+            role="status"
+            style={{
+              ...surfaceStyle,
+              boxShadow: 'var(--shadow-sm)',
+              width: '100%',
+              boxSizing: 'border-box',
+              padding: 'var(--sp-2) var(--sp-3)',
+              borderRadius: 'var(--r-md)',
+              fontSize: 13,
+              lineHeight: 1.45,
+              color: 'var(--c-text-2)',
+            }}
+          >
+            {nextSeasonNotice(nextSeason)}
+          </div>
+        )}
+
         {!noteDismissed && (
           <div
             role="note"
@@ -189,32 +217,38 @@ export default function MobileCanvasControls({
           </div>
         )}
 
-        <button
-          type="button"
-          aria-label={`Season: ${pillText}`}
-          aria-haspopup="dialog"
-          aria-expanded={sheetOpen}
-          onClick={() => setSheetOpen(true)}
-          style={{
-            ...surfaceStyle,
-            minHeight: 44,
-            minWidth: 44,
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 'var(--sp-2)',
-            padding: '0 var(--sp-4)',
-            borderRadius: 'var(--r-full)',
-            color: overlaySeason == null ? 'var(--c-text)' : 'var(--c-primary)',
-            fontSize: 14,
-            fontWeight: 600,
-            whiteSpace: 'nowrap',
-            cursor: 'pointer',
-            pointerEvents: 'auto',
-          }}
-        >
-          {pillText}
-          <span aria-hidden="true" style={{ fontSize: 11, color: 'var(--c-text-3)' }}>▾</span>
-        </button>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap',
+          gap: 'var(--sp-2)', maxWidth: '100%',
+        }}>
+          <SeasonSwitch viewedSeason={viewedSeason} nextSeason={nextSeason} onChange={onViewedSeasonChange} />
+          <button
+            type="button"
+            aria-label={`Season: ${pillText}`}
+            aria-haspopup="dialog"
+            aria-expanded={sheetOpen}
+            onClick={() => setSheetOpen(true)}
+            style={{
+              ...surfaceStyle,
+              minHeight: 44,
+              minWidth: 44,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 'var(--sp-2)',
+              padding: '0 var(--sp-4)',
+              borderRadius: 'var(--r-full)',
+              color: overlaySeason == null ? 'var(--c-text)' : 'var(--c-primary)',
+              fontSize: 14,
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+              cursor: 'pointer',
+              pointerEvents: 'auto',
+            }}
+          >
+            {pillText}
+            <span aria-hidden="true" style={{ fontSize: 11, color: 'var(--c-text-3)' }}>▾</span>
+          </button>
+        </div>
 
         {statusText && (
           <div
@@ -241,7 +275,7 @@ export default function MobileCanvasControls({
         ariaLabel="Choose season"
       >
         <ul style={{ listStyle: 'none', margin: 0, padding: '0 0 var(--sp-4)' }}>
-          {option(null, `This season (${currentSeason})`)}
+          {option(null, OVERLAY_NONE)}
           {seasonOptions.map(s => option(s, `${s} overlay`))}
         </ul>
       </BottomSheet>

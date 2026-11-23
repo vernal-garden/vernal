@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom';
 import type { GuideRow, GuideWindow, WindowKind } from '../../types/plantingGuide';
 import { formatRange, MONTH_LONG, monthStart, parseDay } from '../../lib/guideDates';
 import { canLogHarvest, hasWindows, isDone, rowKey, rowName, rowWindows, seedParam, sowingKind, WINDOW_KINDS } from '../../lib/guideModel';
+import type { Planting } from '../../hooks/usePlantings';
 import RowLabel from './RowLabel';
+import PlannedStatus from './PlannedStatus';
 import { linkStyle, segmentGroupStyle, segmentStyle, tagStyle, textButtonStyle } from './styles';
 import { gardenOf, type GuideViewProps } from './viewTypes';
 
@@ -30,6 +32,7 @@ interface Group {
 
 interface Props extends GuideViewProps {
   readOnly: boolean;
+  plantings: Planting[];
 }
 
 const byKindThenName = (a: Item, b: Item) =>
@@ -80,7 +83,7 @@ function groupBy(items: Item[], keyOf: (item: Item) => { key: string; title: str
 }
 
 export default function ListView(props: Props) {
-  const { rows, gardens, season, today, showGardenName, readOnly, onOpen } = props;
+  const { rows, gardens, season, today, showGardenName, readOnly, plantings, onOpen } = props;
   const [grouping, setGrouping] = useState<Grouping>('time');
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -182,7 +185,9 @@ export default function ListView(props: Props) {
                     item={item}
                     gardenName={showGardenName ? gardenName(item.row) : null}
                     today={today}
+                    season={season}
                     readOnly={readOnly}
+                    plantings={plantings}
                     onOpen={onOpen}
                   />
                 ))}
@@ -204,6 +209,7 @@ export default function ListView(props: Props) {
                     <button type="button" onClick={() => onOpen(row)} style={rowButtonStyle}>
                       <RowLabel row={row} gardenName={showGardenName ? gardenName(row) : null} />
                     </button>
+                    <PlannedStatus row={row} plantings={plantings} season={season} today={today} readOnly={readOnly} align="end" />
                     <button type="button" onClick={() => onOpen(row)} style={textButtonStyle}>
                       Add dates
                     </button>
@@ -234,11 +240,13 @@ interface ItemProps {
   item: Item;
   gardenName: string | null;
   today: string;
+  season: number;
   readOnly: boolean;
+  plantings: Planting[];
   onOpen: (row: GuideRow) => void;
 }
 
-function ListItem({ item, gardenName, today, readOnly, onOpen }: ItemProps) {
+function ListItem({ item, gardenName, today, season, readOnly, plantings, onOpen }: ItemProps) {
   const { row, kind, window } = item;
   const planted = sowingKind(row) === kind && isDone(row);
   const logHarvest = kind === 'harvest' && canLogHarvest(row, today, readOnly);
@@ -257,6 +265,18 @@ function ListItem({ item, gardenName, today, readOnly, onOpen }: ItemProps) {
         </span>
       </button>
       {planted && <span style={{ ...tagStyle, color: 'var(--c-text-3)' }}>Planted</span>}
+      {kind !== 'harvest' && (
+        <PlannedStatus
+          row={row}
+          plantings={plantings}
+          season={season}
+          today={today}
+          readOnly={readOnly}
+          showTag={(sowingKind(row) ?? 'transplant') === kind}
+          nudgeKind={kind}
+          align="end"
+        />
+      )}
       {logHarvest && (
         <Link to={`/harvest?log=new&gardenId=${row.gardenId}&seed=${seedParam(row)}`} style={{ ...linkStyle, flexShrink: 0 }}>
           Log harvest

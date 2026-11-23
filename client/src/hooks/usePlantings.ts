@@ -6,6 +6,8 @@ import type { GrowthStage } from '../lib/growthStages';
 // How a planting went into its bed: sown from seed, or transplanted as a start.
 export type StartMethod = 'sown' | 'transplanted';
 
+export type PlantingState = 'planned' | 'growing';
+
 export interface PlantingGrowth {
   stagePct: number | null;
   harvestReady: boolean;
@@ -34,8 +36,10 @@ export interface Planting {
   commonName?: string | null;
   quantity: number;
   startMethod: StartMethod;
+  state: PlantingState;
   // The day it went into this bed (YYYY-MM-DD). Growth stages follow it.
-  plantingDate: string;
+  // null while planned.
+  plantingDate: string | null;
   cell: { x: number; y: number } | null;
   point: { x: number; y: number } | null;
   growth: PlantingGrowth;
@@ -174,7 +178,9 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       point?: { x: number; y: number };
       quantity?: number;
       startMethod: StartMethod;
-      plantingDate: string;
+      state: PlantingState;
+      // Omitted for planned plantings.
+      plantingDate?: string;
     },
     commonName?: string,
     // The armed seed's Cambium identity, so the temp marker matches the
@@ -190,6 +196,7 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     const cellOccupied = payload.cell != null && (plantingsRef.current[bedId] ?? []).some(p =>
       p.cell != null && p.cell.x === payload.cell!.x && p.cell.y === payload.cell!.y,
     );
+    const planned = payload.state === 'planned';
     const optimisticStage: GrowthStage = payload.startMethod === 'transplanted' ? 2 : 1;
     const optimistic: Planting = {
       id: tempId,
@@ -203,20 +210,25 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
       spacingInches: null,
       quantity: payload.quantity ?? 1,
       startMethod: payload.startMethod,
-      plantingDate: payload.plantingDate,
+      state: payload.state,
+      plantingDate: planned ? null : (payload.plantingDate ?? null),
       cell: payload.cell ?? null,
       point: payload.point ?? null,
-      // Placing a plant sows it: show its first stage's art at once (a start
-      // goes in as a seedling). displayedStage matches so nothing reads it as
-      // a stage change.
-      growth: { ...EMPTY_GROWTH, stage: optimisticStage, displayedStage: optimisticStage, anchored: true },
+      // Placing a growing plant sows it: show its first stage's art at once (a
+      // start goes in as a seedling). displayedStage matches so nothing reads
+      // it as a stage change. A planned plant has no stage yet.
+      growth: planned
+        ? EMPTY_GROWTH
+        : { ...EMPTY_GROWTH, stage: optimisticStage, displayedStage: optimisticStage, anchored: true },
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       _commonName: commonName,
     };
     if (!cellOccupied) _addPlanting(optimistic);
+    const { plantingDate, ...rest } = payload;
+    const body = plantingDate === undefined ? rest : { ...rest, plantingDate };
     try {
-      const response = await api.post<Planting & { merged?: boolean }>(`/api/gardens/${gardenId}/beds/${bedId}/plantings`, payload);
+      const response = await api.post<Planting & { merged?: boolean }>(`/api/gardens/${gardenId}/beds/${bedId}/plantings`, body);
       if (!response) throw new Error('No planting returned');
       const { merged, ...result } = response;
       if (!cellOccupied) _removePlanting(tempId, bedId);
@@ -400,9 +412,37 @@ export function usePlantings(gardenId: string | null, season: number = currentSe
     if (result.growth.anchored && result.growth.stage !== null) markStagesDisplayed([plantingId]);
   }, [syncPlantings, markStagesDisplayed]);
 
+  // "Mark sown / transplanted": moves planned plantings into the ground. The
+  // returned rows replace the local ones in place. Throws on failure so the
+  // caller can show its own error; local state is untouched until success.
+  // The new stages count as seen, since the user just made the change.
+  const markStarted = useCallback(async (
+    ids: string[],
+    startMethod: StartMethod,
+    plantingDate: string,
+  ): Promise<void> => {
+    if (!gardenId) throw new Error('No garden');
+    const res = await api.post<{ data: Planting[] }>(`/api/gardens/${gardenId}/plantings/start`, {
+      plantingIds: ids, startMethod, plantingDate,
+    });
+    if (!res) throw new Error('No plantings returned');
+    const returned = new Map(res.data.map(r => [r.id, r]));
+    const prev = plantingsRef.current;
+    const next: PlantingsByBedId = {};
+    for (const [bedId, list] of Object.entries(prev)) {
+      next[bedId] = list.map(p => {
+        const r = returned.get(p.id);
+        return r ? { ...r, _commonName: p._commonName } : p;
+      });
+    }
+    syncPlantings(next);
+    const seen = res.data.filter(r => r.growth.anchored && r.growth.stage !== null).map(r => r.id);
+    if (seen.length > 0) markStagesDisplayed(seen);
+  }, [gardenId, syncPlantings, markStagesDisplayed]);
+
   return {
     plantingsByBedId, loading, error, errorKey, reload, placePlanting, deletePlanting, latestPlacing,
     updatePlantingPoint, updatePlantingQuantity, season, loadedKey, markStagesDisplayed, dismissIndicator,
-    updatePlantingStart,
+    updatePlantingStart, markStarted,
   };
 }

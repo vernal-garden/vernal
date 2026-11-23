@@ -5,7 +5,9 @@ import { formatRange, todayPacific } from '../../lib/guideDates';
 import { canLogHarvest, isDone, rowName, seedParam, sourceLabel } from '../../lib/guideModel';
 import BottomSheet from '../shell/BottomSheet';
 import { CloseIcon } from '../shell/icons';
+import type { Planting } from '../../hooks/usePlantings';
 import { SowTags } from './RowLabel';
+import PlannedStatus from './PlannedStatus';
 import ZoneStrip from './ZoneStrip';
 import { iconButtonStyle, linkStyle, sectionHeadingStyle, tagStyle, textButtonStyle } from './styles';
 
@@ -13,6 +15,9 @@ interface Props {
   row: GuideRow;
   garden: GuideGarden | undefined;
   readOnly: boolean;
+  plantings: Planting[];
+  season: number;
+  today: string;
   isAccount: boolean;
   isMobile: boolean;
   onClose: () => void;
@@ -121,7 +126,7 @@ function DesktopModal(props: Props) {
 }
 
 function ScheduleBody({
-  row, garden, readOnly, isAccount, setOverrides, onFrostSaved, showTitle,
+  row, garden, readOnly, plantings, season, today, isAccount, setOverrides, onFrostSaved, showTitle,
 }: Props & { showTitle?: boolean }) {
   const transplants = row.weeksToTransplant != null;
   const { indoorStart, transplant, directSow, harvest } = row.windows;
@@ -144,6 +149,7 @@ function ScheduleBody({
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-3)', flexWrap: 'wrap' }}>
           <SowTags row={row} />
           {isDone(row) && <span style={{ ...tagStyle, color: 'var(--c-text-3)' }}>Planted</span>}
+          <PlannedStatus row={row} plantings={plantings} season={season} today={today} readOnly={readOnly} />
           <Link to={`/catalogue?open=${seedParam(row)}`} style={linkStyle}>
             View in seed catalogue
           </Link>

@@ -6,11 +6,13 @@ import { useGardenList } from '../hooks/useGardenList';
 import { useGarden } from '../hooks/useGarden';
 import type { Bed, CreateBedPayload, UpdateBedPayload } from '../hooks/useGarden';
 import { usePlantings } from '../hooks/usePlantings';
-import type { Planting, ArmedSeed, PlantingsByBedId, StartMethod } from '../hooks/usePlantings';
+import type { Planting, ArmedSeed, PlantingsByBedId, PlantingState, StartMethod } from '../hooks/usePlantings';
 import { useGardenSeasons } from '../hooks/useGardenSeasons';
 import GardenCanvas from '../components/canvas/GardenCanvas';
 import type { GardenCanvasRef } from '../components/canvas/GardenCanvas';
 import BedDetailPanel from '../components/canvas/BedDetailPanel';
+import MarkStartedSheet from '../components/canvas/MarkStartedSheet';
+import { groupPlannedByPlant } from '../lib/markStarted';
 import BedManager from '../components/canvas/BedManager';
 import CanvasToolbar from '../components/canvas/CanvasToolbar';
 import type { CanvasMode, SeasonOverlayStatus } from '../components/canvas/CanvasToolbar';
@@ -29,6 +31,9 @@ import { useMicroFeedback } from '../lib/microFeedback';
 import * as api from '../lib/api';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { PLANTS_HERE_MAX, placementFollowUp, plantCount } from '../lib/placement';
+import {
+  COPYING_BEDS, START_FRESH, copyBeds, nextSeasonNotice, nextSeasonPromptBody, nextSeasonPromptTitle,
+} from '../lib/planningStrings';
 
 // Garden ids that have already logged a canvas_session during this page load.
 // Module-level so re-renders and StrictMode double effects can't fire it twice.
@@ -79,6 +84,7 @@ export default function HomePage() {
   const [searchParams] = useSearchParams();
   const [activeId, setActiveId] = useState<string | null>(() => searchParams.get('garden'));
   const [selectedBed, setSelectedBed] = useState<Bed | null>(null);
+  const [markSheetBedId, setMarkSheetBedId] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
   const [mode, setMode] = useState<CanvasMode>('grid');
   const [panActive, setPanActive] = useState(false);
@@ -102,23 +108,38 @@ export default function HomePage() {
   // and follows the server's currentSeason once the season list loads.
   // gardenSeasons.refetch() reloads the season list (e.g. after carry-forward).
   const gardenSeasons = useGardenSeasons(resolvedId);
-  const { currentSeason, earlierSeasons } = gardenSeasons;
+  const { currentSeason, nextSeason, layoutSeasons } = gardenSeasons;
+  // Phase 76b: which season the canvas shows. Keyed by garden, like the
+  // overlay, so a garden switch renders this season on the same render (no
+  // next-season fetch or notice for the new garden); the effect below then
+  // clears it so switching back doesn't bring it back.
+  const [seasonChoice, setSeasonChoice] = useState<{ gardenId: string; choice: 'current' | 'next' } | null>(null);
+  const viewingNext = seasonChoice != null && seasonChoice.gardenId === resolvedId && seasonChoice.choice === 'next';
+  const viewedSeason = viewingNext ? nextSeason : currentSeason;
+  // Overlay options: seasons with a layout before the viewed one, newest first.
+  const earlierSeasons = useMemo(
+    () => layoutSeasons.filter(s => s < viewedSeason).sort((a, b) => b - a),
+    [layoutSeasons, viewedSeason],
+  );
   const {
     garden, beds, loading: gardenLoading, mutationError, createBed, updateBed, deleteBed,
     loadedKey: gardenLoadedKey, reload: reloadGarden,
-  } = useGarden(resolvedId, currentSeason);
+  } = useGarden(resolvedId, viewedSeason);
   const {
     plantingsByBedId, loading: plantingsLoading, placePlanting, deletePlanting, latestPlacing, updatePlantingPoint,
     updatePlantingQuantity, loadedKey: plantingsLoadedKey, markStagesDisplayed, dismissIndicator,
-    updatePlantingStart,
-  } = usePlantings(resolvedId, currentSeason);
+    updatePlantingStart, markStarted,
+  } = usePlantings(resolvedId, viewedSeason);
 
   // Phase 50: past-season overlay. Component state only (never saved). Keyed
   // by garden so a garden switch hides it on the same render; the effect
   // below then clears it so switching back doesn't bring it back.
   const [overlay, setOverlay] = useState<{ gardenId: string; season: number } | null>(null);
   const overlaySeason = overlay && overlay.gardenId === resolvedId ? overlay.season : null;
-  useEffect(() => { setOverlay(null); }, [resolvedId]);
+  useEffect(() => {
+    setOverlay(null);
+    setSeasonChoice(null);
+  }, [resolvedId]);
   const overlaySeasonRef = useRef<number | null>(null);
   overlaySeasonRef.current = overlaySeason;
   // The same hooks as the current canvas, with a null garden id while the
@@ -148,19 +169,32 @@ export default function HomePage() {
   // Step 8 calls this after carrying a layout forward.
   const showSeasonOverlay = useCallback((season: number | null) => {
     if (!resolvedId) return;
-    if (season == null || season >= currentSeason) {
+    if (season == null || season >= viewedSeason) {
       setOverlay(null);
       return;
     }
     if (overlaySeasonRef.current !== season) track('canvas_season_overlay');
     overlaySeasonRef.current = season;
     setOverlay({ gardenId: resolvedId, season });
-  }, [resolvedId, currentSeason]);
+  }, [resolvedId, viewedSeason]);
+
+  // Phase 76b: the season switch. Clears the overlay and any bed selection
+  // (the other season's beds are different rows).
+  const handleViewedSeasonChange = useCallback((choice: 'current' | 'next') => {
+    setSeasonChoice(resolvedId ? { gardenId: resolvedId, choice } : null);
+    setOverlay(null);
+    setSelectedBed(null);
+    setPickerOpen(false);
+    setArmedSeed(null);
+  }, [resolvedId]);
 
   // Phase 50: new-season prompt. Offered when this season has no beds and an
   // earlier season has a layout. "Start fresh" hides it for this garden and
-  // season; "Bring beds forward" copies the latest earlier layout.
-  const latestEarlierSeason = earlierSeasons.length > 0 ? earlierSeasons[0] : null;
+  // season; "Bring beds forward" copies the latest earlier layout. In the
+  // next-season view it offers this season's beds only.
+  const latestEarlierSeason = viewingNext
+    ? (layoutSeasons.includes(currentSeason) ? currentSeason : null)
+    : (earlierSeasons.length > 0 ? earlierSeasons[0] : null);
   const refetchSeasons = gardenSeasons.refetch;
   const [carryForward, setCarryForward] = useState<{ pending: boolean; error: string | null }>({ pending: false, error: null });
   const [dismissedCarryKeys, setDismissedCarryKeys] = useState<string[]>([]);
@@ -174,13 +208,14 @@ export default function HomePage() {
     if (!resolvedId || latestEarlierSeason == null) return;
     const gardenId = resolvedId;
     const fromSeason = latestEarlierSeason;
+    const body = viewingNext ? { fromSeason, toSeason: nextSeason } : { fromSeason };
     if (carryPendingRef.current) return;
     carryPendingRef.current = true;
     setCarryForward({ pending: true, error: null });
     try {
       let alreadyHasBeds = false;
       try {
-        await api.post(`/api/gardens/${gardenId}/beds/carry-forward`, { fromSeason });
+        await api.post(`/api/gardens/${gardenId}/beds/carry-forward`, body);
       } catch (e) {
         const status = e instanceof api.ApiError ? e.status : null;
         const code = e instanceof api.ApiError ? (e.body as { code?: string } | null | undefined)?.code : undefined;
@@ -215,16 +250,16 @@ export default function HomePage() {
     } finally {
       carryPendingRef.current = false;
     }
-  }, [resolvedId, latestEarlierSeason, reloadGarden, refetchSeasons, showSeasonOverlay]);
+  }, [resolvedId, latestEarlierSeason, viewingNext, nextSeason, reloadGarden, refetchSeasons, showSeasonOverlay]);
 
   const handleStartFresh = useCallback(() => {
     if (!resolvedId || carryPendingRef.current) return;
-    const key = carryForwardDismissKey(resolvedId, currentSeason);
+    const key = carryForwardDismissKey(resolvedId, viewedSeason);
     writeCarryForwardDismissed(key);
     setDismissedCarryKeys(keys => (keys.includes(key) ? keys : [...keys, key]));
-  }, [resolvedId, currentSeason]);
+  }, [resolvedId, viewedSeason]);
 
-  const carryDismissKey = resolvedId ? carryForwardDismissKey(resolvedId, currentSeason) : null;
+  const carryDismissKey = resolvedId ? carryForwardDismissKey(resolvedId, viewedSeason) : null;
   const carryDismissed = useMemo(
     () => carryDismissKey == null
       || dismissedCarryKeys.includes(carryDismissKey)
@@ -311,6 +346,11 @@ export default function HomePage() {
     const plantings = plantingsByBedId[selectedBed.id] ?? [];
     return plantings.flatMap(p => (p.companionSeedId ? [p.companionSeedId] : []));
   }, [selectedBed, plantingsByBedId]);
+
+  // The mark-started sheet closes when the bed is deselected or the season switches.
+  useEffect(() => {
+    setMarkSheetBedId(null);
+  }, [selectedBed?.id, viewedSeason]);
 
   const selectedBedIsOver = selectedBed ? (occupancyByBedId[selectedBed.id]?.over ?? false) : false;
 
@@ -421,8 +461,12 @@ export default function HomePage() {
 
   const handleCreateBed = useCallback(async (payload: CreateBedPayload) => {
     const result = await createBed(payload);
-    if (result) handleSelectBed(result);
-  }, [createBed, handleSelectBed]);
+    if (!result) return;
+    handleSelectBed(result);
+    // A season's first bed gives it a layout: refresh the list so the
+    // next-season prompt and overlay options see it without a reload.
+    if (!layoutSeasons.includes(result.season)) refetchSeasons();
+  }, [createBed, handleSelectBed, layoutSeasons, refetchSeasons]);
 
   const handleUpdateBedGeometry = useCallback((bedId: string, payload: UpdateBedPayload) => {
     // Remap freeform plantings' absolute points when the polygon changes (move or resize).
@@ -506,9 +550,11 @@ export default function HomePage() {
     startMethod: StartMethod,
     date: string,
     dateEdited: boolean,
+    state: PlantingState,
   ) => {
     if (!armedSeed) return;
     const seed = armedSeed;
+    const plannedPlacement = state === 'planned';
     // Keep seed armed so the user can immediately place another
     const payload: {
       seedId?: string;
@@ -517,11 +563,14 @@ export default function HomePage() {
       point?: { x: number; y: number };
       quantity?: number;
       startMethod: StartMethod;
-      plantingDate: string;
+      state: PlantingState;
+      plantingDate?: string;
     } = {
       quantity: qty,
       startMethod,
-      plantingDate: date,
+      // Planned rows (next season, or "Not in the ground yet") carry no date.
+      state,
+      ...(plannedPlacement ? {} : { plantingDate: date }),
       ...(cell ? { cell } : {}),
       ...(point ? { point } : {}),
       ...(seed.source === 'catalogue' ? { cambiumSeedId: seed.id } : { seedId: seed.id }),
@@ -557,7 +606,8 @@ export default function HomePage() {
     }
     const followUp = placementFollowUp({
       placed,
-      dateEdited,
+      // A planned placement has no date, so it was never edited.
+      dateEdited: plannedPlacement ? false : dateEdited,
       tier: account?.subscriptionTier,
       supporterPromptShown: account?.supporterPromptShown,
     });
@@ -566,7 +616,9 @@ export default function HomePage() {
     } else if (followUp === 'feedback') {
       requestFeedback('planted');
     }
-  }, [armedSeed, placePlanting, plantingsByBedId, account, conflictedIds, requestFeedback, showToast]);
+  }, [
+    armedSeed, placePlanting, plantingsByBedId, account, conflictedIds, requestFeedback, showToast,
+  ]);
 
   const handleConfirmRemoval = useCallback(async (planting: Planting) => {
     await deletePlanting(planting.id, planting.bedId);
@@ -584,6 +636,13 @@ export default function HomePage() {
   ) => {
     await updatePlantingStart(planting.id, planting.bedId, changes);
   }, [updatePlantingStart]);
+
+  // Phase 76b: "Mark sown/transplanted" in the inspection popover. Rejects so
+  // the popover can show its own inline error.
+  const handleMarkStarted = useCallback(
+    (p: Planting, date: string) => markStarted([p.id], p.startMethod, date),
+    [markStarted],
+  );
 
   // Phase 54: "Plants here" in the inspection popover. The hook reverts the
   // count on failure; the toast reports it, unless the plant is gone (404, or
@@ -617,10 +676,16 @@ export default function HomePage() {
   // so neither the prompt nor the plain instruction flashes ahead of the data.
   const emptyStateReady = hasNoBeds
     && resolvedId != null
-    && gardenLoadedKey === `${resolvedId}:${currentSeason}`
+    && gardenLoadedKey === `${resolvedId}:${viewedSeason}`
     && gardenSeasons.loadedGardenId === resolvedId;
   // No carry-forward card on the view-only mobile canvas.
   const showNewSeasonPrompt = !isMobile && emptyStateReady && latestEarlierSeason != null && !carryDismissed;
+  // Phase 76b: the next-season notice (desktop here; MobileCanvasControls
+  // shows it on phones, in its top stack). Top toasts move below it.
+  const showNextSeasonNotice = viewingNext && resolvedId != null;
+  const topToastTop = !isMobile && showNextSeasonNotice
+    ? 'calc(16px + var(--shell-top, 0px) + var(--sp-7))'
+    : 'calc(16px + var(--shell-top, 0px))';
 
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh', background: '#f8f4eb', overflow: 'hidden' }}>
@@ -649,6 +714,9 @@ export default function HomePage() {
         onMarkHarvested={handleMarkHarvested}
         onUpdateQuantity={handleUpdateQuantity}
         onUpdateStart={handleUpdateStart}
+        viewedSeason={viewedSeason}
+        nextSeason={nextSeason}
+        onMarkStarted={handleMarkStarted}
         conflictedIds={conflictedIds}
         conflictsByPlantingId={conflictsByPlantingId}
         conflictedBedIds={conflictedBedIds}
@@ -691,10 +759,12 @@ export default function HomePage() {
               id="new-season-prompt-title"
               style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: isMobile ? 18 : 20, fontWeight: 600, color: 'var(--c-text)' }}
             >
-              New season, same garden?
+              {viewingNext ? nextSeasonPromptTitle(nextSeason, currentSeason) : 'New season, same garden?'}
             </h2>
             <p style={{ margin: 'var(--sp-2) 0 0', fontSize: 14, lineHeight: 1.5, color: 'var(--c-text-2)' }}>
-              Bring your beds forward from {latestEarlierSeason}. Your plants stay with {latestEarlierSeason}.
+              {viewingNext
+                ? nextSeasonPromptBody(currentSeason)
+                : <>Bring your beds forward from {latestEarlierSeason}. Your plants stay with {latestEarlierSeason}.</>}
             </p>
             {carryForward.error && (
               <p role="alert" style={{ margin: 'var(--sp-3) 0 0', fontSize: 13, color: 'var(--c-danger)' }}>
@@ -721,7 +791,9 @@ export default function HomePage() {
                   opacity: carryForward.pending ? 0.7 : 1,
                 }}
               >
-                {carryForward.pending ? 'Bringing beds forward…' : 'Bring beds forward'}
+                {viewingNext
+                  ? (carryForward.pending ? COPYING_BEDS : copyBeds(currentSeason))
+                  : (carryForward.pending ? 'Bringing beds forward…' : 'Bring beds forward')}
               </button>
               <button
                 type="button"
@@ -736,7 +808,7 @@ export default function HomePage() {
                   opacity: carryForward.pending ? 0.7 : 1,
                 }}
               >
-                Start fresh
+                {viewingNext ? START_FRESH : 'Start fresh'}
               </button>
             </div>
           </section>
@@ -796,10 +868,36 @@ export default function HomePage() {
         </div>
       )}
 
+      {/* Phase 76b: next-season notice (desktop; the toolbar sits at the bottom) */}
+      {!isMobile && showNextSeasonNotice && (
+        <div
+          role="status"
+          style={{
+            position: 'fixed', top: 'calc(16px + var(--shell-top, 0px))', left: '50%', transform: 'translateX(-50%)',
+            zIndex: 9,
+            maxWidth: 'calc(100vw - 2 * var(--sp-9))',
+            boxSizing: 'border-box',
+            padding: 'var(--sp-2) var(--sp-4)',
+            background: 'var(--c-surface)',
+            border: '1px solid var(--c-border)',
+            borderRadius: 'var(--r-full)',
+            boxShadow: 'var(--shadow-sm)',
+            fontFamily: 'var(--font-ui)',
+            fontSize: 13,
+            lineHeight: 1.4,
+            color: 'var(--c-text-2)',
+            textAlign: 'center',
+            pointerEvents: 'none',
+          }}
+        >
+          {nextSeasonNotice(nextSeason)}
+        </div>
+      )}
+
       {/* Placing banner */}
       {!isMobile && armedSeed && selectedBed && (
         <div style={{
-          position: 'fixed', top: 'calc(16px + var(--shell-top, 0px))', left: '50%', transform: 'translateX(-50%)',
+          position: 'fixed', top: topToastTop, left: '50%', transform: 'translateX(-50%)',
           background: '#1c3a28', color: '#d4edda', borderRadius: 8,
           padding: '10px 18px', fontSize: 13, zIndex: 99,
           boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
@@ -812,7 +910,7 @@ export default function HomePage() {
       {/* Mutation error / overlap warning toast */}
       {(mutationError || overlapWarning) && (
         <div style={{
-          position: 'fixed', top: 'calc(16px + var(--shell-top, 0px))', left: '50%', transform: 'translateX(-50%)',
+          position: 'fixed', top: topToastTop, left: '50%', transform: 'translateX(-50%)',
           ...(!mutationError && overlapWarning?.tone === 'info'
             ? { background: 'var(--c-text)', color: 'var(--c-surface)' }
             : { background: '#5a1e1e', color: '#ffd8d8' }),
@@ -863,7 +961,9 @@ export default function HomePage() {
       {/* Mobile: view-only controls in place of the toolbar */}
       {isMobile && resolvedId && (
         <MobileCanvasControls
-          currentSeason={currentSeason}
+          viewedSeason={viewedSeason}
+          nextSeason={nextSeason}
+          onViewedSeasonChange={handleViewedSeasonChange}
           earlierSeasons={earlierSeasons}
           overlaySeason={overlaySeason}
           overlayStatus={overlayStatus}
@@ -891,7 +991,9 @@ export default function HomePage() {
           onBedManagerToggle={handleBedManagerToggle}
           conflictCount={conflictedIds.size}
           onJumpToConflict={handleJumpToConflict}
-          currentSeason={currentSeason}
+          viewedSeason={viewedSeason}
+          nextSeason={nextSeason}
+          onViewedSeasonChange={handleViewedSeasonChange}
           earlierSeasons={earlierSeasons}
           overlaySeason={overlaySeason}
           overlayStatus={overlayStatus}
@@ -911,6 +1013,19 @@ export default function HomePage() {
           onAddPlant={handleAddPlant}
           gardenId={resolvedId}
           showDataLinks={isAccount}
+          onMarkStarted={
+            groupPlannedByPlant(plantingsByBedId[selectedBed.id] ?? []).length > 0
+              ? () => setMarkSheetBedId(selectedBed.id)
+              : undefined
+          }
+        />
+      )}
+
+      {!isMobile && selectedBed && markSheetBedId === selectedBed.id && (
+        <MarkStartedSheet
+          plantings={plantingsByBedId[selectedBed.id] ?? []}
+          onSave={markStarted}
+          onClose={() => setMarkSheetBedId(null)}
         />
       )}
 
