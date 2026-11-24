@@ -51,3 +51,41 @@ export function saveButtonState(groups: Array<{ quantity: number; checked: boole
   const n = groups.reduce((sum, g) => sum + (g.checked ? g.quantity : 0), 0);
   return n === 0 ? { label: CHOOSE_PLANTS, disabled: true } : { label: markInGround(n), disabled: false };
 }
+
+export interface MarkSavePlan {
+  // The method the control shows, or null when the control is hidden
+  // (nothing ticked, or ticked plantings planned with different methods).
+  controlMethod: StartMethod | null;
+  mixed: boolean;
+  // One entry per markStarted request, 'sown' first, then 'transplanted'.
+  calls: Array<{ startMethod: StartMethod; ids: string[] }>;
+}
+
+const METHOD_ORDER: StartMethod[] = ['sown', 'transplanted'];
+
+// Decides per planting, not per row: one plant's plantings can be planned
+// with different methods.
+export function planMarkSave(
+  plantings: Array<{ id: string; startMethod: StartMethod; state: PlantingState }>,
+  checkedIds: string[],
+  override: StartMethod | null,
+): MarkSavePlan {
+  const checked = new Set(checkedIds);
+  const byMethod = new Map<StartMethod, string[]>();
+  for (const p of plantings) {
+    if (p.state !== 'planned' || !checked.has(p.id)) continue;
+    const ids = byMethod.get(p.startMethod);
+    if (ids) ids.push(p.id); else byMethod.set(p.startMethod, [p.id]);
+  }
+  if (byMethod.size === 0) return { controlMethod: null, mixed: false, calls: [] };
+  if (byMethod.size === 1) {
+    const [[method, ids]] = [...byMethod];
+    const controlMethod = override ?? method;
+    return { controlMethod, mixed: false, calls: [{ startMethod: controlMethod, ids }] };
+  }
+  const calls = METHOD_ORDER.flatMap(m => {
+    const ids = byMethod.get(m);
+    return ids ? [{ startMethod: m, ids }] : [];
+  });
+  return { controlMethod: null, mixed: true, calls };
+}
