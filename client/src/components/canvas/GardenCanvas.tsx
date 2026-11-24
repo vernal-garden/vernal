@@ -20,7 +20,7 @@ import { drawStageMark, markerTier } from './stageMarks';
 import { PLANTS_HERE_MAX, isSamePlant, lastStartMethod, plantCount, plantsLabel, prefillQuantity } from '../../lib/placement';
 import StartMethodControl from './StartMethodControl';
 import { markerStyleFor } from '../../lib/plantingMarkerStyle';
-import { MARK_BUTTON, NOT_IN_GROUND, PLANNED_LINE, PLANTING_DATE_LABEL, plannedFor } from '../../lib/planningStrings';
+import { BED_PANEL_LINK, MARK_BUTTON, NOT_IN_GROUND, PLANNED_LINE, PLANTING_DATE_LABEL, plannedFor } from '../../lib/planningStrings';
 
 Konva.hitOnDragEnabled = true;
 
@@ -143,6 +143,8 @@ interface Props {
   nextSeason: number;
   // Phase 76b: "Mark sown/transplanted" on a planned planting. Rejects on failure.
   onMarkStarted?: (planting: Planting, plantingDate: string) => Promise<void>;
+  // Phase 76b follow-up: phones only. Opens the bulk mark sheet for a bed.
+  onOpenMarkSheet?: (bedId: string) => void;
   // Phase 20: companion indicators
   conflictedIds?: Set<string>;
   conflictsByPlantingId?: Map<string, Set<string>>;
@@ -703,7 +705,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   onScaleChange, onOverlapWarning, mode, panActive, gardenId,
   garden, plantingsByBedId, plantingsLoading, armedSeed,
   onConfirmPlacement, onConfirmRemoval, onMarkHarvested, onUpdateQuantity, onUpdateStart,
-  viewedSeason, nextSeason, onMarkStarted,
+  viewedSeason, nextSeason, onMarkStarted, onOpenMarkSheet,
   // Phase 20
   conflictedIds, conflictsByPlantingId, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
@@ -2587,21 +2589,37 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                   )}
                 </div>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-2)' }}>
-                  <span>{PLANNED_LINE[planting.startMethod]}</span>
-                  {canMarkStarted && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-2)' }}>
+                    <span>{PLANNED_LINE[planting.startMethod]}</span>
+                    {canMarkStarted && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMarkError(null);
+                          setMarkEdit({ plantingId: planting.id, plantingDate: todayPacific() });
+                        }}
+                        style={{ ...popoverLinkStyle, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+                      >
+                        {MARK_BUTTON[planting.startMethod]}
+                      </button>
+                    )}
+                  </div>
+                  {/* Phase 76b follow-up: bulk mark sheet on phones. Never shown while
+                      the per-plant mark editor is open, so only one date editor shows. */}
+                  {isMobile && onOpenMarkSheet != null && !marking && (
                     <button
                       type="button"
                       onClick={() => {
-                        setMarkError(null);
-                        setMarkEdit({ plantingId: planting.id, plantingDate: todayPacific() });
+                        setPendingInspectSynced(null);
+                        onOpenMarkSheet(planting.bedId);
                       }}
-                      style={{ ...popoverLinkStyle, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+                      style={{ ...popoverLinkStyle, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit' }}
                     >
-                      {MARK_BUTTON[planting.startMethod]}
+                      {BED_PANEL_LINK}
                     </button>
                   )}
-                </div>
+                </>
               )
             ) : editing ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>

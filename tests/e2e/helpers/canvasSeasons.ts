@@ -23,12 +23,18 @@ export async function createGridBed(
 export async function createCellPlanting(
   api: APIRequestContext, gardenId: string, bedId: string, seedId: number,
   plantingDate: string | null = null, cell = MARKER_CELL, quantity = 1,
+  opts: { state?: 'planned'; startMethod?: 'sown' | 'transplanted' } = {},
 ): Promise<string> {
   // One planting per grid cell (Phase 54): a second planting of the same seed
   // in the same cell merges into the first and returns 200, not 201. A null
   // date is left out, so the server dates the planting today (Phase 70).
+  // Phase 76b: state / startMethod are sent only when set.
   const resp = await api.post(`/api/gardens/${gardenId}/beds/${bedId}/plantings`, {
-    data: { seedId, quantity, cell, plantingDate: plantingDate ?? undefined },
+    data: {
+      seedId, quantity, cell, plantingDate: plantingDate ?? undefined,
+      ...(opts.state ? { state: opts.state } : {}),
+      ...(opts.startMethod ? { startMethod: opts.startMethod } : {}),
+    },
   });
   expect(resp.status(), await resp.text()).toBe(201);
   return String((await resp.json()).id);
@@ -80,12 +86,12 @@ export const inspectPopover = (page: Page, plant: string) => page.getByRole('dia
 // re-fires while the popover is closed, since a press on the canvas with the
 // popover open closes it.
 export async function openMarkerPopover(
-  page: Page, plant: string, opts: { tap?: boolean } = {},
+  page: Page, plant: string, opts: { tap?: boolean; cell?: { x: number; y: number } } = {},
 ): Promise<void> {
   const popover = inspectPopover(page, plant);
   await expect(async () => {
     if (!(await popover.isVisible())) {
-      const { x, y } = await markerScreenPoint(page);
+      const { x, y } = await markerScreenPoint(page, opts.cell);
       if (opts.tap) await page.touchscreen.tap(x, y);
       else await page.mouse.click(x, y);
     }

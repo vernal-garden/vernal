@@ -373,6 +373,7 @@ export default function HomePage() {
     setPendingMode(null);
     setPanActive(false);
     setNewSeedFormOpen(false);
+    setMarkSheetBedId(null);
   }, [isMobile]);
 
   // Close picker when bed deselects
@@ -717,6 +718,7 @@ export default function HomePage() {
         viewedSeason={viewedSeason}
         nextSeason={nextSeason}
         onMarkStarted={handleMarkStarted}
+        onOpenMarkSheet={isMobile ? setMarkSheetBedId : undefined}
         conflictedIds={conflictedIds}
         conflictsByPlantingId={conflictsByPlantingId}
         conflictedBedIds={conflictedBedIds}
@@ -1021,9 +1023,9 @@ export default function HomePage() {
         />
       )}
 
-      {!isMobile && selectedBed && markSheetBedId === selectedBed.id && (
+      {markSheetBedId && (isMobile || selectedBed?.id === markSheetBedId) && (
         <MarkStartedSheet
-          plantings={plantingsByBedId[selectedBed.id] ?? []}
+          plantings={plantingsByBedId[markSheetBedId] ?? []}
           onSave={markStarted}
           onClose={() => setMarkSheetBedId(null)}
         />
