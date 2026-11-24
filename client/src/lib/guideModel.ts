@@ -2,7 +2,9 @@
 // the API computes every sowing window; this only reads them.
 
 import type { GuideGarden, GuideRow, GuideWindow, WindowKind, WindowSource } from '../types/plantingGuide';
-import { monthEnd, monthStart } from './guideDates';
+import { addDays, monthEnd, monthStart } from './guideDates';
+import type { PlantingState } from '../hooks/usePlantings';
+import type { NudgeKind } from './planningStrings';
 import { windowSourceLabel } from './frostLabels';
 
 export type SowType = 'indoors' | 'direct';
@@ -57,8 +59,53 @@ export function hasWindows(row: GuideRow): boolean {
   return rowWindows(row).length > 0;
 }
 
-export function isDone(row: GuideRow): boolean {
-  return row.done?.markedDoneAt != null;
+export function isDone(row: GuideRow, now: Date = new Date()): boolean {
+  const at = row.done?.markedDoneAt;
+  return at != null && Date.parse(at) <= now.getTime();
+}
+
+interface PlannedMatchInput {
+  gardenId: string;
+  seedId: string | null;
+  cambiumSeedId: string | null;
+  state: PlantingState;
+}
+
+function planningMatch(row: GuideRow, p: PlannedMatchInput): boolean {
+  if (p.state !== 'planned' || p.gardenId !== row.gardenId) return false;
+  return row.seedId !== null ? p.seedId === row.seedId : p.cambiumSeedId === row.cambiumSeedId;
+}
+
+export function rowHasPlanned(row: GuideRow, plantings: PlannedMatchInput[]): boolean {
+  return plantings.some((p) => planningMatch(row, p));
+}
+
+export interface PlannedNudge {
+  kind: NudgeKind;
+  closing: boolean;
+  endsOn: string;
+}
+
+const NUDGE_KINDS: NudgeKind[] = ['indoorStart', 'transplant', 'directSow'];
+
+// Nudge for a planned plant whose sowing window is open today. Picks the
+// window that ends first (ties in kind order).
+export function plannedNudge(
+  row: GuideRow,
+  plantings: PlannedMatchInput[],
+  today: string,
+  readOnly: boolean,
+): PlannedNudge | null {
+  if (readOnly || !rowHasPlanned(row, plantings)) return null;
+  let best: PlannedNudge | null = null;
+  for (const kind of NUDGE_KINDS) {
+    const w = row.windows[kind];
+    if (!w || w.start > today || today > w.end) continue;
+    if (best === null || w.end < best.endsOn) {
+      best = { kind, closing: w.end <= addDays(today, 7), endsOn: w.end };
+    }
+  }
+  return best;
 }
 
 // "Log harvest" shows once the plant is in the ground and its harvest window

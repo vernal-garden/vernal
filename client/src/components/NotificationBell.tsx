@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useIsMobile } from '../hooks/useIsMobile';
 import * as api from '../lib/api';
+import { formatSowingReminder } from '../lib/sowingReminderText';
 import BottomSheet from './shell/BottomSheet';
 import { BellIcon } from './shell/icons';
 
@@ -15,7 +16,7 @@ const EDGE_GAP = 8;
 interface NotificationItem {
   id: number;
   type: string;
-  payload: { seedId?: number | string; seedName?: string } | null;
+  payload: Record<string, unknown> | null;
   readAt: string | null;
   createdAt: string;
 }
@@ -30,7 +31,8 @@ interface ListResponse {
 // an unreviewed placeholder in a user's inbox is worse than no row. Add a case
 // here when a type starts being written.
 function describe(n: NotificationItem): string | null {
-  const name = n.payload?.seedName ?? 'Your seed';
+  const seedName = n.payload?.seedName;
+  const name = typeof seedName === 'string' ? seedName : 'Your seed';
   switch (n.type) {
     case 'contribution_rejected':
       return `Your submission of ${name} wasn't approved. You can edit it and try again.`;
@@ -39,6 +41,46 @@ function describe(n: NotificationItem): string | null {
     default:
       return null;
   }
+}
+
+// Row body: a sowing reminder renders as titled sections; the other types as
+// one line. null hides the row, as for types we don't render.
+function itemBody(n: NotificationItem): ReactNode | null {
+  if (n.type === 'sowing_reminder') {
+    const sections = formatSowingReminder(n.payload);
+    if (!sections) return null;
+    return sections.map((section, i) => (
+      <span key={i} style={{ display: 'block', marginTop: i > 0 ? 'var(--sp-2)' : 0 }}>
+        <span style={{ display: 'block', fontSize: 14, lineHeight: 1.4, fontWeight: 700 }}>{section.title}</span>
+        {section.lines.map((line, j) => (
+          <span key={j} style={{ display: 'block', fontSize: 14, lineHeight: 1.4 }}>{line}</span>
+        ))}
+      </span>
+    ));
+  }
+  const text = describe(n);
+  if (text === null) return null;
+  return (
+    <span style={{ display: 'block', fontSize: 14, lineHeight: 1.4, fontWeight: n.readAt === null ? 700 : 400 }}>
+      {text}
+    </span>
+  );
+}
+
+// Where a row goes when opened.
+function itemTarget(n: NotificationItem): string {
+  const p = n.payload;
+  if (n.type === 'sowing_reminder') {
+    const gardenId = p?.gardenId;
+    const season = p?.season;
+    const params = new URLSearchParams();
+    if (typeof gardenId === 'number' || typeof gardenId === 'string') params.set('gardenId', String(gardenId));
+    if (typeof season === 'number') params.set('season', String(season));
+    const qs = params.toString();
+    return qs ? `/guide?${qs}` : '/guide';
+  }
+  const seedId = p?.seedId;
+  return typeof seedId === 'number' || typeof seedId === 'string' ? `/catalogue?open=seed:${seedId}` : '/catalogue';
 }
 
 function formatDate(iso: string): string {
@@ -148,8 +190,11 @@ export default function NotificationBell() {
 
   if (!isAccount) return null;
 
-  const visible = items.filter((n) => describe(n) !== null);
-  const unread = visible.filter((n) => n.readAt === null).length;
+  const visible = items.flatMap((n) => {
+    const body = itemBody(n);
+    return body === null ? [] : [{ n, body }];
+  });
+  const unread = visible.filter(({ n }) => n.readAt === null).length;
 
   async function markAll() {
     const prevItems = items;
@@ -171,8 +216,7 @@ export default function NotificationBell() {
       api.patch(`/api/notifications/${n.id}/read`).catch(() => undefined);
     }
     close();
-    const seedId = n.payload?.seedId;
-    navigate(seedId != null ? `/catalogue?open=seed:${seedId}` : '/catalogue');
+    navigate(itemTarget(n));
   }
 
   const content = (
@@ -208,7 +252,7 @@ export default function NotificationBell() {
         </p>
       ) : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
-          {visible.map((n) => (
+          {visible.map(({ n, body }) => (
             <li key={n.id} style={{ borderTop: '1px solid var(--c-border-subtle)' }}>
               <button
                 type="button"
@@ -230,9 +274,7 @@ export default function NotificationBell() {
                   fontFamily: 'var(--font-ui)',
                 }}
               >
-                <span style={{ display: 'block', fontSize: 14, lineHeight: 1.4, fontWeight: n.readAt === null ? 700 : 400 }}>
-                  {describe(n)}
-                </span>
+                {body}
                 <span style={{ display: 'block', marginTop: 2, fontSize: 12, color: 'var(--c-text-3)' }}>
                   {formatDate(n.createdAt)}
                 </span>

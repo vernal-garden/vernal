@@ -6,6 +6,9 @@ import { usePlantingGuide } from '../hooks/usePlantingGuide';
 import { parseDay, todayPacific } from '../lib/guideDates';
 import { filterRows, hasWindows, rowKey, type GuideFilterState, type GuideView } from '../lib/guideModel';
 import { useMicroFeedback } from '../lib/microFeedback';
+import * as api from '../lib/api';
+import type { Planting } from '../hooks/usePlantings';
+import { parseGuideDeepLink, withoutGuideDeepLink, type GuideDeepLink } from '../lib/guideDeepLink';
 import { FROST_COPY } from '../lib/frostLabels';
 import type { GuideOverrides, GuideRow } from '../types/plantingGuide';
 import ZoneStrip from '../components/guide/ZoneStrip';
@@ -90,11 +93,9 @@ export default function PlantingGuidePage() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // null until the user picks a season: the first load asks the server for
-  // its current season. A deep link (?open=…&season=<year>) loads that season.
-  const [season, setSeason] = useState<number | null>(() => {
-    const s = searchParams.get('season');
-    return searchParams.get('open') !== null && s !== null && /^\d{4}$/.test(s) ? Number(s) : null;
-  });
+  // its current season. A deep link (?season=<year>, with or without
+  // ?open=… / ?gardenId=…) loads that season.
+  const [season, setSeason] = useState<number | null>(() => parseGuideDeepLink(searchParams)?.season ?? null);
   const { data, loading, error, reload, setOverrides } = usePlantingGuide(season);
   const requestFeedback = useMicroFeedback();
 
@@ -129,21 +130,67 @@ export default function PlantingGuidePage() {
   const today = todayPacific();
   const currentMonth = parseDay(today).m;
 
-  // ?open=seed:<id> | cambium:<id> — handled once, against the first load.
-  const deepLinkHandled = useRef(false);
+  // Plantings for every garden in the viewed season, for the Planned tag and
+  // nudges. A garden whose request fails gets no tag or nudge. Responses for
+  // a season (or garden set) we've moved away from are dropped.
+  const [plantings, setPlantings] = useState<Planting[]>([]);
+  const plantingsRequest = useRef(0);
+  const plantingsSeason = data?.season;
+  const plantingsGardenIds = data ? data.gardens.map((g) => g.id).join(',') : '';
   useEffect(() => {
-    if (!data || deepLinkHandled.current) return;
-    deepLinkHandled.current = true;
-    const param = searchParams.get('open');
-    if (param === null) return;
-    const row = findDeepLinkRow(data.rows, param);
-    if (row) setOpenRowKey(rowKey(row));
-    else setNotice("This seed isn't planted in any garden this season.");
-    const next = new URLSearchParams(searchParams);
-    next.delete('open');
-    next.delete('season');
-    setSearchParams(next, { replace: true });
-  }, [data, searchParams, setSearchParams]);
+    const id = ++plantingsRequest.current;
+    setPlantings([]);
+    if (plantingsSeason === undefined || plantingsGardenIds === '') return;
+    const gardenIds = plantingsGardenIds.split(',');
+    void Promise.all(
+      gardenIds.map((gardenId) =>
+        api
+          .get<{ data: Planting[] }>(`/api/gardens/${gardenId}/plantings?season=${plantingsSeason}`)
+          .then((res) => res?.data ?? [])
+          .catch(() => [] as Planting[]),
+      ),
+    ).then((lists) => {
+      if (id !== plantingsRequest.current) return;
+      setPlantings(lists.flat());
+    });
+    return () => {
+      plantingsRequest.current++;
+    };
+  }, [plantingsSeason, plantingsGardenIds]);
+
+  // Deep link: ?season=<year>, ?gardenId=<id>, ?open=seed:<id> | cambium:<id>.
+  // Read whenever the params appear — including a bell click while already on
+  // /guide, which doesn't remount the page. The season is switched at once;
+  // the garden filter and open plant wait for that season's data. The params
+  // are then cleared from the URL.
+  const [pendingLink, setPendingLink] = useState<GuideDeepLink | null>(null);
+  useEffect(() => {
+    const link = parseGuideDeepLink(searchParams);
+    if (!link) return;
+    setPendingLink(link);
+    setNotice(null);
+    if (link.season !== null) setSeason(link.season);
+    setSearchParams(withoutGuideDeepLink(searchParams), { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!pendingLink || !data) return;
+    if (pendingLink.season !== null && data.season !== pendingLink.season) {
+      // Still loading that season; drop the link if the load failed.
+      if (!loading && error) setPendingLink(null);
+      return;
+    }
+    setPendingLink(null);
+    if (pendingLink.gardenId !== null && data.gardens.some((g) => g.id === pendingLink.gardenId)) {
+      const gardenId = pendingLink.gardenId;
+      setFilters((f) => ({ ...f, gardenId }));
+    }
+    if (pendingLink.open !== null) {
+      const row = findDeepLinkRow(data.rows, pendingLink.open);
+      if (row) setOpenRowKey(rowKey(row));
+      else setNotice("This seed isn't planted in any garden this season.");
+    }
+  }, [pendingLink, data, loading, error]);
 
   function changeView(next: GuideView) {
     setView(next);
@@ -251,7 +298,7 @@ export default function PlantingGuidePage() {
           )}
           {view === 'calendar' && <CalendarView {...viewProps} />}
           {view === 'timeline' && <TimelineView {...viewProps} />}
-          {view === 'list' && <ListView {...viewProps} readOnly={data.readOnly} />}
+          {view === 'list' && <ListView {...viewProps} readOnly={data.readOnly} plantings={plantings} />}
           {view !== 'list' && filteredRows.length === 0 && (
             <p style={{ fontSize: 14, color: 'var(--c-text-3)' }}>No plants to show for the current filters.</p>
           )}
@@ -264,6 +311,9 @@ export default function PlantingGuidePage() {
           row={openRow}
           garden={data.gardens.find((g) => g.id === openRow.gardenId)}
           readOnly={data.readOnly}
+          plantings={plantings}
+          season={data.season}
+          today={today}
           isAccount={isAccount}
           isMobile={isMobile}
           onClose={() => setOpenRowKey(null)}

@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import Konva from 'konva';
 import { Circle, Image as KonvaImage, Layer, Line, Group, Path, Rect, Shape, Stage, Text } from 'react-konva';
 import type { Bed, CreateBedPayload, UpdateBedPayload, Garden } from '../../hooks/useGarden';
-import type { Planting, ArmedSeed, PlantingsByBedId, StartMethod } from '../../hooks/usePlantings';
+import type { Planting, ArmedSeed, PlantingsByBedId, PlantingState, StartMethod } from '../../hooks/usePlantings';
 import { computeFit } from '../../lib/fit';
 import { apiUrl, apiErrorMessage } from '../../lib/api';
 import { conflictLines } from '../../lib/conflicts';
@@ -19,6 +19,8 @@ import { useIsMobile } from '../../hooks/useIsMobile';
 import { drawStageMark, markerTier } from './stageMarks';
 import { PLANTS_HERE_MAX, isSamePlant, lastStartMethod, plantCount, plantsLabel, prefillQuantity } from '../../lib/placement';
 import StartMethodControl from './StartMethodControl';
+import { markerStyleFor } from '../../lib/plantingMarkerStyle';
+import { MARK_BUTTON, NOT_IN_GROUND, PLANNED_LINE, PLANTING_DATE_LABEL, plannedFor } from '../../lib/planningStrings';
 
 Konva.hitOnDragEnabled = true;
 
@@ -124,6 +126,8 @@ interface Props {
     date: string,
     // True only when the date differs from today (Pacific).
     dateEdited: boolean,
+    // Phase 76b: 'planned' ignores date and dateEdited.
+    state: PlantingState,
   ) => void;
   onConfirmRemoval: (planting: Planting) => void;
   // Phase 50: "Mark as harvested" in the inspection popover. Rejects on failure.
@@ -134,6 +138,11 @@ interface Props {
   onUpdateQuantity?: (planting: Planting, quantity: number) => Promise<void>;
   // Phase 70: "Change" in the inspection popover (desktop). Rejects on failure.
   onUpdateStart?: (planting: Planting, changes: { startMethod: StartMethod; plantingDate: string }) => Promise<void>;
+  // Phase 76b: the season on screen and the one after the current season.
+  viewedSeason: number;
+  nextSeason: number;
+  // Phase 76b: "Mark sown/transplanted" on a planned planting. Rejects on failure.
+  onMarkStarted?: (planting: Planting, plantingDate: string) => Promise<void>;
   // Phase 20: companion indicators
   conflictedIds?: Set<string>;
   conflictsByPlantingId?: Map<string, Set<string>>;
@@ -521,13 +530,15 @@ const PlantingMarker = memo(function PlantingMarker({
   const circleRef = useCallback((n: Konva.Circle | null) => registerRef?.('circle', id, n), [registerRef, id]);
   const ringRef = useCallback((n: Konva.Circle | null) => registerRef?.('ring', id, n), [registerRef, id]);
   const brightnessRef = useCallback((n: Konva.Circle | null) => registerRef?.('brightness', id, n), [registerRef, id]);
-  const stage = planting.growth.stage;
+  // Phase 76b: planned rows draw faded with a dashed ring and stage-5 art;
+  // growing rows keep their anchored stage.
+  const style = markerStyleFor(planting);
+  const stage = style.artStage;
   const sceneFunc = useCallback((ctx: Konva.Context) => {
     if (stage !== null) drawStageMark(ctx, stage, MARKER_RADIUS);
   }, [stage]);
   const tier = markerTier(2 * MARKER_RADIUS * scale);
-  const { anchored } = planting.growth;
-  const showMark = !plain && tier === 'large' && anchored && stage !== null;
+  const showMark = !plain && tier === 'large' && stage !== null;
   // Before the plain return so the hook always runs. Art is only requested
   // when the mark shows; a missing manifest entry passes null, which draws
   // today's procedural mark.
@@ -547,7 +558,8 @@ const PlantingMarker = memo(function PlantingMarker({
 
   const colorId = planting.companionSeedId ?? planting.seedId ?? planting.id;
   const color = markerColor(colorId);
-  const ready = isHarvestReady(planting);
+  // Planned markers never show the harvest treatment.
+  const ready = planting.state !== 'planned' && isHarvestReady(planting);
   const showLabel = tier === 'medium' || (tier === 'large' && !showMark);
   const showHarvest = ready && tier !== 'small';
   // Phase 54: the plant count, on a dark band across the marker's lower part,
@@ -563,8 +575,18 @@ const PlantingMarker = memo(function PlantingMarker({
         ref={circleRef}
         radius={MARKER_RADIUS}
         fill={tier === 'small' && ready ? '#E6B85C' : color}
-        opacity={0.88}
+        opacity={style.circleOpacity}
       />
+      {style.dashed && (
+        <Circle
+          radius={MARKER_RADIUS}
+          stroke={color}
+          strokeWidth={style.dashed.widthPx * px}
+          dash={style.dashed.dashPx.map(d => d * px)}
+          opacity={1}
+          listening={false}
+        />
+      )}
       {showHarvest && (
         <Circle radius={MARKER_RADIUS} fill="rgba(230, 184, 92, 0.10)" listening={false} />
       )}
@@ -681,6 +703,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   onScaleChange, onOverlapWarning, mode, panActive, gardenId,
   garden, plantingsByBedId, plantingsLoading, armedSeed,
   onConfirmPlacement, onConfirmRemoval, onMarkHarvested, onUpdateQuantity, onUpdateStart,
+  viewedSeason, nextSeason, onMarkStarted,
   // Phase 20
   conflictedIds, conflictsByPlantingId, conflictedBedIds, latestPlacing,
   occupancyByBedId, relationshipBetween,
@@ -787,8 +810,11 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const [placementQty, setPlacementQty] = useState(1);
   const [placementDate, setPlacementDate] = useState('');
   const [placementStartMethod, setPlacementStartMethod] = useState<StartMethod>('sown');
+  // Phase 76b: "Not in the ground yet" (current season only); unchecked on open.
+  const [placementNotInGround, setPlacementNotInGround] = useState(false);
   const placementDateId = useId();
   const startEditDateId = useId();
+  const markDateId = useId();
 
   // Phase 54: a different armed seed while the popover is open re-runs the
   // pre-fill; otherwise a typed value holds until the popover closes.
@@ -831,6 +857,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   const [startEdit, setStartEdit] = useState<{ plantingId: string; startMethod: StartMethod; plantingDate: string } | null>(null);
   const [startBusy, setStartBusy] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  // Phase 76b: the open "Mark sown/transplanted" editor (the day it went in).
+  const [markEdit, setMarkEdit] = useState<{ plantingId: string; plantingDate: string } | null>(null);
+  const [markBusy, setMarkBusy] = useState(false);
+  const [markError, setMarkError] = useState<string | null>(null);
   const setPendingInspectSynced = useCallback((v: PendingInspect | null) => {
     pendingInspectRef.current = v;
     setPendingInspect(v);
@@ -839,6 +869,9 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     setStartEdit(null);
     setStartBusy(false);
     setStartError(null);
+    setMarkEdit(null);
+    setMarkBusy(false);
+    setMarkError(null);
   }, []);
   const inspectPopoverRef = useRef<HTMLDivElement>(null);
   const [inspectH, setInspectH] = useState(150);
@@ -959,7 +992,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   // Measure the inspection popover so edge-flipping uses its real height.
   // Re-measures when it opens for a planting or that planting changes
   // (e.g. "Mark as harvested" removes the button), the error toggles, its
-  // "Conflicts with" lines change, or the Change form opens or closes.
+  // "Conflicts with" lines change, or the Change or Mark form opens or closes.
   const inspectedPlanting = pendingInspect
     ? (plantingsByBedId[pendingInspect.bedId] ?? []).find(p => p.id === pendingInspect.plantingId) ?? null
     : null;
@@ -970,7 +1003,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   useLayoutEffect(() => {
     const el = inspectPopoverRef.current;
     if (el && el.offsetHeight !== inspectH) setInspectH(el.offsetHeight);
-  }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH, inspectConflictsKey, startEdit, startBusy, startError]);
+  }, [inspectedPlanting, harvestError, harvestBusy, isMobile, inspectH, inspectConflictsKey, startEdit, startBusy, startError, markEdit, markBusy, markError]);
 
   const inspectedBed = pendingBed ? beds.find(b => b.id === pendingBed.bedId) ?? null : null;
   useLayoutEffect(() => {
@@ -1183,7 +1216,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     // Check if new planting has any beneficial adjacency
     if (!relationshipBetween) return;
     const planting = Object.values(plantingsByBedIdRef.current).flat().find(p => p.id === id);
-    if (!planting) return;
+    // Phase 76b: a planned planting has no stage, so it gets no placement pulse.
+    if (!planting || planting.state === 'planned') return;
     const bed = bedsRef.current.find(b => b.id === planting.bedId);
     if (!bed || !planting.companionSeedId) return;
     const bedPlantings = plantingsByBedIdRef.current[planting.bedId] ?? [];
@@ -1220,7 +1254,8 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
     const shown: string[] = [];
     for (const planting of Object.values(plantingsByBedIdRef.current).flat()) {
       const { anchored, stage, displayedStage } = planting.growth;
-      if (!anchored || stage === displayedStage) continue;
+      // Phase 76b: planned markers have no stage to reveal.
+      if (planting.state === 'planned' || !anchored || stage === displayedStage) continue;
       const group = markerGroupRefs.current.get(planting.id);
       if (!group) continue; // not drawn, so not seen
       shown.push(planting.id);
@@ -2096,6 +2131,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
           setPlacementQty(prefillQuantity(selBed.type, armed.spacingOnRecord));
           setPlacementStartMethod(lastStartMethod(plantingsByBedIdRef.current, armed));
           setPlacementDate(todayPacific());
+          setPlacementNotInGround(false);
           return;
         }
       }
@@ -2233,6 +2269,10 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
   // Build placement popover
   const placementPopover = (() => {
     if (!pendingPlacement) return null;
+    // Phase 76b: next season always places planned; this season only when
+    // "Not in the ground yet" is checked.
+    const placingNext = viewedSeason === nextSeason;
+    const placingPlanned = placingNext || placementNotInGround;
     const selBed = beds.find(b => b.id === pendingPlacement.bedId) ?? null;
     const fit = selBed && garden && armedSeed
       ? computeFit({ garden, bed: selBed, spacingInches: armedSeed.spacingInches })
@@ -2271,21 +2311,41 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
         <div style={{ marginBottom: 10 }}>
           <StartMethodControl value={placementStartMethod} onChange={setPlacementStartMethod} />
         </div>
-        <div style={{ marginBottom: 14 }}>
-          <label htmlFor={placementDateId} style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9a8e7e', marginBottom: 4 }}>
-            Planting date
-          </label>
-          <input
-            id={placementDateId}
-            type="date" value={placementDate}
-            aria-describedby={`${placementDateId}-help`}
-            onChange={e => setPlacementDate(e.target.value)}
-            style={{ width: '100%', boxSizing: 'border-box', padding: '6px 10px', borderRadius: 6, border: '1px solid #d0c8b8', fontSize: 13, fontFamily: 'inherit' }}
-          />
-          <div id={`${placementDateId}-help`} style={{ marginTop: 4, fontSize: 12, color: 'var(--c-text-2)' }}>
-            The day it goes in this bed.
+        {placingNext ? (
+          <div style={{ marginBottom: 14, fontSize: 13, color: 'var(--c-text-2)' }}>
+            {plannedFor(nextSeason)}
           </div>
-        </div>
+        ) : (
+          <label style={{
+            display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', minHeight: 44,
+            marginBottom: placementNotInGround ? 14 : 4, fontSize: 13, color: 'var(--c-text)', cursor: 'pointer',
+          }}>
+            <input
+              type="checkbox"
+              checked={placementNotInGround}
+              onChange={e => setPlacementNotInGround(e.target.checked)}
+              style={{ margin: 0, width: 18, height: 18, flexShrink: 0, cursor: 'pointer' }}
+            />
+            {NOT_IN_GROUND}
+          </label>
+        )}
+        {!placingPlanned && (
+          <div style={{ marginBottom: 14 }}>
+            <label htmlFor={placementDateId} style={{ display: 'block', fontSize: 11, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase', color: '#9a8e7e', marginBottom: 4 }}>
+              Planting date
+            </label>
+            <input
+              id={placementDateId}
+              type="date" value={placementDate}
+              aria-describedby={`${placementDateId}-help`}
+              onChange={e => setPlacementDate(e.target.value)}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '6px 10px', borderRadius: 6, border: '1px solid #d0c8b8', fontSize: 13, fontFamily: 'inherit' }}
+            />
+            <div id={`${placementDateId}-help`} style={{ marginTop: 4, fontSize: 12, color: 'var(--c-text-2)' }}>
+              The day it goes in this bed.
+            </div>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             onClick={() => setPendingPlacementSynced(null)}
@@ -2306,6 +2366,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
                 placementStartMethod,
                 date,
                 date !== today,
+                placingPlanned ? 'planned' : 'growing',
               );
               setPendingPlacementSynced(null);
             }}
@@ -2352,14 +2413,37 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
       }
     };
 
+    const planned = planting.state === 'planned';
     // Phase 70: "Sown Mar 4", or "Sowing Mar 4" while the date is ahead.
-    const future = planting.plantingDate > todayPacific();
+    // Growing rows always have a date; planned rows use PLANNED_LINE instead.
+    const future = !planned && planting.plantingDate! > todayPacific();
     const startVerb = planting.startMethod === 'transplanted'
       ? (future ? 'Transplanting' : 'Transplanted')
       : (future ? 'Sowing' : 'Sown');
-    // Change is offered where Remove plant is: desktop only.
-    const canChangeStart = !isMobile && onUpdateStart != null;
+    // Change is offered where Remove plant is: desktop only, growing rows only.
+    const canChangeStart = !planned && !isMobile && onUpdateStart != null;
     const editing = canChangeStart && startEdit?.plantingId === planting.id ? startEdit : null;
+    // Phase 76b: Mark sown/transplanted shows on desktop and phone, both seasons.
+    const canMarkStarted = planned && onMarkStarted != null;
+    const marking = canMarkStarted && markEdit?.plantingId === planting.id ? markEdit : null;
+
+    const saveMark = async () => {
+      if (!onMarkStarted || !marking || markBusy) return;
+      setMarkBusy(true);
+      setMarkError(null);
+      const stillOpen = () => pendingInspectRef.current?.plantingId === planting.id;
+      try {
+        // A cleared field means today, as when placing.
+        await onMarkStarted(planting, marking.plantingDate || todayPacific());
+        if (!stillOpen()) return;
+        setMarkBusy(false);
+        setMarkEdit(null);
+      } catch (e) {
+        if (!stillOpen()) return;
+        setMarkBusy(false);
+        setMarkError(apiErrorMessage(e, "Couldn't save. Try again."));
+      }
+    };
 
     const saveStart = async () => {
       if (!onUpdateStart || !editing || startBusy) return;
@@ -2448,10 +2532,78 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
 
         <div style={{ paddingRight: 'var(--sp-3)' }}>
           <div style={{ fontSize: 13, color: 'var(--c-text-2)' }}>
-            {anchored && stage && (
+            {!planned && anchored && stage && (
               <div style={{ fontWeight: 600, color: 'var(--c-text)' }}>{stageLabel(stage, cropClass(planting.illustrationKey))}</div>
             )}
-            {editing ? (
+            {planned ? (
+              marking ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
+                  <div>{PLANNED_LINE[planting.startMethod]}</div>
+                  <div>
+                    <label htmlFor={markDateId} style={{ display: 'block', fontWeight: 600, color: 'var(--c-text)', marginBottom: 2 }}>
+                      {PLANTING_DATE_LABEL}
+                    </label>
+                    <input
+                      id={markDateId}
+                      type="date"
+                      value={marking.plantingDate}
+                      disabled={markBusy}
+                      onChange={e => setMarkEdit({ ...marking, plantingDate: e.target.value })}
+                      style={{
+                        width: '100%', minHeight: 44, boxSizing: 'border-box', padding: '0 var(--sp-2)',
+                        border: '1px solid var(--c-border)', borderRadius: 'var(--r-md)',
+                        background: 'var(--c-surface)', color: 'var(--c-text)', fontSize: 13, fontFamily: 'inherit',
+                      }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 'var(--sp-2)' }}>
+                    <button
+                      type="button"
+                      onClick={() => { setMarkEdit(null); setMarkError(null); }}
+                      disabled={markBusy}
+                      style={{
+                        ...popoverButtonStyle, flex: 1,
+                        border: '1px solid var(--c-border)', background: 'transparent', color: 'var(--c-text)',
+                        cursor: markBusy ? 'default' : 'pointer',
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveMark}
+                      disabled={markBusy}
+                      style={{
+                        ...popoverButtonStyle, flex: 1, border: 'none',
+                        background: 'var(--c-primary)', color: 'var(--c-text-on-primary)',
+                        opacity: markBusy ? 0.6 : 1, cursor: markBusy ? 'default' : 'pointer',
+                      }}
+                    >
+                      {markBusy ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                  {markError && (
+                    <div role="alert" style={{ fontSize: 12, color: 'var(--c-danger)' }}>{markError}</div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-2)' }}>
+                  <span>{PLANNED_LINE[planting.startMethod]}</span>
+                  {canMarkStarted && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMarkError(null);
+                        setMarkEdit({ plantingId: planting.id, plantingDate: todayPacific() });
+                      }}
+                      style={{ ...popoverLinkStyle, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 }}
+                    >
+                      {MARK_BUTTON[planting.startMethod]}
+                    </button>
+                  )}
+                </div>
+              )
+            ) : editing ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
                 <StartMethodControl
                   value={editing.startMethod}
@@ -2511,14 +2663,14 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
               </div>
             ) : (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--sp-2)' }}>
-                <span>{startVerb} {shortDate(planting.plantingDate)}</span>
+                <span>{startVerb} {shortDate(planting.plantingDate!)}</span>
                 {canChangeStart && (
                   <button
                     type="button"
                     aria-label={`Change how and when ${name} went in`}
                     onClick={() => {
                       setStartError(null);
-                      setStartEdit({ plantingId: planting.id, startMethod: planting.startMethod, plantingDate: planting.plantingDate });
+                      setStartEdit({ plantingId: planting.id, startMethod: planting.startMethod, plantingDate: planting.plantingDate! });
                     }}
                     style={{ ...popoverLinkStyle, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', fontFamily: 'inherit' }}
                   >
@@ -2589,7 +2741,7 @@ const GardenCanvas = forwardRef<GardenCanvasRef, Props>(({
             </div>
           )}
 
-          {stage === 5 && (
+          {!planned && stage === 5 && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 'var(--sp-2)', marginTop: 'var(--sp-1)' }}>
               {key && (
                 <Link

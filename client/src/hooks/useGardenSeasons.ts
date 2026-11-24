@@ -4,6 +4,7 @@ import { currentSeasonPacific } from '../lib/guideDates';
 
 interface GardenSeasonsResponse {
   currentSeason: number;
+  nextSeason: number;
   layoutSeasons: number[];
 }
 
@@ -11,6 +12,7 @@ interface GardenSeasonsResponse {
 // earlierSeasons is layoutSeasons before the current season, newest first.
 export function useGardenSeasons(gardenId: string | null) {
   const [currentSeason, setCurrentSeason] = useState<number>(() => currentSeasonPacific());
+  const [nextSeason, setNextSeason] = useState<number>(() => currentSeasonPacific() + 1);
   const [layoutSeasons, setLayoutSeasons] = useState<number[]>([]);
   // Garden id the current seasons belong to (set once a fetch resolves, even
   // on failure), so callers can wait for this garden's answer before acting.
@@ -25,6 +27,7 @@ export function useGardenSeasons(gardenId: string | null) {
       const res = await api.get<GardenSeasonsResponse>(`/api/gardens/${gardenId}/seasons`);
       if (req !== requestRef.current || !res) return;
       setCurrentSeason(res.currentSeason);
+      setNextSeason(res.nextSeason);
       setLayoutSeasons(res.layoutSeasons);
       setLoadedGardenId(gardenId);
     } catch {
@@ -47,5 +50,5 @@ export function useGardenSeasons(gardenId: string | null) {
     [layoutSeasons, currentSeason],
   );
 
-  return { currentSeason, layoutSeasons, earlierSeasons, loadedGardenId, refetch };
+  return { currentSeason, nextSeason, layoutSeasons, earlierSeasons, loadedGardenId, refetch };
 }

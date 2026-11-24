@@ -1,6 +1,8 @@
 import type { GardenSummary } from '../../hooks/useGardenList';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { linkStyle } from '../guide/styles';
+import SeasonSwitch from './SeasonSwitch';
+import { OVERLAY_NONE } from '../../lib/planningStrings';
 
 export type CanvasMode = 'grid' | 'freeform';
 
@@ -20,8 +22,12 @@ interface Props {
   onBedManagerToggle: () => void;
   conflictCount?: number;
   onJumpToConflict?: () => void;
-  // Phase 50: past-season overlay. overlaySeason null = this season only.
-  currentSeason: number;
+  // Phase 76b: the season the canvas shows and the season switch.
+  viewedSeason: number;
+  nextSeason: number;
+  onViewedSeasonChange: (choice: 'current' | 'next') => void;
+  // Phase 50: past-season overlay. overlaySeason null = the viewed season
+  // only. earlierSeasons: layout seasons before viewedSeason, newest first.
   earlierSeasons: number[];
   overlaySeason: number | null;
   overlayStatus: SeasonOverlayStatus;
@@ -103,7 +109,8 @@ export default function CanvasToolbar({
   bedManagerOpen, onBedManagerToggle,
   conflictCount,
   onJumpToConflict,
-  currentSeason, earlierSeasons, overlaySeason, overlayStatus, onOverlaySeasonChange,
+  viewedSeason, nextSeason, onViewedSeasonChange,
+  earlierSeasons, overlaySeason, overlayStatus, onOverlaySeasonChange,
 }: Props) {
   const isMobile = useIsMobile();
   const pct = Math.round(scale * 100);
@@ -122,7 +129,7 @@ export default function CanvasToolbar({
       onChange={e => onOverlaySeasonChange(e.target.value === 'current' ? null : Number(e.target.value))}
       style={seasonSelectStyle}
     >
-      <option value="current">This season ({currentSeason})</option>
+      <option value="current">{OVERLAY_NONE}</option>
       {seasonOptions.map(s => (
         <option key={s} value={s}>{s}</option>
       ))}
@@ -147,11 +154,16 @@ export default function CanvasToolbar({
 
   // Mobile: the toolbar pill is already near full width, so the select moves
   // to the row above it, next to the overlay status.
-  const statusRow = (isMobile ? (showSeasonSelect || overlayStatusPill) : overlayStatusPill) && (
+  const seasonSwitch = (
+    <SeasonSwitch viewedSeason={viewedSeason} nextSeason={nextSeason} onChange={onViewedSeasonChange} />
+  );
+
+  const statusRow = (isMobile || overlayStatusPill) && (
     <div style={{
       display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap',
       gap: 'var(--sp-2)', maxWidth: 'calc(100vw - 2 * var(--sp-4))', pointerEvents: 'auto',
     }}>
+      {isMobile && seasonSwitch}
       {isMobile && seasonSelect}
       {overlayStatusPill}
     </div>
@@ -310,13 +322,16 @@ export default function CanvasToolbar({
           </button>
         )}
 
-        {/* Season overlay (desktop: right end of the toolbar) */}
-        {!isMobile && seasonSelect && (
+        {/* Season switch and overlay (desktop: right end of the toolbar) */}
+        {!isMobile && (
           <>
             {divider}
             {/* 44px hit area without growing the pill (5px padding + 28px
-                buttons): the negative margin lets the select overhang it. */}
-            <div style={{ display: 'flex', margin: '-8px 0' }}>{seasonSelect}</div>
+                buttons): the negative margin lets the controls overhang it. */}
+            <div style={{ display: 'flex', gap: 'var(--sp-2)', margin: '-8px 0' }}>
+              {seasonSwitch}
+              {seasonSelect}
+            </div>
           </>
         )}
       </div>
