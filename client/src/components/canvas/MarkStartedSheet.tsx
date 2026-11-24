@@ -3,8 +3,8 @@ import type { Planting, StartMethod } from '../../hooks/usePlantings';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { apiErrorMessage } from '../../lib/api';
 import { todayPacific } from '../../lib/guideDates';
-import { groupPlannedByPlant, saveButtonState } from '../../lib/markStarted';
-import { PLANTING_DATE_LABEL, SHEET_TITLE } from '../../lib/planningStrings';
+import { groupPlannedByPlant, planMarkSave, saveButtonState } from '../../lib/markStarted';
+import { METHODS_KEPT, PLANTING_DATE_LABEL, SHEET_TITLE } from '../../lib/planningStrings';
 import BottomSheet from '../shell/BottomSheet';
 import { inputSt, labelSt } from '../account/settingsStyles';
 import { primaryButtonStyle } from '../guide/styles';
@@ -36,12 +36,19 @@ export default function MarkStartedSheet({ plantings, onSave, onClose }: Props) 
 
   const groups = useMemo(() => groupPlannedByPlant(plantings), [plantings]);
   const [unchecked, setUnchecked] = useState<Set<string>>(() => new Set());
-  const [startMethod, setStartMethod] = useState<StartMethod>(() => groups[0]?.startMethod ?? 'sown');
+  // The user's method choice; null means "use the shared planned method".
+  const [override, setOverride] = useState<StartMethod | null>(null);
   const [date, setDate] = useState(() => todayPacific());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const checkedGroups = groups.map(g => ({ ...g, checked: !unchecked.has(g.key) }));
+  const checkedIds = checkedGroups.filter(g => g.checked).flatMap(g => g.plantingIds);
+  const plan = planMarkSave(plantings, checkedIds, override);
+  // A mixed selection drops any earlier choice, so returning to a uniform
+  // selection starts at the shared planned method. Adjusted during render
+  // (guarded, so it settles in one pass) rather than in an effect.
+  if (plan.mixed && override !== null) setOverride(null);
   const button = saveButtonState(checkedGroups);
   const disabled = button.disabled || !date || saving;
 
@@ -74,11 +81,14 @@ export default function MarkStartedSheet({ plantings, onSave, onClose }: Props) 
 
   async function save() {
     if (disabled) return;
-    const ids = checkedGroups.filter(g => g.checked).flatMap(g => g.plantingIds);
     setError(null);
     setSaving(true);
     try {
-      await onSave(ids, startMethod, date);
+      // One request per method. A failure stops here; earlier calls stay
+      // saved and drop out of the list, so a retry saves only what's left.
+      for (const call of plan.calls) {
+        await onSave(call.ids, call.startMethod, date);
+      }
     } catch (e) {
       setError(apiErrorMessage(e, SAVE_FAILED));
       setSaving(false);
@@ -107,7 +117,12 @@ export default function MarkStartedSheet({ plantings, onSave, onClose }: Props) 
           </label>
         ))}
       </div>
-      <StartMethodControl value={startMethod} onChange={setStartMethod} disabled={saving} />
+      {plan.controlMethod && (
+        <StartMethodControl value={plan.controlMethod} onChange={setOverride} disabled={saving} />
+      )}
+      {plan.mixed && (
+        <p style={{ margin: 0, fontSize: 14, color: 'var(--c-text-2)' }}>{METHODS_KEPT}</p>
+      )}
       <div>
         <label htmlFor={dateId} style={labelSt}>{PLANTING_DATE_LABEL}</label>
         <input

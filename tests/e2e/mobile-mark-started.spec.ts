@@ -21,6 +21,7 @@ const PEA_CELL = { x: 1, y: 2 };
 
 const BULK_LINK = 'Mark plants in the ground';
 const SHEET_TITLE = "What's in the ground?";
+const METHODS_KEPT = 'Each plant goes in the way you planned it.';
 
 let gardenId: string;
 
@@ -117,4 +118,50 @@ test('a growing popover has no bulk mark button', async ({ page }) => {
   const popover = inspectPopover(page, PEA);
   await expect(popover.getByRole('button', { name: 'Close' })).toBeVisible();
   await expect(popover.getByRole('button', { name: BULK_LINK })).toHaveCount(0);
+});
+
+test.describe('plants planned with different methods', () => {
+  // Own garden and bed: the top-level beforeEach runs first, then this one
+  // resets and builds a bed with only a transplanted tomato and a sown basil.
+  test.beforeEach(async () => {
+    await resetTestDb();
+    const season = currentSeason();
+    const user = await createTestUser({ email: EMAIL, password: PASSWORD });
+    gardenId = await createTestGarden(user.id, 'Mixed Methods Garden');
+    const tomatoId = await createTestSeed(user.id, TOMATO);
+    const basilId = await createTestSeed(user.id, BASIL);
+    const api = await request.newContext({ baseURL: BASE_URL });
+    try {
+      expect((await api.post('/api/auth/login', { data: { email: EMAIL, password: PASSWORD } })).ok()).toBe(true);
+      const bedId = await createGridBed(api, gardenId, season, 'Methods Bed');
+      await createCellPlanting(api, gardenId, bedId, tomatoId, null, TOMATO_CELL, 1,
+        { state: 'planned', startMethod: 'transplanted' });
+      await createCellPlanting(api, gardenId, bedId, basilId, null, BASIL_CELL, 1,
+        { state: 'planned', startMethod: 'sown' });
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  test('saving both keeps each plant\'s planned method', async ({ page }) => {
+    await openGarden(page);
+    await openSheetFromTomato(page);
+    const sheet = markSheet(page);
+    await expect(sheet.getByRole('radiogroup', { name: 'How it goes in' })).toHaveCount(0);
+    await expect(sheet).toContainText(METHODS_KEPT);
+
+    await sheet.getByRole('button', { name: 'Mark 2 in the ground' }).tap();
+    await expect(sheet).toHaveCount(0);
+
+    await openMarkerPopover(page, TOMATO, { tap: true, cell: TOMATO_CELL });
+    const tomato = inspectPopover(page, TOMATO);
+    await expect(tomato).not.toContainText('Planned ·');
+    await expect(tomato).toContainText('Transplanted');
+    await closePopover(page, TOMATO);
+
+    await openMarkerPopover(page, BASIL, { tap: true, cell: BASIL_CELL });
+    const basil = inspectPopover(page, BASIL);
+    await expect(basil).not.toContainText('Planned ·');
+    await expect(basil).toContainText('Sown');
+  });
 });

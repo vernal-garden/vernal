@@ -52,6 +52,7 @@ export const MARK_BUTTON: Record<StartMethod, string> = {
 // Bed panel + mark-in-ground sheet
 export const BED_PANEL_LINK = 'Mark plants in the ground';
 export const SHEET_TITLE = "What's in the ground?";
+export const METHODS_KEPT = 'Each plant goes in the way you planned it.';
 export const markInGround = (n: number): string => `Mark ${n} in the ground`;
 export const CHOOSE_PLANTS = 'Choose plants to mark';
 export const PLANTING_DATE_LABEL = 'Planting date';
