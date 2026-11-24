@@ -13,6 +13,52 @@ interface Props {
   viewedSeason: number;
   nextSeason: number;
   onChange: (choice: SeasonChoice) => void;
+  // 'surface' = light page tokens (mobile); 'toolbar' = dark canvas toolbar pill.
+  variant?: 'surface' | 'toolbar';
+}
+
+const toolbarGroupStyle: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  flexShrink: 0,
+  padding: 2,
+  gap: 2,
+  background: 'transparent',
+  border: '1px solid var(--c-toolbar-border)',
+  borderRadius: 'var(--r-full)',
+  boxSizing: 'border-box',
+  pointerEvents: 'auto',
+};
+
+function toolbarOptionStyle(checked: boolean): CSSProperties {
+  return {
+    height: 28,
+    minWidth: 44,
+    padding: '0 10px',
+    borderRadius: 'var(--r-full)',
+    // Longhands, not `border`: borderColor changes with `checked`, and React
+    // warns when a shorthand and its longhand both change.
+    borderWidth: 1,
+    borderStyle: 'solid',
+    fontFamily: 'var(--font-ui)',
+    fontSize: 12,
+    whiteSpace: 'nowrap',
+    cursor: 'pointer',
+    transition: 'background 0.15s, color 0.15s',
+    ...(checked
+      ? {
+          background: 'var(--c-toolbar-active-bg)',
+          borderColor: 'var(--c-toolbar-active-border)',
+          color: 'var(--c-toolbar-fg-active)',
+          fontWeight: 600,
+        }
+      : {
+          background: 'transparent',
+          borderColor: 'transparent',
+          color: 'var(--c-toolbar-fg-muted)',
+          fontWeight: 500,
+        }),
+  };
 }
 
 const groupStyle: CSSProperties = {
@@ -46,7 +92,8 @@ function optionStyle(checked: boolean, isMobile: boolean): CSSProperties {
   };
 }
 
-export default function SeasonSwitch({ viewedSeason, nextSeason, onChange }: Props) {
+export default function SeasonSwitch({ viewedSeason, nextSeason, onChange, variant = 'surface' }: Props) {
+  const isToolbar = variant === 'toolbar';
   const current: SeasonChoice = viewedSeason === nextSeason ? 'next' : 'current';
   const isMobile = useIsMobile();
   const refs = useRef<Record<SeasonChoice, HTMLButtonElement | null>>({ current: null, next: null });
@@ -71,7 +118,8 @@ export default function SeasonSwitch({ viewedSeason, nextSeason, onChange }: Pro
         tabIndex={checked ? 0 : -1}
         onClick={() => { if (!checked) onChange(choice); }}
         onKeyDown={onKeyDown}
-        style={optionStyle(checked, isMobile)}
+        className={isToolbar ? 'toolbar-control' : undefined}
+        style={isToolbar ? toolbarOptionStyle(checked) : optionStyle(checked, isMobile)}
       >
         {label}
       </button>
@@ -79,7 +127,7 @@ export default function SeasonSwitch({ viewedSeason, nextSeason, onChange }: Pro
   };
 
   return (
-    <div role="radiogroup" aria-label="Season" style={groupStyle}>
+    <div role="radiogroup" aria-label="Season" style={isToolbar ? toolbarGroupStyle : groupStyle}>
       {option('current', SEASON_THIS)}
       {option('next', seasonPlan(nextSeason))}
     </div>

@@ -36,8 +36,9 @@ interface Props {
 
 export type SeasonOverlayStatus = 'off' | 'loading' | 'ready' | 'empty' | 'error';
 
-// Mirrors the Phase 46 SeasonSelector (guide/styles segment styles): tokens,
-// 44px minimum hit area.
+// Used for the mobile status row only (the desktop toolbar has its own,
+// seasonSelectToolbarStyle). Mirrors the Phase 46 SeasonSelector (guide/styles
+// segment styles): tokens, 44px minimum hit area.
 const seasonSelectStyle: React.CSSProperties = {
   height: 44,
   minHeight: 44,
@@ -49,6 +50,22 @@ const seasonSelectStyle: React.CSSProperties = {
   color: 'var(--c-text-2)',
   fontFamily: 'var(--font-ui)',
   fontSize: 14,
+  fontWeight: 500,
+  cursor: 'pointer',
+  flexShrink: 0,
+};
+
+const seasonSelectToolbarStyle: React.CSSProperties = {
+  appearance: 'none',
+  WebkitAppearance: 'none',
+  height: 28,
+  padding: '0 26px 0 12px',
+  border: '1px solid var(--c-toolbar-border)',
+  borderRadius: 'var(--r-full)',
+  background: 'transparent',
+  color: 'var(--c-toolbar-fg)',
+  fontFamily: 'var(--font-ui)',
+  fontSize: 12,
   fontWeight: 500,
   cursor: 'pointer',
   flexShrink: 0,
@@ -136,6 +153,40 @@ export default function CanvasToolbar({
     </select>
   );
 
+  // Desktop: dark-glass pill select. Native option rows take the select's text
+  // colour (Chrome on Windows), so each option carries its own light colours.
+  const optionColors: React.CSSProperties = { color: 'var(--c-text)', background: 'var(--c-surface)' };
+  const seasonSelectToolbar = showSeasonSelect && (
+    <span style={{ position: 'relative', display: 'inline-flex' }}>
+      <select
+        aria-label="Season overlay"
+        className="toolbar-control"
+        value={overlaySeason ?? 'current'}
+        onChange={e => onOverlaySeasonChange(e.target.value === 'current' ? null : Number(e.target.value))}
+        style={seasonSelectToolbarStyle}
+      >
+        <option value="current" style={optionColors}>{OVERLAY_NONE}</option>
+        {seasonOptions.map(s => (
+          <option key={s} value={s} style={optionColors}>{s}</option>
+        ))}
+      </select>
+      <span
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          right: 10,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          pointerEvents: 'none',
+          color: 'var(--c-toolbar-fg-muted)',
+          fontSize: 10,
+        }}
+      >
+        ▾
+      </span>
+    </span>
+  );
+
   const overlayStatusText = overlaySeason == null ? null
     : overlayStatus === 'empty' ? `No canvas layout found for ${overlaySeason}.`
     : overlayStatus === 'error' ? `Couldn’t load the ${overlaySeason} layout.`
@@ -154,8 +205,16 @@ export default function CanvasToolbar({
 
   // Mobile: the toolbar pill is already near full width, so the select moves
   // to the row above it, next to the overlay status.
-  const seasonSwitch = (
+  const seasonSwitchMobile = (
     <SeasonSwitch viewedSeason={viewedSeason} nextSeason={nextSeason} onChange={onViewedSeasonChange} />
+  );
+  const seasonSwitchToolbar = (
+    <SeasonSwitch
+      variant="toolbar"
+      viewedSeason={viewedSeason}
+      nextSeason={nextSeason}
+      onChange={onViewedSeasonChange}
+    />
   );
 
   const statusRow = (isMobile || overlayStatusPill) && (
@@ -163,7 +222,7 @@ export default function CanvasToolbar({
       display: 'flex', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap',
       gap: 'var(--sp-2)', maxWidth: 'calc(100vw - 2 * var(--sp-4))', pointerEvents: 'auto',
     }}>
-      {isMobile && seasonSwitch}
+      {isMobile && seasonSwitchMobile}
       {isMobile && seasonSelect}
       {overlayStatusPill}
     </div>
@@ -326,11 +385,9 @@ export default function CanvasToolbar({
         {!isMobile && (
           <>
             {divider}
-            {/* 44px hit area without growing the pill (5px padding + 28px
-                buttons): the negative margin lets the controls overhang it. */}
-            <div style={{ display: 'flex', gap: 'var(--sp-2)', margin: '-8px 0' }}>
-              {seasonSwitch}
-              {seasonSelect}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              {seasonSwitchToolbar}
+              {seasonSelectToolbar}
             </div>
           </>
         )}
