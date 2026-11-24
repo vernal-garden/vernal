@@ -68,9 +68,9 @@ export const NUDGE_OPEN: Record<NudgeKind, string> = {
   directSow: 'Time to sow',
 };
 export const NUDGE_CLOSING: Record<NudgeKind, string> = {
-  indoorStart: 'Last week to start indoors',
-  transplant: 'Last week to transplant',
-  directSow: 'Last week to sow',
+  indoorStart: 'Final week to start indoors',
+  transplant: 'Final week to transplant',
+  directSow: 'Final week to sow',
 };
 export const untilDate = (date: string): string => `Until ${date}`;
 
@@ -82,7 +82,7 @@ export type ReminderOpenGroup = 'indoor_start' | 'transplant' | 'transplant_sown
 export const BELL_OPEN_LINE: Record<ReminderOpenGroup, (names: string) => string> = {
   indoor_start: (names) => `Start indoors: ${names}`,
   transplant: (names) => `Transplant: ${names}`,
-  transplant_sown: (names) => `Started ${names} indoors? They can go out now.`,
+  transplant_sown: (names) => `Started ${names} indoors? Harden them off, then plant out.`,
   direct_sow: (names) => `Sow: ${names}`,
 };
 

@@ -20,7 +20,7 @@ describe('formatSowingReminder', () => {
     expect(out![0].lines).toEqual([
       'Start indoors: Tomato and Pepper',
       'Transplant: Basil',
-      'Started Kale indoors? They can go out now.',
+      'Started Kale indoors? Harden them off, then plant out.',
       'Sow: Pea',
     ]);
     expect(out![1].title).toBe('Closing soon in Back yard');
@@ -35,7 +35,7 @@ describe('formatSowingReminder', () => {
   it('transplant_sown only', () => {
     const out = formatSowingReminder({ ...base, open: { transplant_sown: ['Kale'] } });
     expect(out![0].title).toBe('Planting time in Back yard');
-    expect(out![0].lines).toEqual(['Started Kale indoors? They can go out now.']);
+    expect(out![0].lines).toEqual(['Started Kale indoors? Harden them off, then plant out.']);
   });
 
   it('closing only', () => {

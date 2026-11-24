@@ -6,6 +6,7 @@ import {
   nextSeasonPromptTitle,
   BELL_OPEN_LINE,
   BELL_CLOSING_LINE,
+  NUDGE_CLOSING,
   OVERLAY_NONE,
   SEASON_THIS,
 } from '../../client/src/lib/planningStrings';
@@ -38,8 +39,9 @@ describe('strings', () => {
   it('formats counts, titles and bell lines', () => {
     expect(markInGround(3)).toBe('Mark 3 in the ground');
     expect(nextSeasonPromptTitle(2027, 2026)).toBe('Start 2027 with your 2026 beds?');
-    expect(BELL_OPEN_LINE.transplant_sown('Kale')).toBe('Started Kale indoors? They can go out now.');
+    expect(BELL_OPEN_LINE.transplant_sown('Kale')).toBe('Started Kale indoors? Harden them off, then plant out.');
     expect(BELL_CLOSING_LINE.indoor_start('Kale', 'Mar 4')).toBe('Start Kale indoors by Mar 4');
+    expect(NUDGE_CLOSING.directSow).toBe('Final week to sow');
   });
   it('names the overlay-off choice apart from the season switch', () => {
     expect(OVERLAY_NONE).toBe('No overlay');
