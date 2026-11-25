@@ -49,7 +49,9 @@ Sentry.init({
     graphQL: { document: false, variables: false },
     genAI: { inputs: false, outputs: false },
   },
-  integrations: [
+  // CultureContext sends the browser's time zone and locale; off by privacy policy (GC, 2026-11-24).
+  integrations: (defaults) => [
+    ...defaults.filter((i) => i.name !== 'CultureContext'),
     Sentry.browserTracingIntegration(),
   ],
   // Query strings (reset tokens, searched addresses) are stripped everywhere a
