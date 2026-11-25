@@ -8,6 +8,7 @@ import { CanvasPresenceProvider } from './context/CanvasPresenceContext';
 import MergePrompt from './components/MergePrompt';
 import FeedbackWidget from './components/FeedbackWidget';
 import PendingDeletionBanner from './components/PendingDeletionBanner';
+import WhatsNewCard from './components/WhatsNewCard';
 import router from './routes';
 
 interface UpdateBannerProps {
@@ -92,6 +93,7 @@ export default function App() {
                   useSignOut's navigate('/') after the auth state flips to guest. */}
               <RouterProvider router={router} useTransitions={false} />
               <FeedbackWidget bottomOffset={deletionBannerHeight + (needRefresh ? bannerHeight : 0)} />
+              <WhatsNewCard bottomOffset={deletionBannerHeight + (needRefresh ? bannerHeight : 0)} />
             </CanvasPresenceProvider>
             <MergePrompt />
             <PendingDeletionBanner onHeightChange={setDeletionBannerHeight} />
