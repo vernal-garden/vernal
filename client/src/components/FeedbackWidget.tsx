@@ -16,7 +16,7 @@ const CHIPS: { value: Category; emoji: string; label: string; hint: string }[] =
 ];
 
 // Full-screen flows where the FAB would be disruptive.
-const HIDDEN_PATHS = new Set([
+export const HIDDEN_PATHS = new Set([
   '/onboarding',
   '/login',
   '/register',

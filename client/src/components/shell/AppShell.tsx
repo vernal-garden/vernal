@@ -10,6 +10,8 @@ import MobileTopBar, { TOP_BAR_HEIGHT } from './MobileTopBar';
 
 const SHELL_TOP_MOBILE = `calc(${TOP_BAR_HEIGHT}px + env(safe-area-inset-top))`;
 const SHELL_BOTTOM_MOBILE = `calc(${TAB_BAR_HEIGHT}px + env(safe-area-inset-bottom))`;
+// Matches the nav's height in AppNav.
+const APP_NAV_HEIGHT = 52;
 
 // Layout route for the signed-in app. On mobile it adds the top bar and bottom
 // tab bar; on desktop it renders the existing AppNav (except on the canvas).
@@ -17,6 +19,10 @@ const SHELL_BOTTOM_MOBILE = `calc(${TAB_BAR_HEIGHT}px + env(safe-area-inset-bott
 // --shell-top / --shell-bottom are set on <html> rather than on this subtree so
 // fixed-position chrome rendered outside the router (UpdateBanner,
 // FeedbackWidget) can offset itself above the tab bar.
+//
+// --shell-content-top is the bottom edge of the top chrome at scroll 0, for
+// WhatsNewCard. It differs from --shell-top only on desktop pages other than
+// the canvas, where AppNav and the banners are in normal flow.
 export default function AppShell() {
   const isMobile = useIsMobile();
   const { pathname } = useLocation();
@@ -35,9 +41,11 @@ export default function AppShell() {
   useLayoutEffect(() => {
     const style = document.documentElement.style;
     const base = isMobile ? SHELL_TOP_MOBILE : '0px';
+    const shellTop = bannerFixed && bannersHeight > 0 ? `calc(${base} + ${bannersHeight}px)` : base;
+    style.setProperty('--shell-top', shellTop);
     style.setProperty(
-      '--shell-top',
-      bannerFixed && bannersHeight > 0 ? `calc(${base} + ${bannersHeight}px)` : base,
+      '--shell-content-top',
+      bannerFixed ? shellTop : `${APP_NAV_HEIGHT + bannersHeight}px`,
     );
     style.setProperty('--shell-bottom', isMobile ? SHELL_BOTTOM_MOBILE : '0px');
   }, [isMobile, bannerFixed, bannersHeight]);
@@ -45,6 +53,7 @@ export default function AppShell() {
   useLayoutEffect(() => () => {
     const style = document.documentElement.style;
     style.removeProperty('--shell-top');
+    style.removeProperty('--shell-content-top');
     style.removeProperty('--shell-bottom');
   }, []);
 
